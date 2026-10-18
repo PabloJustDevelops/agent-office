@@ -194,6 +194,8 @@ agentoffice open --print    # prints the link instead (it works once, for 2 minu
 agentoffice open --rotate   # logs every browser out first
 ```
 
+Without a global install that's `npx theagentoffice open`, and the office's own hints say so. On a machine with no display (an ssh session, a server) nothing can be opened: the banner says so, and `open --print` gives you the link to open in your own browser through `ssh -L 4747:127.0.0.1:4747`.
+
 Every control request also has to come from the office's own page: the right `Host`, no foreign `Origin` or `Sec-Fetch-Site`, and an `X-Agent-Office` header that another site can't send. A locked browser keeps the read-only office. Controls are off with `--demo`, `--no-control`, a `--host` other than loopback, and on Windows.
 
 ### Keys: the office passes your keys

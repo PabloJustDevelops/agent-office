@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findOffice, officeFilePath, type OfficeFile } from "../mcp/office.ts";
 import { officeHome } from "../mcp/outbox.ts";
-import { stableNode } from "../install/command.ts";
+import { selfCommand, stableNode } from "../install/command.ts";
 import { PAD, bold, dim, green, red, yellow } from "../install/ui.ts";
 import { ControlAuth } from "./auth.ts";
 import { loginShellVars } from "./env.ts";
@@ -27,27 +27,54 @@ import { ControlError, FILES } from "./types.ts";
 
 type Out = (line?: string) => void;
 
-/** Open a URL in the default browser; quietly does nothing without an opener. */
-export function openBrowser(url: string): void {
+/**
+ * Whether a browser can be opened from here at all. Linux and the BSDs need a display: over ssh or
+ * on a server there is none, and xdg-open gives up ("no method available"). $BROWSER, which
+ * xdg-open honours (wslview under WSL, say), and WSL itself get the benefit of the doubt.
+ */
+export function canOpenBrowser(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): boolean {
+  if (env.BROWSER === "none") return false;
+  if (platform === "darwin" || platform === "win32") return true;
+  return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY || env.BROWSER || env.WSL_DISTRO_NAME);
+}
+
+/**
+ * Open a URL in the default browser. Resolves false when nothing opened it (no opener, or it
+ * exited with an error), true once it exited cleanly or is still going after `waitMs`.
+ */
+export function openBrowser(url: string, o: { platform?: string; opener?: string; waitMs?: number } = {}): Promise<boolean> {
+  const platform = o.platform ?? process.platform;
   const [cmd, args] =
-    process.platform === "darwin"
+    platform === "darwin"
       ? ["open", [url]]
-      : process.platform === "win32"
+      : platform === "win32"
         ? ["cmd", ["/c", "start", '""', url]]
         : ["xdg-open", [url]];
-  try {
-    const child = spawn(cmd, args as string[], {
-      stdio: "ignore",
-      detached: true,
-      windowsHide: true,
-      // cmd.exe reads `start "" url` itself; libuv quoting would mangle the empty title.
-      windowsVerbatimArguments: process.platform === "win32",
+  return new Promise((done) => {
+    let child;
+    try {
+      child = spawn(o.opener ?? cmd, args as string[], {
+        stdio: "ignore",
+        detached: true,
+        windowsHide: true,
+        // cmd.exe reads `start "" url` itself; libuv quoting would mangle the empty title.
+        windowsVerbatimArguments: platform === "win32",
+      });
+    } catch {
+      return done(false); // No opener on this system.
+    }
+    // A browser xdg-open starts in the foreground keeps it running: that counts as opened.
+    const timer = setTimeout(() => done(true), o.waitMs ?? 3_000);
+    child.on("error", () => {
+      clearTimeout(timer);
+      done(false);
     });
-    child.on("error", () => {});
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      done(code === 0);
+    });
     child.unref();
-  } catch {
-    // No opener on this system.
-  }
+  });
 }
 
 /** The installed package root: dist/cli.js lives one folder down. */
@@ -66,6 +93,7 @@ export function serviceDeps(version: string, env: NodeJS.ProcessEnv = process.en
     run: (cmd, args) => defaultRun(cmd, args),
     pkgRoot: packageRoot(),
     node: stableNode(),
+    command: selfCommand(),
   };
 }
 
@@ -147,13 +175,21 @@ Opens the running office with a one-time link that unlocks its controls in that 
     return 1;
   }
   const url = typeof f?.url === "string" && f.port === port ? f.url : `http://127.0.0.1:${port}`;
+  const print = `${selfCommand()} open --print`;
+  if (!flags.has("--print") && !canOpenBrowser()) {
+    out(`${PAD}${yellow("No browser to open here")} ${dim("(no display).")} ${bold(print)} prints a link to open in yours.`);
+    return 1;
+  }
   const link = `${url}/unlock?t=${auth.mintCode()}`;
   if (flags.has("--print")) {
     out(link);
     out(`${PAD}${dim("Unlocks controls in one browser, once, within 2 minutes. Anyone with this link can drive your agents until then.")}`);
     return 0;
   }
-  openBrowser(link);
+  if (!(await openBrowser(link))) {
+    out(`${PAD}${red("✗")} Couldn't open a browser. ${bold(print)} prints the link instead.`);
+    return 1;
+  }
   out(`${PAD}${green("✓")} Opened ${bold(url)} with controls unlocked.`);
   return 0;
 }
@@ -180,11 +216,11 @@ export async function serviceCommand(cmd: "install" | "uninstall", version: stri
     out(`${PAD}  ${dim("It runs")} ${bold(join(d.home, FILES.app, "current"))} ${dim("with")} ${d.node}${d.node.includes("/.nvm/versions/") || d.node.includes("/fnm/") || d.node.includes("/Cellar/") ? yellow(" (a version manager's node: an upgrade can remove it; re-run this after one)") : ""}`);
     if (foreground) {
       out(`${PAD}  An office is already running in a terminal, so the service starts at your next login.`);
-      out(`${PAD}  Close that office (Ctrl+C) and run ${bold("agentoffice open")} to start it now.`);
+      out(`${PAD}  Close that office (Ctrl+C) and run ${bold(`${selfCommand()} open`)} to start it now.`);
     } else {
       const port = await waitForOffice(10_000, { service: true });
       if (port === null) out(`${PAD}${yellow("!")} It didn't answer within 10 seconds; see ${join(d.home, FILES.logs, "office.log")}`);
-      else out(`${PAD}  The office is running in the background at ${bold(`http://127.0.0.1:${port}`)}. ${bold("agentoffice open")} unlocks it in a browser.`);
+      else out(`${PAD}  The office is running in the background at ${bold(`http://127.0.0.1:${port}`)}. ${bold(`${selfCommand()} open`)} unlocks it in a browser.`);
     }
     if (d.platform === "linux") out(`${PAD}  ${dim("systemd stops user services at logout unless you run")} loginctl enable-linger`);
     if (!st.installed) return 1;
@@ -201,14 +237,14 @@ export async function doctorRows(version: string, out: Out): Promise<void> {
   const d = serviceDeps(version);
   const label = (s: string) => dim(s.padEnd(11));
   const secret = existsSync(join(d.home, FILES.control));
-  out(`${PAD}${label("Controls")}${secret ? green("unlock secret set up") : dim("set up on the first start")} ${dim("· agentoffice open unlocks a browser")}`);
+  out(`${PAD}${label("Controls")}${secret ? green("unlock secret set up") : dim("set up on the first start")} ${dim(`· ${selfCommand()} open unlocks a browser`)}`);
   const pty = await ptyKind().catch(() => null);
   out(`${PAD}${label("Terminals")}${pty === "node-pty" ? green("node-pty") : pty === "python" ? yellow("python3 bridge (node-pty didn't load)") : red("none: hired agents get chat mode only (reinstall with optional dependencies)")}`);
   if (supported(d.platform)) {
     const st = serviceStatus(d);
     const f = readServiceFile(d.home);
     const node = f?.node && (f.node.includes("/.nvm/versions/") || f.node.includes("/fnm/") || f.node.includes("/Cellar/")) ? yellow(` · node ${f.node} may vanish on an upgrade`) : "";
-    out(`${PAD}${label("Service")}${st.installed ? `${st.running ? green("running") : yellow("installed, not running")}${dim(` · start at login ${st.startAtLogin ? "on" : "off"}`)}${node}` : dim("not installed · agentoffice install --service")}`);
+    out(`${PAD}${label("Service")}${st.installed ? `${st.running ? green("running") : yellow("installed, not running")}${dim(` · start at login ${st.startAtLogin ? "on" : "off"}`)}${node}` : dim(`not installed · ${selfCommand()} install --service`)}`);
   }
   try {
     const keys = createKeyStore(d.home).list();

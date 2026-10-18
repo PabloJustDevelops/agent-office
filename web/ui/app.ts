@@ -36,7 +36,10 @@ export interface Chrome {
   prime(): void;
 }
 
-const LOCKED_TIP = "Controls unlock when the office is opened from this computer's link";
+/** How to unlock, for the empty office. The page can't tell how the office was installed: npx works either way. */
+const LOCKED_HOW = "Locked in this browser: run npx theagentoffice open where the office runs (--print for a link to paste here)";
+/** The same, short enough for a toolbar tooltip or a toast. */
+const LOCKED_TIP = "Locked: run npx theagentoffice open to unlock";
 
 const REC_MS = 10_000;
 /** Height kept clear for the toast row under the top bar (desktop). */
@@ -519,7 +522,7 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
   function syncControl(): void {
     const state = store.likely;
     toolbar.setControl(state, LOCKED_TIP);
-    empty.setControl(state, LOCKED_TIP);
+    empty.setControl(state, LOCKED_HOW);
     const list = store.list();
     const live = list.filter((x) => x.status !== "exited" && x.status !== "failed");
     toolbar.setSessions(list.length, live.filter((x) => x.pendingApproval).length);
