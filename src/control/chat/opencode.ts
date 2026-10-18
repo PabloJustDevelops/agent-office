@@ -5,20 +5,28 @@
  * the TUI shows everything too. In the TUI the first answer wins: an
  * approval answered there arrives as permission.replied and closes here.
  *
- *   events  GET /event: message.updated (roles), message.part.updated /
- *           message.part.delta (text and tool parts), session.status /
- *           session.idle, session.error, permission.updated (v1) /
- *           permission.asked (v2), permission.replied, session.created and
- *           tui.session.select (which session the TUI shows)
+ *   events  GET /event: message.updated (roles, an assistant message's
+ *           tokens), message.part.updated / message.part.delta (text and
+ *           tool parts: a tool's input, state.time, output / error),
+ *           session.status / session.idle, session.error,
+ *           permission.updated (v1) / permission.asked (v2),
+ *           permission.replied, session.created and tui.session.select
+ *           (which session the TUI shows)
+ *
+ * opencode has no turn id and no queue of its own here: the office holds a
+ * prompt sent mid-turn (ChatItem.queued) and sends it when the session goes
+ * idle, so everything between a prompt and that idle is its turn
+ * (ChatItem.turnId). An interrupt drops what it holds.
  */
-import type { Approval, ApprovalAnswer, PermissionMode } from "../../shared/control.ts";
+import type { Approval, ApprovalAnswer, ChatItem, PermissionMode } from "../../shared/control.ts";
 import type { ToolCategory } from "../../shared/events.ts";
 import { categorize } from "../../ingest/categories.ts";
 import { shellCategory, shellSummary, toolSummary } from "../../ingest/redact.ts";
 import { approvalDetail, ApprovalQueue } from "../approvals.ts";
 import type { OpencodeClient, OpencodeEvent } from "../opencode-api.ts";
 import { ControlError, type PipeProc } from "../types.ts";
-import { APPROVAL_TEXT, approvalItem, ChatBase, endGracefully, shortReason, tailOf } from "./common.ts";
+import { APPROVAL_TEXT, approvalItem, ChatBase, endGracefully, num, outputTail, shortReason, tailOf, type TurnEnd } from "./common.ts";
+import { addChange, applyPatchChanges, chatDiff, replaceChange, type FileChange } from "./diff.ts";
 
 export interface OpencodeChatOptions {
   client: OpencodeClient;
@@ -55,15 +63,72 @@ export function opencodeLabel(tool: string, input: Record<string, any>): { categ
   };
 }
 
+/** An edit tool's change, from its input: edit / multiedit / write / apply_patch (patch). */
+function opencodeChanges(tool: string, input: Record<string, any>, metadata: Record<string, any>): FileChange[] | undefined {
+  const file = typeof input.filePath === "string" ? input.filePath : typeof input.path === "string" ? input.path : undefined;
+  switch (tool) {
+    case "edit":
+      return file ? [replaceChange(file, [{ old: input.oldString, new: input.newString }])] : undefined;
+    case "multiedit":
+      return file && Array.isArray(input.edits) ? [replaceChange(file, input.edits.map((e: any) => ({ old: e?.oldString, new: e?.newString })))] : undefined;
+    case "write":
+      // Only a file it created: over an existing one, what it replaced isn't in the input.
+      return file && metadata.exists === false ? [addChange(file, input.content)] : undefined;
+    case "apply_patch":
+    case "patch":
+      return applyPatchChanges(input.patchText);
+    default:
+      return undefined;
+  }
+}
+
+/** opencode's own token total for a message (its `total`, else the sum of its parts). */
+function messageTokens(t: any): number | undefined {
+  if (!t || typeof t !== "object") return undefined;
+  const total = num(t.total);
+  if (total !== undefined) return total;
+  const parts = [t.input, t.output, t.reasoning, t.cache?.read, t.cache?.write].map(num);
+  return parts.some((x) => x !== undefined) ? parts.reduce<number>((a, b) => a + (b ?? 0), 0) : undefined;
+}
+
+interface Turn {
+  id: string;
+  t0: number;
+  /** How it ended, if opencode said before going idle (an abort, an error). */
+  end?: TurnEnd;
+}
+
+interface Waiting {
+  text: string;
+  item: ChatItem;
+  turnId: string;
+}
+
+interface Tool {
+  tool: string;
+  category: ToolCategory;
+  summary: string;
+  turnId?: string;
+  t0: number;
+  /** The latest non-empty input (a completed state may repeat it or not). */
+  input: Record<string, any>;
+}
+
 export class OpencodeChat extends ChatBase {
-  private readonly queue = new ApprovalQueue<{ sessionId: string }>();
+  private readonly queue = new ApprovalQueue<{ sessionId: string; turnId?: string }>();
   private readonly stderr = tailOf();
   private readonly roles = new Map<string, string>();
   /** Text parts seen before their message's role. */
   private readonly unrouted = new Map<string, { messageId: string; text: string }>();
   private readonly texts = new Map<string, string>();
-  private readonly tools = new Map<string, { tool: string; category: ToolCategory; summary: string }>();
-  private readonly backlog: string[] = [];
+  private readonly tools = new Map<string, Tool>();
+  private readonly backlog: Waiting[] = [];
+  /** Prompts an interrupt took out of the backlog: said so once the turn ends. */
+  private dropped: ChatItem[] = [];
+  private cur: Turn | undefined;
+  /** Assistant message id -> its turn and latest token total. */
+  private readonly msgTokens = new Map<string, { turnId: string; tokens: number }>();
+  private cwd: string | undefined;
   private stream_: { close(): void } | undefined;
   private stopping = false;
   readonly ready: Promise<void>;
@@ -77,7 +142,9 @@ export class OpencodeChat extends ChatBase {
       o.proc.onExit((e) => {
         this.stream_?.close();
         this.queue.drain();
-        if (!this.stopping && this.isBusy) this.system("opencode exited.", "error");
+        if (!this.stopping && this.isBusy) this.system("opencode exited.", "error", this.cur ? { turnId: this.cur.id, turnEnd: true } : {});
+        this.dropQueued(this.dropped.splice(0));
+        this.dropQueued(this.backlog.splice(0).map((w) => w.item), "Not sent: opencode exited.");
         this.finished(e);
       });
     }
@@ -115,26 +182,48 @@ export class OpencodeChat extends ChatBase {
   async send(text: string): Promise<void> {
     await this.ready;
     if (!this.sessionId) throw new ControlError(409, "opencode has no session yet.");
-    this.user(text);
-    if (this.isBusy) {
-      this.backlog.push(text);
+    const turnId = this.newTurnId();
+    const queued = this.isBusy;
+    const item = this.user(text, { turnId, queued });
+    if (queued) {
+      this.backlog.push({ text, item, turnId });
       return;
     }
-    await this.prompt(text);
+    await this.prompt({ text, item, turnId }, false);
   }
 
-  private async prompt(text: string): Promise<void> {
+  private async prompt(w: Waiting, queued: boolean): Promise<void> {
     this.setBusy(true);
+    const t: Turn = { id: w.turnId, t0: this.now() };
+    this.cur = t;
+    if (queued) this.unqueue(w.item);
     try {
-      await this.o.client.promptAsync(this.sessionId!, text, this.o.permission === "plan" ? "plan" : undefined);
+      await this.o.client.promptAsync(this.sessionId!, w.text, this.o.permission === "plan" ? "plan" : undefined);
     } catch (err) {
-      this.system(shortReason((err as Error).message || "opencode refused the prompt."), "error");
-      this.setBusy(false);
+      if (this.cur !== t) return;
+      this.endTurn(t.id, { kind: "error", text: shortReason((err as Error).message || "opencode refused the prompt."), durationMs: this.now() - t.t0 });
+      this.turnDone();
     }
+  }
+
+  /** The turn new items belong to; in terminal mode one the TUI started has an id of its own. */
+  private turn(): Turn | undefined {
+    if (!this.cur && this.isBusy) this.cur = { id: this.newTurnId(), t0: this.now() };
+    return this.cur;
+  }
+
+  /** The running turn is over: the next held prompt, if any, gets its turn. */
+  private turnDone(): void {
+    this.cur = undefined;
+    this.setBusy(false);
+    this.dropQueued(this.dropped.splice(0));
+    const w = this.backlog.shift();
+    if (w) void this.prompt(w, true);
   }
 
   async interrupt(): Promise<void> {
-    this.backlog.length = 0;
+    this.dropped.push(...this.backlog.splice(0).map((w) => w.item));
+    if (!this.isBusy) this.dropQueued(this.dropped.splice(0));
     if (!this.sessionId) return;
     await this.o.client.abort(this.sessionId).catch(() => {});
   }
@@ -144,7 +233,7 @@ export class OpencodeChat extends ChatBase {
     if (!p) throw new ControlError(409, "That approval is no longer open.");
     const response = a.decision === "allow" ? (a.always ? "always" : "once") : "reject";
     await this.o.client.replyPermission(p.meta.sessionId, a.id, response);
-    if (this.queue.drop(a.id)) this.put(approvalItem(p.approval, response === "reject" ? APPROVAL_TEXT.denied : response === "always" ? APPROVAL_TEXT.always : APPROVAL_TEXT.allowed));
+    if (this.queue.drop(a.id)) this.put(approvalItem(p.approval, response === "reject" ? APPROVAL_TEXT.denied : response === "always" ? APPROVAL_TEXT.always : APPROVAL_TEXT.allowed, p.meta.turnId));
   }
 
   async stop(): Promise<void> {
@@ -181,6 +270,16 @@ export class OpencodeChat extends ChatBase {
         if (typeof info.id !== "string" || typeof info.role !== "string") return;
         this.roles.set(info.id, info.role);
         if (this.roles.size > 500) this.roles.delete(this.roles.keys().next().value!);
+        const mine = info.role === "assistant" && this.ours(info.sessionID);
+        // An assistant message names the folder it works in: diff file names are relative to it.
+        if (mine && typeof info.path?.cwd === "string") this.cwd = info.path.cwd;
+        const tokens = mine ? messageTokens(info.tokens) : undefined;
+        if (tokens !== undefined) {
+          // A message counts toward the turn it was first seen in.
+          const turnId = this.msgTokens.get(info.id)?.turnId ?? this.turn()?.id;
+          if (turnId) this.msgTokens.set(info.id, { turnId, tokens });
+          if (this.msgTokens.size > 500) this.msgTokens.delete(this.msgTokens.keys().next().value!);
+        }
         for (const [partId, u] of this.unrouted) {
           if (u.messageId !== info.id) continue;
           this.unrouted.delete(partId);
@@ -219,8 +318,10 @@ export class OpencodeChat extends ChatBase {
       case "session.error": {
         if (p.sessionID && !this.ours(p.sessionID)) return;
         const name = p.error?.name;
-        if (name === "MessageAbortedError") this.system("Interrupted.");
-        else this.system(shortReason(p.error?.data?.message || name || "opencode reported an error."), "error");
+        const end: TurnEnd = name === "MessageAbortedError" ? { text: "Interrupted." } : { kind: "error", text: shortReason(p.error?.data?.message || name || "opencode reported an error.") };
+        // The idle that follows closes the turn, on this item.
+        if (this.cur && this.isBusy) this.cur.end = end;
+        else this.system(end.text!, end.kind ?? "system");
         return;
       }
       case "permission.updated":
@@ -243,24 +344,35 @@ export class OpencodeChat extends ChatBase {
     this.texts.set(id, text);
     if (this.texts.size > 200) this.texts.delete(this.texts.keys().next().value!);
     if (!text.trim()) return;
-    const item = { id, kind: "assistant" as const, text, at: this.iso() };
-    if (final) this.put(item);
+    const turnId = this.turn()?.id;
+    const item = { id, kind: "assistant" as const, text, ...(turnId ? { turnId } : {}), at: this.iso() };
+    if (final) this.put({ ...item, streaming: false });
     else this.stream(item);
   }
 
   private tool(part: any): void {
     const id = `t-${part.callID ?? part.id}`;
     const st = part.state ?? {};
-    let label = this.tools.get(id);
-    if (!label || (st.input && Object.keys(st.input).length)) {
+    const input: Record<string, any> = st.input && typeof st.input === "object" ? st.input : {};
+    let t = this.tools.get(id);
+    if (!t || Object.keys(input).length) {
       const tool = typeof part.tool === "string" ? part.tool : "tool";
-      label = { tool, ...opencodeLabel(tool, st.input ?? {}) };
-      this.tools.set(id, label);
+      t = { tool, ...opencodeLabel(tool, input), turnId: t?.turnId ?? this.turn()?.id, t0: t?.t0 ?? this.now(), input: Object.keys(input).length ? input : t?.input ?? {} };
+      this.tools.set(id, t);
       if (this.tools.size > 500) this.tools.delete(this.tools.keys().next().value!);
     }
     const status = st.status === "completed" ? "ok" : st.status === "error" ? "error" : "running";
-    this.put({ id, kind: "tool", ...label, status, at: this.iso() });
-    if (status !== "running") this.tools.delete(id);
+    const base = { id, kind: "tool" as const, tool: t.tool, category: t.category, summary: t.summary, ...(t.turnId ? { turnId: t.turnId } : {}) };
+    if (status === "running") return this.put({ ...base, status, at: this.iso() });
+    this.tools.delete(id);
+    // opencode stamps a tool's start and end (ms); failing that, as seen here.
+    const start = num(st.time?.start), end = num(st.time?.end);
+    const durationMs = start !== undefined && end !== undefined ? end - start : this.now() - t.t0;
+    // Output of shell commands that aren't reads or searches (whose output is file contents), and a failure's error.
+    const detail = status === "error" ? outputTail(st.error, this.o.home) : SHELLS.has(t.tool) && t.category === "bash" ? outputTail(st.output, this.o.home) : undefined;
+    const changes = status === "ok" ? opencodeChanges(t.tool, t.input, st.metadata && typeof st.metadata === "object" ? st.metadata : {}) : undefined;
+    const diff = changes ? chatDiff(changes, { cwd: this.cwd, home: this.o.home }) : undefined;
+    this.put({ ...base, status, ...(durationMs >= 0 ? { durationMs } : {}), ...(detail ? { detail } : {}), ...(diff ? { diff } : {}), at: this.iso() });
   }
 
   private ask(p: any): void {
@@ -284,16 +396,22 @@ export class OpencodeChat extends ChatBase {
       return;
     }
     if (this.queue.get(p.id)) return;
-    this.queue.add(approval, { sessionId: p.sessionID });
-    this.put(approvalItem(approval, APPROVAL_TEXT.open));
+    const turnId = this.ours(p.sessionID) ? this.turn()?.id : undefined;
+    this.queue.add(approval, { sessionId: p.sessionID, turnId });
+    this.put(approvalItem(approval, APPROVAL_TEXT.open, turnId));
   }
 
   private idle(): void {
     if (!this.isBusy) return;
-    for (const [id, t] of this.tools) this.put({ id, kind: "tool", ...t, status: "error", at: this.iso() });
+    for (const [id, t] of this.tools) this.put({ id, kind: "tool", tool: t.tool, category: t.category, summary: t.summary, ...(t.turnId ? { turnId: t.turnId } : {}), status: "error", at: this.iso() });
     this.tools.clear();
-    this.setBusy(false);
-    const t = this.backlog.shift();
-    if (t !== undefined) void this.prompt(t);
+    this.settle();
+    const t = this.cur;
+    if (t) {
+      let tokens: number | undefined;
+      for (const m of this.msgTokens.values()) if (m.turnId === t.id) tokens = (tokens ?? 0) + m.tokens;
+      this.endTurn(t.id, { ...t.end, durationMs: this.now() - t.t0, tokens });
+    }
+    this.turnDone();
   }
 }
