@@ -75,3 +75,18 @@ export function splitMood(s: string | undefined | null): { emoji: string; text: 
   const m = /^(\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic}|\p{Emoji_Modifier})*|\p{Regional_Indicator}{2})\s*/u.exec(v);
   return m ? { emoji: m[1], text: v.slice(m[0].length).trim() } : { emoji: "", text: v };
 }
+
+/** "5 interns · fork ×4 · general-purpose", shortened to "… · +2" past `maxChars`. */
+export function internSummary(roles: string[], maxChars: number): string {
+  const counts = new Map<string, number>();
+  for (const r of roles) counts.set(r, (counts.get(r) ?? 0) + 1);
+  const parts = [...counts].sort((a, b) => b[1] - a[1]).map(([r, n]) => (n > 1 ? `${r} ×${n}` : r));
+  let out = `${roles.length} interns`;
+  for (let i = 0; i < parts.length; i++) {
+    const next = `${out} · ${parts[i]}`;
+    const more = parts.length - i - 1;
+    if ((more ? `${next} · +${more}` : next).length > maxChars) return `${out} · +${parts.length - i}`;
+    out = next;
+  }
+  return out;
+}

@@ -29,6 +29,8 @@ export interface Change {
   worker?: Worker;
   joined?: Worker;
   left?: Worker;
+  /** OfficeEvent.replaces: this worker took over `from` in place, history and all. */
+  renamed?: { from: string; to: string };
   /** a remote host went down or came back */
   hosts?: boolean;
 }
@@ -111,6 +113,18 @@ export class OfficeModel {
         // the notice is about the host, not a worker
         if (!this.workers.has(e.workerId)) return change;
       } else if (this.offline.delete(e.host.id) || !known) change.hosts = true;
+    }
+    if (e.kind === "session_start" && e.replaces && e.replaces !== e.workerId) {
+      const old = this.workers.get(e.replaces);
+      if (old) {
+        this.workers.delete(e.replaces);
+        if (!this.workers.has(e.workerId)) {
+          old.workerId = e.workerId;
+          this.workers.set(e.workerId, old);
+        }
+        for (const k of this.workers.values()) if (k.parentId === e.replaces) k.parentId = e.workerId;
+        change.renamed = { from: e.replaces, to: e.workerId };
+      }
     }
     const ending = e.kind === "session_end" || e.kind === "subagent_end";
     // A parent announcing its subagent (no parentId) must not spawn a worker.

@@ -11,8 +11,8 @@ import type { AgentKind, Host, OfficeEvent, Snapshot, ToolCategory, WorkerState 
 import { BRAND, HOST_BRAND, IDLE_MS } from "../../src/shared/events.ts";
 import { BRAND_ART, C, rgba, type ArtKey } from "./palette.ts";
 import {
-  Layout, WALL_H, CORRIDOR_Y, DESK_W, BENCH_GAP, SEAT_W, DESK_DY, POD_H, RUG_TOP,
-  routeFromSeat, routeToSeat, type Block, type Pt, type Seat,
+  Layout, WALL_H, CORRIDOR_Y, DESK_W, SEAT_W, LAPTOP_DX, DESK_DY, POD_H, RUG_TOP,
+  benchDX, routeFromSeat, routeToSeat, type Block, type Pt, type Seat,
 } from "./layout.ts";
 import { lookFor, silhouette, sprite, SPRITE_FOOT, SPRITE_W, type Dir, type Look, type Pose } from "./sprites.ts";
 import * as P from "./props.ts";
@@ -153,6 +153,8 @@ export class Crew {
   selected: string | null = null;
   hovered: string | null = null;
   private recentTools: number[] = [];
+  /** Interns whose bubble waits its turn this frame (see takeTurns). */
+  private hushed = new Set<string>();
   private lastPack = -1;
   private dimFurniture = false;
 
@@ -244,7 +246,6 @@ export class Crew {
       bornAt: now, lastEventAt: now, trinkets: P.trinketsFor(seed), nextFx: 0, fxStage: 0, leaveAt: 0, leaveRoute: [],
       tp: null, toSeat: false,
     };
-    if (seat.kind === "stand") { w.seated = false; w.stand = 1; }
     if (arrive && remote) {
       // beamed straight to the desk
       w.tp = { t0: now, out: false };
@@ -276,7 +277,6 @@ export class Crew {
     w.walking = false;
     w.toSeat = false;
     w.dir = "up";
-    if (w.seat.kind === "stand") { w.seated = false; w.stand = 1; return; }
     w.seated = true;
   }
 
@@ -297,6 +297,7 @@ export class Crew {
         if (!this.workers.has(e.workerId)) return;
       } else this.markOffline(e.host, e.agent, false);
     }
+    if (e.kind === "session_start" && e.replaces && e.replaces !== e.workerId) this.takeOver(e.replaces, e.workerId, now);
     let w = this.workers.get(e.workerId);
     if (e.kind === "tool_start") {
       this.board.tools++;
@@ -409,6 +410,25 @@ export class Crew {
         if (e.kind === "session_end") for (const k of this.workers.values()) if (k.parentId === w.id) this.leave(k, now);
         break;
     }
+  }
+
+  /**
+   * OfficeEvent.replaces: a hired worker ("ctl:<id>") or one seen launching
+   * ("proc:<pid>") becomes its real session in place. Same sprite, desk,
+   * selection and interns; no walk out and back in. If both already exist the
+   * placeholder simply leaves.
+   */
+  private takeOver(from: string, to: string, now: number) {
+    const w = this.workers.get(from);
+    if (!w) return;
+    if (this.workers.has(to)) { this.leave(w, now); return; }
+    this.workers.delete(from);
+    w.id = to;
+    this.workers.set(to, w);
+    this.layout.rename(from, to);
+    for (const k of this.workers.values()) if (k.parentId === from) k.parentId = to;
+    if (this.selected === from) this.selected = to;
+    if (this.hovered === from) this.hovered = to;
   }
 
   private parentPoints(parentId: string, now: number) {
@@ -570,7 +590,7 @@ export class Crew {
       if (w.walking) this.step(w, s);
       const standing = w.walking || !w.seated || w.act === "waiting" || (w.show && w.show.kind !== "alarm" && this.showStanding(w, now));
       w.stand = clamp(w.stand + (standing ? 1 : -1) * s * 6, 0, 1);
-      if (!w.walking && (w.seated || (w.seat.kind === "stand" && !w.path.length && !w.leaving))) {
+      if (!w.walking && w.seated) {
         w.x = w.seat.x;
         w.y = w.seat.y + (w.seated ? w.stand * 4 : 0);
       }
@@ -643,7 +663,7 @@ export class Crew {
         return;
       case "idle": {
         const mug = w.seat.kind === "main" ? w.seat.deskX + 3 : w.seat.x + 6;
-        if (w.seat.kind !== "stand") this.fx.steam(mug, w.seat.deskY - 4);
+        this.fx.steam(mug, w.seat.deskY - 4);
         if (now - w.actSince > SLEEP_AFTER && w.seated) this.fx.zzz(w.x + 4, w.y - 24);
         w.nextFx = now + (now - w.actSince > SLEEP_AFTER ? 1100 : 380);
         return;
@@ -746,12 +766,37 @@ export class Crew {
     this.dimFurniture = asciiPass;
     // ASCII stamps furniture as box-drawing glyphs (figures.ts); only rugs are sampled
     if (asciiPass) return;
+    this.takeTurns(now);
     for (const b of this.layout.blocks.values()) this.drawBlock(out, b, now);
     for (const w of this.workers.values()) {
       const y = w.y;
       out.push({ y: y + (w.walking ? 0.2 : 0), fn: (g) => this.drawWorker(g, w, now) });
       if (!w.walking && !w.gone) over.push({ y, fn: (g) => this.drawOverhead(g, w, now) });
       if (w.tp) over.push({ y: y + 0.1, fn: (g) => this.drawBeam(g, w, now) });
+    }
+  }
+
+  /**
+   * Interns in one pod saying the same kind of thing at once (all thinking, all
+   * replying) take turns: one bubble per kind per pod at a time, rotating, so a
+   * busy bench reads as a conversation instead of a row of identical bubbles.
+   */
+  private takeTurns(now: number) {
+    this.hushed.clear();
+    const groups = new Map<string, Worker[]>();
+    for (const w of this.workers.values()) {
+      if (!w.intern || w.leaving || w.walking || !w.seated || w.stand > 0.5 || w.mood) continue;
+      if (w.act !== "thinking" && w.act !== "reply") continue;
+      const k = `${w.seat.block.key}|${w.act}`;
+      const g = groups.get(k);
+      if (g) g.push(w);
+      else groups.set(k, [w]);
+    }
+    for (const [k, g] of groups) {
+      if (g.length < 2) continue;
+      g.sort((a, b) => a.seat.x - b.seat.x);
+      const turn = Math.floor(now / 1400 + (hash(k) % 5)) % g.length;
+      g.forEach((w, i) => { if (i !== turn) this.hushed.add(w.id); });
     }
   }
 
@@ -770,9 +815,14 @@ export class Crew {
     for (const st of b.stations) {
       const dx = Math.round(b.x + st.x);
       const dy = Math.round(b.y) + DESK_DY;
-      const occ = this.occupant(st.main);
       // In a pod two agents share, each desk is in its own agent's colours.
       const key = b.zone === "local" && st.agent && st.agent !== b.agent ? (st.agent as ArtKey) : podKey;
+      if (st.hot) {
+        // a shared hot desk: just the bench, its laptops and stools
+        this.pushBench(out, wrap, st, key, b.agent, dx, dy, now);
+        continue;
+      }
+      const occ = this.occupant(st.main);
       const seated = occ && occ.seated && !occ.leaving && !occ.walking;
       const flipping = occ?.show?.kind === "flip" ? occ : undefined;
       if (flipping) {
@@ -787,16 +837,7 @@ export class Crew {
       const sx = dx + DESK_W / 2 + chairOff, sy = dy + 26;
       const badge = b.zone === "cloud" && occ && !occ.leaving ? occ.agent : null;
       out.push({ y: sy + 0.5, fn: wrap((g) => { P.chair(g, sx, sy, key, !(seated && occ!.stand < 0.5)); if (badge) P.chairBadge(g, sx, sy, badge); }) });
-      if (st.seats > 0) {
-        const bx = dx + DESK_W + BENCH_GAP;
-        const occs = st.interns.slice(0, st.seats).map((id) => this.occupant(id));
-        const n = st.seats;
-        out.push({ y: dy + 15, fn: wrap((g) => this.drawBench(g, key, b.agent, bx, dy, n, occs, now)) });
-        for (let k = 0; k < n; k++) {
-          const ix = bx + 7 + k * SEAT_W, iy = dy + 25;
-          out.push({ y: iy + 0.5, fn: wrap((g) => P.stool(g, ix, iy, key)) });
-        }
-      }
+      if (st.seats > 0) this.pushBench(out, wrap, st, key, b.agent, dx, dy, now);
     }
     const col = b.zone === "cloud" && b.host && b.host.kind !== "local" ? brandInkHost(b) : brandInk(b.agent);
     for (const pr of podProps(b)) {
@@ -910,13 +951,25 @@ export class Crew {
     g.restore();
   }
 
-  private drawBench(g: CanvasRenderingContext2D, key: ArtKey, agent: AgentKind, x: number, y: number, seats: number, occ: (Worker | undefined)[], now: number) {
-    const b = P.benchBody(key, seats);
+  /** A station's intern bench (or a hot desk) and its stools, into the y-sorted pass. */
+  private pushBench(out: DrawCall[], wrap: (fn: (g: CanvasRenderingContext2D) => void) => (g: CanvasRenderingContext2D) => void, st: Block["stations"][number], key: ArtKey, agent: AgentKind, dx: number, dy: number, now: number) {
+    const bx = dx + benchDX(st);
+    const n = Math.max(1, st.seats);
+    const occs = st.interns.slice(0, n).map((id) => this.occupant(id));
+    out.push({ y: dy + 15, fn: wrap((g) => this.drawBench(g, key, agent, bx, dy, n, occs, now, !!st.hot)) });
+    for (let k = 0; k < n; k++) {
+      const ix = bx + (SEAT_W >> 1) + k * SEAT_W, iy = dy + 25;
+      out.push({ y: iy + 0.5, fn: wrap((g) => P.stool(g, ix, iy, key)) });
+    }
+  }
+
+  private drawBench(g: CanvasRenderingContext2D, key: ArtKey, agent: AgentKind, x: number, y: number, seats: number, occ: (Worker | undefined)[], now: number, hot = false) {
+    const b = P.benchBody(key, seats, hot);
     P.floorShadow(g, x, y + 15, b.w, 5);
     g.drawImage(b.c, x, y);
     for (let k = 0; k < seats; k++) {
       const o = occ[k];
-      const lx = x + 2 + k * SEAT_W, ly = y - 4;
+      const lx = x + LAPTOP_DX + k * SEAT_W, ly = y - 4;
       P.laptop(g, lx, ly, key);
       const on = o && !o.leaving && (o.seated || o.stand > 0);
       P.drawScreen(g, lx + 1, ly + 1, 8, 5, on ? this.screenOf(o, now) : "off", o?.agent ?? agent, now, o?.seed ?? 3);
@@ -1027,9 +1080,11 @@ export class Crew {
       const ink = (BRAND_ART[w.agent] ?? BRAND_ART.claude).ink;
       const dark = ink === C.cc9 || ink === C.cu9;
       const a = g.globalAlpha;
-      P.ping(g, h.x + 8, h.y - 10, now, ink);
+      // beside the head, off the monitor: the screen keeps showing what the agent last did
+      const bx = h.x + 8, by = h.y - 7;
+      P.ping(g, bx + 4, by + 5, now, ink);
       g.globalAlpha = a;
-      P.alertBubble(g, h.x + 4, h.y - 16, ink, dark ? C.ink : C.white, now);
+      P.alertBubble(g, bx, by, ink, dark ? C.ink : C.white, now);
       return;
     }
     if (now - w.shoutAt < SHOUT_ICON_MS) {
@@ -1041,10 +1096,10 @@ export class Crew {
     const main = w.seat.kind === "main";
     switch (w.act) {
       case "thinking":
-        if (!w.mood) P.thoughtBubble(g, h.x + 3, h.y - 17, now, brandInk(w.agent));
+        if (!w.mood && !this.hushed.has(w.id)) P.thoughtBubble(g, h.x + 3, h.y - 17, now, brandInk(w.agent));
         break;
       case "reply":
-        if (!w.mood) P.speechBubble(g, h.x + 4, h.y - 13, now, brandInk(w.agent));
+        if (!w.mood && !this.hushed.has(w.id)) P.speechBubble(g, h.x + 4, h.y - 13, now, brandInk(w.agent));
         break;
       case "search": {
         const sweep = Math.sin(now * 0.004 + w.seed) * (main ? 7 : 3);

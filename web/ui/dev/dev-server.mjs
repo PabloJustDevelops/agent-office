@@ -5,7 +5,17 @@
  * synthetic office over GET /events. Nothing here touches real transcripts.
  *
  *   node web/ui/dev/dev-server.mjs --out /tmp/ui-dev [--port 4399]
- *        [--scenario busy|cloud|empty|demo|quiet|hostile] [--seed 7] [--rate 450]
+ *        [--scenario busy|cloud|empty|demo|quiet|hostile|crowded|control] [--seed 7] [--rate 450]
+ *        [--interns 5] [--control] [--locked]
+ *
+ * --scenario control (or --control with any scenario) serves the in-memory
+ * control plane from control-mock.mjs: Hire, session terminals and chats,
+ * approvals, keys, sandboxes, the service. --locked answers every control
+ * call with 401, like a browser that wasn't opened from the office's link.
+ * --scenario crowded is one Claude pod with a main worker and --interns N.
+ * Chat sessions play scripted turns (chat-scripts.mjs); --chat-speed 0.5 plays
+ * them twice as fast, --chat-bare strips the optional ChatItem fields so the
+ * page can be checked against the bare contract.
  *
  * --scenario cloud adds every agent kind, workers in Daytona / Vercel /
  * Railway / boat sandboxes and over ssh, one remote offline, and the agents'
@@ -19,6 +29,7 @@ import { cpSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { dirname, extname, join, resolve, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
+import { createControlMock } from "./control-mock.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const args = Object.fromEntries(
@@ -44,6 +55,7 @@ await build({
   loader: { ".svg": "text", ".css": "text" },
   logLevel: "warning",
 });
+const CONTROL = SCENARIO === "control" || !!args.control || !!args.locked;
 cpSync(join(ROOT, "web/index.html"), join(OUT, "index.html"));
 if (existsSync(join(ROOT, "assets"))) cpSync(join(ROOT, "assets"), join(OUT, "assets"), { recursive: true });
 
@@ -77,6 +89,16 @@ if (SCENARIO === "cloud") {
     { workerId: "r-boat", agent: "qwen", project: "ml-pipeline", cwd: "/home/ubuntu/ml-pipeline", model: "qwen3.5-coder", host: HOSTS.boat },
     { workerId: "r-ssh", agent: "claude", project: "dotfiles", cwd: "/home/shubham/dotfiles", model: "claude-sonnet-4-5", host: HOSTS.ssh },
   );
+}
+/* --scenario crowded: one Claude pod with a main worker and --interns N subagents (default 5), the owner's crunched-pod repro. */
+const CROWD = [];
+if (SCENARIO === "crowded") {
+  CAST.splice(2);
+  const main = { workerId: "w-codes", agent: "claude", project: "Codes", cwd: "/Users/dev/Codes", model: "claude-opus-4-5" };
+  CAST.push(main);
+  const roles = ["fork", "fork", "fork", "fork", "general-purpose", "Explore", "Plan", "code-reviewer", "fork", "test-runner", "Explore"];
+  const n = Number(args.interns ?? 5);
+  for (let i = 0; i < n; i++) CROWD.push({ workerId: `w-codes-sub${i}`, parentId: main.workerId, agent: "claude", project: "Codes", cwd: main.cwd, model: "claude-haiku-4-5", role: roles[i % roles.length] });
 }
 const MOODS = ["🧠 deep in the auth refactor", "🔥 shipping v2 tonight", "☕ waiting on CI", "🐛 hunting a flaky test"];
 const TOOLS = [
@@ -139,7 +161,8 @@ function fold(e) {
 
 if (SCENARIO !== "empty") {
   for (const c of CAST) workers.set(c.workerId, stateOf(c));
-  workers.set(INTERN.workerId, stateOf(INTERN));
+  if (SCENARIO !== "crowded") workers.set(INTERN.workerId, stateOf(INTERN));
+  for (const c of CROWD) workers.set(c.workerId, stateOf(c));
   for (const w of workers.values()) {
     w.toolCalls = Math.floor(20 + rand() * 300);
     w.tokens = Math.floor(30_000 + rand() * 900_000);
@@ -152,8 +175,8 @@ if (SCENARIO !== "empty") {
     fold(e);
     recent.push(e);
   }
-  recent.push(ev(INTERN, "subagent_start", {}, new Date(Date.now() - 9000).toISOString()));
-  recent.push(ev(CAST[3], "test_fail", { summary: "$ go test ./..." }, new Date(Date.now() - 6000).toISOString()));
+  if (SCENARIO !== "crowded") recent.push(ev(INTERN, "subagent_start", {}, new Date(Date.now() - 9000).toISOString()));
+  if (CAST[3]) recent.push(ev(CAST[3], "test_fail", { summary: "$ go test ./..." }, new Date(Date.now() - 6000).toISOString()));
   recent.push(ev(CAST[2], "waiting", {}, new Date(Date.now() - 3000).toISOString()));
   if (SCENARIO === "cloud") {
     workers.get("r-day").mood = MOODS[0];
@@ -172,11 +195,45 @@ function broadcast(e) {
   for (const res of clients) res.write(`event: office\ndata: ${JSON.stringify(e)}\n\n`);
 }
 
+/* the control mock's office events: workers come, are renamed in place (replaces), and go */
+function emitOffice(partial) {
+  const e = { seq: ++seq, ...partial };
+  if (e.kind === "session_start") {
+    const old = e.replaces && workers.get(e.replaces);
+    if (old) {
+      workers.delete(e.replaces);
+      workers.set(e.workerId, { ...old, workerId: e.workerId });
+    } else if (!workers.has(e.workerId)) {
+      workers.set(e.workerId, { workerId: e.workerId, agent: e.agent, project: e.project, host: e.host, cwd: e.cwd, model: e.model, status: "session_start", lastTs: e.ts, toolCalls: 0, tokens: 0, filesTouched: 0 });
+    }
+  }
+  broadcast(e);
+  if (e.kind === "session_end") workers.delete(e.workerId);
+}
+function emitControl(name, data) {
+  for (const res of clients) res.write(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+const control = CONTROL ? createControlMock({ locked: !!args.locked, empty: SCENARIO === "empty", emitControl, emitOffice, chatBare: !!args["chat-bare"], chatSpeed: Number(args["chat-speed"] ?? 1) || 1 }) : null;
+
 let tickN = 0;
-if (SCENARIO !== "empty" && SCENARIO !== "quiet") {
+if (SCENARIO === "crowded") {
+  // every intern talks at once, the main worker waits on its human, one intern runs gh
+  const main = workers.get("w-codes");
   setInterval(() => {
     tickN++;
-    const cast = [...workers.values()];
+    for (const c of CROWD) {
+      const w = workers.get(c.workerId);
+      if (c === CROWD[CROWD.length - 1]) broadcast(ev(w, "tool_start", { tool: "Bash", category: "bash", summary: "$ gh api" }));
+      else if (c === CROWD[CROWD.length - 2]) broadcast(ev(w, "tool_start", { tool: "WebFetch", category: "web", summary: "Fetch code.claude.com" }));
+      else broadcast(ev(w, tickN % 3 ? "reply" : "thinking", tickN % 3 ? { summary: "Here's what I found" } : {}));
+    }
+    if (tickN % 4 === 1) broadcast(ev(main, "waiting", {}));
+  }, 2500);
+} else if (SCENARIO !== "empty" && SCENARIO !== "quiet" && SCENARIO !== "crowded") {
+  setInterval(() => {
+    tickN++;
+    // workers the control mock hired act out their own scripts; random beats would contradict them
+    const cast = [...workers.values()].filter((w) => !/^(ctl:|sess-)/.test(w.workerId));
     if (!cast.length) return;
     // A scripted beat every so often so screenshots catch the big moments.
     if (tickN % 23 === 0) return broadcast(ev(pick(cast.filter((w) => !w.parentId)), "test_fail", { summary: "$ pnpm test" }));
@@ -200,11 +257,23 @@ if (SCENARIO !== "empty" && SCENARIO !== "quiet") {
 }
 
 /* ---- http ---- */
-const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+/* The same policy src/server/http.ts sends. Inline styles are allowed for
+ * xterm.js (the session terminal), whose DOM renderer injects <style>
+ * elements and colour style attributes; scripts stay 'self' only. */
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; media-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".map": "application/json", ".svg": "image/svg+xml", ".css": "text/css" };
 
-createServer((req, res) => {
+createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://localhost");
+  if (url.pathname.startsWith("/api/control")) {
+    if (!control) return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: "no control plane in this dev scenario" }));
+    if (await control.handle(req, res, url)) return;
+  }
+  if (url.pathname === "/__control" && control) {
+    const ok = control.poke(url.searchParams.get("do") ?? "", url.searchParams.get("mode") ?? undefined);
+    res.writeHead(204, { "x-poked": String(ok) }).end();
+    return;
+  }
   if (url.pathname === "/__emit") {
     const w = workers.get(url.searchParams.get("worker") ?? "") ?? [...workers.values()][0];
     const extra = {};
@@ -215,7 +284,7 @@ createServer((req, res) => {
   }
   if (url.pathname === "/events") {
     res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-store", connection: "keep-alive" });
-    const snapshot = { version: 1, startedAt: now(), demo: SCENARIO === "demo", workers: [...workers.values()], recent: recent.slice(-200) };
+    const snapshot = { version: 1, startedAt: now(), demo: SCENARIO === "demo", workers: [...workers.values()], recent: recent.slice(-200), control: CONTROL ? (args.locked ? "locked" : "enabled") : "off" };
     res.write(`event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n`);
     clients.add(res);
     const ping = setInterval(() => res.write(": ping\n\n"), 15_000);

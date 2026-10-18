@@ -678,7 +678,7 @@ export function drawLive(g: CanvasRenderingContext2D, p: RoomPlan, t: number, no
   if (p.sign) neonSign(g, p.sign, t, ascii);
   else {
     // no wall for the neon: the command on a small plate under the TV
-    const m = MICRO(), cmd = "NPX AGENTOFFICE";
+    const m = MICRO(), cmd = "NPX THEAGENTOFFICE";
     const w = measure(m, cmd) + 6, x = p.tv.x + Math.floor((p.tv.w - w) / 2), y = p.tv.y + p.tv.h + 7;
     r(g, x, y, w, 9, C.ink);
     drawText(g, m, cmd, x + 3, y + 2, ascii ? C.slate5 : "#7ef6ff");

@@ -186,6 +186,7 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
       // a warm pendant pool over every desk, and one soft wash over the pod
       L.push({ x: bx + b.w / 2, y: by + 46, r: Math.max(56, b.w * 0.62), cut: 0.32 * night, color: C.gold2, glow: (b.agent === "commandcode" || b.agent === "cursor" ? 0.035 : 0.06) * night, flat: 0.55 });
       for (const st of b.stations) {
+        if (st.hot) continue;
         L.push({ x: bx + Math.round(st.x) + DESK_W / 2, y: by + DESK_DY + 14, r: 34, cut: 0.42 * night, color: C.gold3, glow: 0.07 * night, flat: 0.6 });
       }
     }
@@ -470,7 +471,9 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
         pulseAt = performance.now();
       }
     });
-    if (!cut && cam.mode === "auto" && clock - lastCut > (director ? 5000 : 7000)) {
+    // a side panel is open (inspector, session, settings): no punch-ins on other people's moments
+    const panelOpen = !director && (cam.overlay.left > 0 || cam.overlay.right > 0 || cam.overlay.bottom > 0);
+    if (!cut && cam.mode === "auto" && !panelOpen && clock - lastCut > (director ? 5000 : 7000)) {
       const c = nextCut();
       if (c) {
         cut = c;
@@ -479,7 +482,7 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
         captionShown = { text: R.asciiOnly(c.caption.replace(/—/g, "-")), agent: crew.workers.get(c.id)?.agent ?? "claude" };
       }
     }
-    if (cut && (cam.mode !== "auto" || clock > cut.until || !crew.workers.has(cut.id))) cut = null;
+    if (cut && (cam.mode !== "auto" || panelOpen || clock > cut.until || !crew.workers.has(cut.id))) cut = null;
     bars = clamp(bars + (cut && director ? 1 : -1) * dt / 350, 0, 1);
     cat.update(dt, clock, crew.layout.main, [...crew.layout.blocks.values()]);
     // camera
@@ -741,7 +744,11 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
       if (crew.selected && !crew.workers.has(crew.selected)) crew.selected = null;
     },
     apply(event: OfficeEvent) {
+      const was = event.replaces;
       crew.apply(event);
+      // a hired worker renamed to its real session: the camera keeps following it
+      if (was && cam.followId === was && crew.workers.has(event.workerId)) cam.followId = event.workerId;
+      if (was && cut?.id === was) cut = { ...cut, id: event.workerId };
     },
     setMode(m: RenderMode) {
       if (m === mode) return;

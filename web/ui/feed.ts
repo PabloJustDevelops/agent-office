@@ -30,6 +30,8 @@ export interface Feed {
   reset(events: OfficeEvent[], model: OfficeModel): void;
   push(e: OfficeEvent, model: OfficeModel): void;
   highlight(workerId: string | null): void;
+  /** OfficeEvent.replaces: rows of `from` now belong to `to`. */
+  rename(from: string, to: string): void;
   setOpen(open: boolean): void;
   isOpen(): boolean;
   tick(now: number): void;
@@ -127,19 +129,20 @@ export function createFeed(opts: { onPick(workerId: string): void; onToggle(): v
     if (intern && e.kind !== "subagent_start") top.append(h("span", { class: "chip chip-intern", text: "intern" }));
     if (line.tag) top.append(h("span", { class: `chip chip-${line.tone}`, text: line.tag }));
     top.append(countEl, agoEl);
+    const meta = { workerId: e.workerId };
     const btn = h(
       "button",
       {
         class: "row-btn",
         attrs: { type: "button", "aria-label": `${agentName(e.agent)}, ${who}: ${line.text}` },
-        on: { click: () => opts.onPick(e.workerId) },
+        on: { click: () => opts.onPick(meta.workerId) },
       },
       logo(e.agent, "row-logo"),
       h("span", { class: "row-main" }, top, h("span", { class: "row-what" }, glyph(line.glyph, 2), h("span", { class: "what", text: line.text }))),
     );
     const li = h("li", { class: `row tone-${line.tone}${animate ? " enter" : ""}${e.workerId === selected ? " is-selected" : ""}`, attrs: { "data-agent": e.agent } }, btn);
     if (animate) li.addEventListener("animationend", () => li.classList.remove("enter"), { once: true });
-    return { el: li, workerId: e.workerId, key: `${e.workerId}|${e.kind}|${line.text}`, ts, count: 1, agoEl, countEl };
+    return Object.assign(meta, { el: li, key: `${e.workerId}|${e.kind}|${line.text}`, ts, count: 1, agoEl, countEl });
   }
 
   function add(e: OfficeEvent, model: OfficeModel, animate: boolean): boolean {
@@ -197,6 +200,14 @@ export function createFeed(opts: { onPick(workerId: string): void; onToggle(): v
         unread++;
         setText(badge, unread > 99 ? "99+" : String(unread));
         tab.classList.add("has-unread");
+      }
+    },
+    rename(from, to) {
+      for (const r of rows) {
+        if (r.workerId !== from) continue;
+        r.workerId = to;
+        r.key = to + r.key.slice(from.length);
+        r.el.classList.toggle("is-selected", selected === to);
       }
     },
     highlight(id) {

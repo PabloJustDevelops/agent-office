@@ -6,20 +6,8 @@ import css from "./ui/styles.css";
 import { createOfficeScene } from "./scene/index.ts";
 import { mountChrome } from "./ui/app.ts";
 import { connect } from "./ui/connection.ts";
-
-/* A constructed stylesheet is not inline CSS, so a strict CSP (no
- * 'unsafe-inline' for styles) still lets it apply. <style> is the fallback. */
-function injectStyles(text: string): void {
-  try {
-    const sheet = new CSSStyleSheet();
-    sheet.replaceSync(text);
-    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-  } catch {
-    const style = document.createElement("style");
-    style.textContent = text;
-    document.head.append(style);
-  }
-}
+import { eventsUrl, redeemUnlock } from "./ui/control/token.ts";
+import { adoptCss } from "./ui/dom.ts";
 
 function mountPoint(id: string): HTMLElement {
   let el = document.getElementById(id);
@@ -31,12 +19,16 @@ function mountPoint(id: string): HTMLElement {
   return el;
 }
 
-injectStyles(css);
+adoptCss(css);
 const scene = createOfficeScene(mountPoint("office"));
 const chrome = mountChrome(mountPoint("chrome"), scene);
 
-connect("/events", {
-  snapshot: (s) => chrome.load(s),
-  event: (e) => chrome.apply(e),
-  state: (s, retryInMs) => chrome.connection(s, retryInMs),
-});
+// Fresh from /unlock: the token first, so the very first snapshot already says "enabled".
+void redeemUnlock().finally(() =>
+  connect(() => eventsUrl(), {
+    snapshot: (s) => chrome.load(s),
+    event: (e) => chrome.apply(e),
+    state: (s, retryInMs) => chrome.connection(s, retryInMs),
+    control: (name, data) => chrome.control(name, data),
+  }),
+);

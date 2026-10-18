@@ -144,7 +144,15 @@ export class RailwayBudget {
   }
 }
 
-export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBudget } = {}): Provider {
+/** A sandbox the control plane already knows (its own record, or a listing): enough to exec in it. */
+export interface RailwaySandboxRef {
+  id: string;
+  environmentId: string;
+  projectId: string;
+  name: string;
+}
+
+export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBudget } = {}): Provider & { targetFor(box: RailwaySandboxRef): RemoteTarget } {
   const env = o.env ?? process.env;
   const budget = o.budget ?? new RailwayBudget(o.now);
   const timeoutMs = o.timeoutMs ?? 20_000;
@@ -372,6 +380,7 @@ export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBud
   }
 
   return {
+    targetFor: (box: RailwaySandboxRef) => targetFor({ ...box, projectName: box.name }),
     kind: "railway",
     label: "Railway",
     keepsAwake: true,
@@ -409,6 +418,7 @@ export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBud
         }
         hit.d.idleStopMin = typeof s.idleTimeoutMinutes === "number" ? s.idleTimeoutMinutes : 30;
         hit.d.pollMs = budget.pollMs(running);
+        hit.d.meta = { projectId: e.projectId, environmentId: e.environmentId };
         out.push(hit.d);
       }
       for (const id of [...cache.keys()]) if (!seen.has(id)) cache.delete(id);

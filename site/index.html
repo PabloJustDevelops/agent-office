@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0a13">
+  <title>agent office · your coding agents, working in a pixel office</title>
+  <meta name="description" content="npx theagentoffice turns the transcripts your coding agents already write into a live pixel-art office. Every session is a worker at a desk, and a failing test flips the table. Local only, nothing to configure.">
+  <link rel="canonical" href="{{url}}">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="agent office">
+  <meta property="og:title" content="agent office: your coding agents, working in a pixel office">
+  <meta property="og:description" content="Claude Code, Codex, Command Code and five more agents in a live pixel-art office, on this machine or in Daytona, Vercel and Railway sandboxes. A failing test flips the table.">
+  <meta property="og:url" content="{{url}}">
+  <meta property="og:image" content="{{abs:assets/og.png}}">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="The agent office: pixel-art workers at desks, one per coding agent, and a glass cloud wing of sandboxes">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="agent office: your coding agents, working in a pixel office">
+  <meta name="twitter:description" content="npx theagentoffice: every coding-agent session becomes a worker at a desk. A failing test flips the table.">
+  <meta name="twitter:image" content="{{abs:assets/og.png}}">
+  <meta name="twitter:image:alt" content="The agent office: pixel-art workers at desks, one per coding agent, and a glass cloud wing of sandboxes">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="assets/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="preload" as="image" href="assets/office-still.webp" type="image/webp" fetchpriority="high">
+  <link rel="stylesheet" href="{{css}}">
+  <script type="module" src="{{js}}"></script>
+</head>
+<body>
+<!--logo-sprite-->
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="nav-in">
+    <a class="brand" href="#top"><i-mark></i-mark><span>agent office</span></a>
+    <nav class="nav-links" aria-label="Sections">
+      <a href="#look">moments</a>
+      <a href="#hire">hire</a>
+      <a href="#cloud">sandboxes</a>
+      <a href="#mcp">mcp</a>
+      <a href="#privacy">privacy</a>
+      <a href="#faq">faq</a>
+    </nav>
+    <a class="nav-gh" href="https://github.com/bas3line/agent-office"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg><span>github</span></a>
+  </div>
+</header>
+
+<main id="main">
+  <div class="stage" id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <p class="kicker"><span class="pip" aria-hidden="true"></span>v{{version}} on npm · MIT · no runtime dependencies</p>
+      <h1 id="hero-title" class="wordmark"><px-text grad class="wm">agent office</px-text></h1>
+      <p class="tagline">your coding agents, working in a pixel office</p>
+
+      <div class="sign-wrap">
+        <button class="sign" type="button" data-copy="npx theagentoffice" aria-label="Copy the command: npx theagentoffice">
+          <span class="sign-dollar" aria-hidden="true"><px-text decorative flat>$</px-text></span>
+          <span class="sign-text"><px-text decorative flat>npx theagentoffice</px-text></span>
+          <span class="sign-copy" aria-hidden="true"><i-icon n="copy"></i-icon><span class="sign-copy-label">copy</span></span>
+        </button>
+        <span class="copied" role="status" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <div class="office-col">
+      <figure class="window" id="office-window" aria-label="The live office">
+        <div class="titlebar">
+          <span class="tb-brand"><i-mark></i-mark><span class="tb-name">agent office</span><span class="chip-demo"><span aria-hidden="true">■</span> demo</span></span>
+          <div class="tools" role="toolbar" aria-label="Office view">
+            <div class="seg" role="group" aria-label="Render mode">
+              <button type="button" data-mode="pixel" aria-pressed="true">Pixel</button>
+              <button type="button" data-mode="ascii" aria-pressed="false">ASCII</button>
+            </div>
+            <button type="button" class="tool" data-toggle="crt" aria-pressed="false" title="CRT scanlines (C)"><i-icon n="crt"></i-icon><span class="tool-label">CRT</span></button>
+            <button type="button" class="tool" data-toggle="stream" aria-pressed="false" title="Stream mode: the camera cuts in on every big moment (H)"><i-icon n="eye"></i-icon><span class="tool-label">stream</span></button>
+            <button type="button" class="tool" data-toggle="pause" aria-pressed="false" aria-label="Pause the office" title="Pause"><i-icon n="pause" class="i-pause"></i-icon><svg class="icon i-play" viewBox="0 0 9 9" width="18" height="18" shape-rendering="crispEdges" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2 1h1v7H2zM3 2h1v5H3zM4 2h1v5H4zM5 3h1v3H5zM6 4h1v1H6z"/></svg></button>
+          </div>
+        </div>
+        <div class="screen">
+          <img class="poster" src="assets/office-still.webp" alt="" width="1622" height="1410" decoding="async" fetchpriority="high">
+          <div id="office" class="office" role="img" aria-label="A live pixel-art office: coding agents as workers at desks, with a glass cloud wing for sandboxes. It runs the demo simulator in your browser."></div>
+          <button type="button" class="play" hidden><svg class="icon play-icon" viewBox="0 0 9 9" width="18" height="18" shape-rendering="crispEdges" aria-hidden="true" focusable="false"><path fill="currentColor" d="M2 1h1v7H2zM3 2h1v5H3zM4 2h1v5H4zM5 3h1v3H5zM6 4h1v1H6z"/></svg><span>start the office</span></button>
+        </div>
+        <figcaption class="statusbar">
+          <span class="live" aria-hidden="true"></span>
+          <span class="caption" id="caption">The real office, running its <code>--demo</code> in your browser.</span>
+        </figcaption>
+        <p class="sr-only" aria-live="polite" id="announce"></p>
+      </figure>
+    </div>
+
+    <div class="hero-more">
+      <p class="lede">Claude Code, Codex, Command Code and five more agents, working in a live pixel-art office. On this machine, in Daytona, Vercel and Railway sandboxes, or over ssh. A failing test flips the table.</p>
+      <p class="cmd-note">Node 18+. It opens <code>127.0.0.1:4747</code>; start an agent in another terminal and it walks in. <code>--demo</code> gives you a busy simulated office.</p>
+
+      <div class="ctas">
+        <a class="btn btn-hot" href="https://github.com/bas3line/agent-office"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M8 .25a.75.75 0 01.673.418l1.882 3.815 4.21.612a.75.75 0 01.416 1.279l-3.046 2.97.719 4.192a.75.75 0 01-1.088.791L8 12.347l-3.766 1.98a.75.75 0 01-1.088-.79l.72-4.194L.818 6.374a.75.75 0 01.416-1.28l4.21-.611L7.327.668A.75.75 0 018 .25z"/></svg>Star on GitHub</a>
+        <a class="btn" href="https://www.npmjs.com/package/theagentoffice"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path fill="currentColor" d="M0 0v16h16V0H0zm13 13h-2V5H8v8H3V3h10v10z"/></svg>theagentoffice on npm</a>
+      </div>
+
+      <ul class="agents" aria-label="The eight agents it watches">
+        <li><i-logo n="claude"></i-logo>Claude Code</li>
+        <li><i-logo n="codex"></i-logo>Codex</li>
+        <li><i-logo n="commandcode"></i-logo>Command Code</li>
+        <li><i-logo n="opencode"></i-logo>opencode</li>
+        <li><i-logo n="cursor"></i-logo>Cursor</li>
+        <li><i-logo n="droid"></i-logo>Droid</li>
+        <li><i-logo n="qwen"></i-logo>Qwen Code</li>
+        <li><i-logo n="gemini"></i-logo>Gemini CLI</li>
+      </ul>
+      <a class="cue" href="#look"><span aria-hidden="true">▼</span>make things happen in the office</a>
+    </div>
+
+    <section class="look" id="look" aria-labelledby="look-title">
+      <p class="eyebrow">02 · moments on demand</p>
+      <h2 id="look-title"><px-text>what you're looking at</px-text></h2>
+      <p class="sec-lede">Every session is a worker at a desk. <span class="hover-hint">Hover a line</span><span class="tap-hint">Tap a line</span> and it happens in the office.</p>
+
+      <div class="legend">
+        <h3 class="legend-h">comings and goings</h3>
+        <ul>
+          <li><button type="button" class="moment" data-moment="arrive"><i-glyph n="enter"></i-glyph><span class="m-what">A worker walks out of the lift to a desk</span><span class="m-why">A session started</span></button></li>
+          <li><button type="button" class="moment" data-moment="beam"><i-glyph n="enter" class="g-cloud"></i-glyph><span class="m-what">A worker beams into the cloud wing</span><span class="m-why">A session started in a sandbox or on an ssh box</span></button></li>
+          <li><button type="button" class="moment" data-moment="leave"><i-glyph n="leave"></i-glyph><span class="m-what">Walks back to the lift</span><span class="m-why">The agent quit (or went quiet for 20 minutes)</span></button></li>
+        </ul>
+
+        <h3 class="legend-h">at the desk</h3>
+        <ul>
+          <li><button type="button" class="moment" data-moment="prompt"><i-glyph n="prompt"></i-glyph><span class="m-what">A paper plane lands on the desk</span><span class="m-why">You sent a prompt</span></button></li>
+          <li><button type="button" class="moment" data-moment="thinking"><i-glyph n="think"></i-glyph><span class="m-what">Thought bubble</span><span class="m-why">The model is thinking</span></button></li>
+          <li><button type="button" class="moment" data-moment="edit"><i-glyph n="edit"></i-glyph><span class="m-what">Fast typing, code on the monitor</span><span class="m-why">Editing files</span></button></li>
+          <li><button type="button" class="moment" data-moment="bash"><i-glyph n="bash"></i-glyph><span class="m-what">Terminal on the monitor</span><span class="m-why">Running a command</span></button></li>
+          <li><button type="button" class="moment" data-moment="read"><i-glyph n="read"></i-glyph><span class="m-what">A page scrolling on the monitor</span><span class="m-why">Reading files</span></button></li>
+          <li><button type="button" class="moment" data-moment="search"><i-glyph n="search"></i-glyph><span class="m-what">Magnifier sweeping the monitor</span><span class="m-why">Grep, glob, search</span></button></li>
+          <li><button type="button" class="moment" data-moment="web"><i-glyph n="web"></i-glyph><span class="m-what">Spinning globe</span><span class="m-why">Web fetch or search</span></button></li>
+          <li><button type="button" class="moment" data-moment="mcp"><i-glyph n="mcp"></i-glyph><span class="m-what">A plug</span><span class="m-why">An MCP tool call</span></button></li>
+          <li><button type="button" class="moment" data-moment="todo"><i-glyph n="todo"></i-glyph><span class="m-what">Sticky notes pile up</span><span class="m-why">Todo list or plan updates</span></button></li>
+        </ul>
+
+        <h3 class="legend-h">interns</h3>
+        <ul>
+          <li><button type="button" class="moment" data-moment="intern"><i-glyph n="agent"></i-glyph><span class="m-what">The worker points, an intern walks in</span><span class="m-why">A subagent was spawned; it clocks out when it's done</span></button></li>
+          <li><button type="button" class="moment" data-moment="supervise"><i-glyph n="agent"></i-glyph><span class="m-what">Leaning back, "supervising 3 interns"</span><span class="m-why">The turn ended while its subagents keep working</span></button></li>
+        </ul>
+
+        <h3 class="legend-h">waiting on you</h3>
+        <ul>
+          <li><button type="button" class="moment m-amber" data-moment="waiting"><i-glyph n="wait"></i-glyph><span class="m-what">Hand up, a bobbing "!" and <b class="needs">needs you</b></span><span class="m-why">The agent finished and is waiting on you</span></button></li>
+          <li><button type="button" class="moment" data-moment="idle"><i-glyph n="idle"></i-glyph><span class="m-what">Leaning back, then asleep</span><span class="m-why">Idle for a while</span></button></li>
+        </ul>
+
+        <h3 class="legend-h">trouble, and the fix</h3>
+        <ul>
+          <li><button type="button" class="moment" data-moment="smoke"><i-glyph n="error"></i-glyph><span class="m-what">Smoke from the monitor</span><span class="m-why">A tool call failed</span></button></li>
+          <li><button type="button" class="moment m-red" data-moment="alarm"><i-glyph n="error"></i-glyph><span class="m-what">Red alarm</span><span class="m-why">API error or an interrupted turn</span></button></li>
+          <li><button type="button" class="moment m-flip" data-moment="flip"><i-glyph n="flip"></i-glyph><span class="m-what"><span class="kaomoji"><px-text flat>(╯°□°)╯︵ ┻━┻</px-text></span></span><span class="m-why"><b>A test command failed.</b> Hit-stop, the camera punches in, the desk lands legs-up; later <span class="nowrap">┬─┬ノ( º _ ºノ)</span></span></button></li>
+          <li><button type="button" class="moment m-green" data-moment="pass"><i-glyph n="pass"></i-glyph><span class="m-what">A cheer, the monitor goes green</span><span class="m-why">Tests passed</span></button></li>
+        </ul>
+
+        <h3 class="legend-h">agents talking back (mcp)</h3>
+        <ul>
+          <li><button type="button" class="moment" data-moment="status"><i-glyph n="mood"></i-glyph><span class="m-what">A mood chip over the head</span><span class="m-why"><code>office_status</code></span></button></li>
+          <li><button type="button" class="moment" data-moment="shout"><i-glyph n="shout"></i-glyph><span class="m-what">A megaphone, and the line hits the wall TV</span><span class="m-why"><code>office_shout</code></span></button></li>
+          <li><button type="button" class="moment" data-moment="celebrate"><i-glyph n="party"></i-glyph><span class="m-what">Confetti at the desk</span><span class="m-why"><code>office_celebrate</code></span></button></li>
+          <li><button type="button" class="moment" data-moment="rage"><i-glyph n="flip"></i-glyph><span class="m-what">A flip, in the agent's own words</span><span class="m-why"><code>office_flip</code></span></button></li>
+        </ul>
+      </div>
+      <p class="aside">One pod per project: two agents on the same repo share it, each desk in its own agent's colours. The wall TV keeps score, the office follows your clock from morning to night, it rains now and then, and there is a cat.</p>
+    </section>
+  </div>
+
+  <section class="sec hire" id="hire" aria-labelledby="hire-title">
+    <div class="sec-head">
+      <p class="eyebrow">03 · the control plane <span class="soon">coming in the next release</span></p>
+      <h2 id="hire-title"><px-text>hire and drive agents from the page</px-text></h2>
+      <p class="sec-lede">Press <b>Hire</b>, pick an agent, a folder (or a sandbox, or an ssh box) and a first prompt, and a worker walks in. Its desk opens a panel with the agent's own TUI in a real terminal, so everything the agent can do in a terminal works there.</p>
+    </div>
+
+    <div class="shots" data-tabs>
+      <div class="tabs" role="tablist" aria-label="The control plane">
+        <button type="button" role="tab" id="tab-hire" aria-controls="shot-hire" aria-selected="true">hire</button>
+        <button type="button" role="tab" id="tab-sandbox" aria-controls="shot-sandbox" aria-selected="false" tabindex="-1">sandbox</button>
+        <button type="button" role="tab" id="tab-terminal" aria-controls="shot-terminal" aria-selected="false" tabindex="-1">terminal</button>
+        <button type="button" role="tab" id="tab-chat" aria-controls="shot-chat" aria-selected="false" tabindex="-1">chat + approvals</button>
+      </div>
+      <div class="monitor">
+        <div class="tabpanel" role="tabpanel" id="shot-hire" aria-labelledby="tab-hire">
+          <img src="assets/shots/hire-dialog-1440.webp" srcset="assets/shots/hire-dialog-960.webp 960w, assets/shots/hire-dialog-1440.webp 1440w" sizes="(min-width: 1200px) 1100px, 100vw" width="1440" height="900" loading="lazy" decoding="async" alt="The Hire dialog: eight agents with their versions, where it works (This Mac, Sandbox, ssh), terminal or chat, a permission mode and an optional first prompt">
+          <p class="shot-cap">Pick one of eight agents, where it works, how you drive it, its permission mode and an optional first prompt.</p>
+        </div>
+        <div class="tabpanel" role="tabpanel" id="shot-sandbox" aria-labelledby="tab-sandbox" hidden>
+          <img src="assets/shots/hire-sandbox-1440.webp" srcset="assets/shots/hire-sandbox-960.webp 960w, assets/shots/hire-sandbox-1440.webp 1440w" sizes="(min-width: 1200px) 1100px, 100vw" width="1440" height="900" loading="lazy" decoding="async" alt="Hiring into a sandbox: Daytona, Vercel Sandbox and Railway, a running sandbox or a new one that stops on its own after 30 minutes">
+          <p class="shot-cap">A new sandbox, or one that's already running. A new one stops on its own after its lifetime; the office never extends it.</p>
+        </div>
+        <div class="tabpanel" role="tabpanel" id="shot-terminal" aria-labelledby="tab-terminal" hidden>
+          <img src="assets/shots/session-terminal-1440.webp" srcset="assets/shots/session-terminal-960.webp 960w, assets/shots/session-terminal-1440.webp 1440w" sizes="(min-width: 1200px) 1100px, 100vw" width="1440" height="900" loading="lazy" decoding="async" alt="A Claude Code session panel next to its desk: the agent's own TUI in a terminal, asking to run rm -rf dist, with Allow, Always allow and Deny buttons above it">
+          <p class="shot-cap">The agent's own TUI, live, next to its desk. Its permission question gets buttons on the page.</p>
+        </div>
+        <div class="tabpanel" role="tabpanel" id="shot-chat" aria-labelledby="tab-chat" hidden>
+          <img src="assets/shots/chat-approval-1440.webp" srcset="assets/shots/chat-approval-960.webp 960w, assets/shots/chat-approval-1440.webp 1440w" sizes="(min-width: 1200px) 1100px, 100vw" width="1440" height="900" loading="lazy" decoding="async" alt="Chat mode for a Codex session: tool calls listed as Read and Edit, and a pending Bash rm -rf dist with Allow, Always allow and Deny">
+          <p class="shot-cap">Chat mode: replies, tool calls with the office's redacted labels, approvals as buttons. <kbd>1</kbd> Allow, <kbd>2</kbd> Always allow, <kbd>3</kbd> Deny.</p>
+        </div>
+      </div>
+    </div>
+
+    <ul class="cards cards-4">
+      <li class="card rug rug-claude">
+        <h3>here, or there</h3>
+        <p>This Mac, a new or running Daytona, Vercel or Railway sandbox, or an ssh box. A new sandbox lives 30 minutes unless you pick another lifetime, and the office keeps at most three of its own.</p>
+      </li>
+      <li class="card rug rug-cc">
+        <h3>a real terminal</h3>
+        <p>The agent's own TUI with a prompt box, Interrupt and Stop. It runs on the optional <code>@lydell/node-pty</code>, prebuilt, which npm installs with the office.</p>
+      </li>
+      <li class="card rug rug-codex">
+        <h3>chat, with approvals</h3>
+        <p>The headless protocol of Claude Code, Codex and opencode, shown as a conversation. Tool calls ask first, and you answer from the page.</p>
+      </li>
+      <li class="card rug rug-gemini">
+        <h3>locked by default</h3>
+        <p>Watching needs nothing; driving needs an unlocked browser. The one-time unlock link is opened, never printed, so it can't end up in a recording.</p>
+      </li>
+    </ul>
+  </section>
+
+  <section class="sec cloud" id="cloud" aria-labelledby="cloud-title">
+    <div class="sec-head">
+      <p class="eyebrow">04 · sandboxes and ssh boxes</p>
+      <h2 id="cloud-title"><px-text>the cloud wing</px-text></h2>
+      <p class="sec-lede">Agents in cloud sandboxes or on another machine sit in a glass-walled cloud wing next to the office, one pod per sandbox, its sign naming the platform. Nothing is installed on the remote: the office runs plain POSIX <code>sh</code> through the platform's own exec and reads the transcripts there, exactly as it does locally.</p>
+    </div>
+
+    <ul class="platforms">
+      <li class="platform" style="--hc: var(--h-vercel)">
+        <div class="pf-head"><i-logo n="vercel"></i-logo><h3>Vercel Sandbox</h3><span class="tag tag-ok">tested</span></div>
+        <p><code>VERCEL_TOKEN</code> / <code>VERCEL_OIDC_TOKEN</code>, or the <code>npx sandbox</code> CLI's login</p>
+      </li>
+      <li class="platform" style="--hc: var(--h-daytona)">
+        <div class="pf-head"><i-logo n="daytona"></i-logo><h3>Daytona</h3><span class="tag tag-ok">tested</span></div>
+        <p><code>DAYTONA_API_KEY</code>, or the <code>daytona</code> CLI's login</p>
+      </li>
+      <li class="platform" style="--hc: var(--h-railway)">
+        <div class="pf-head"><i-logo n="railway"></i-logo><h3>Railway Sandboxes</h3><span class="tag tag-ok">tested</span></div>
+        <p><code>RAILWAY_API_TOKEN</code>, or the <code>railway</code> CLI's login</p>
+      </li>
+      <li class="platform" style="--hc: var(--h-ssh)">
+        <div class="pf-head"><svg class="logo" style="--c: var(--h-ssh)" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill="currentColor" fill-rule="evenodd" d="M3 3h18a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm1 4v12h16V7zm2 2.5 1.4-1.4 4.4 4.4-4.4 4.4L6 15.5l3-3zM12 15h6v2h-6z"/></svg><h3>any ssh box</h3><span class="tag">beta</span></div>
+        <p>your own <code>ssh</code>, <code>BatchMode=yes</code>, one multiplexed connection</p>
+      </li>
+      <li class="platform" style="--hc: var(--h-boat)">
+        <div class="pf-head"><i-logo n="boat"></i-logo><h3>boat</h3><span class="tag">untested</span></div>
+        <p><code>BOAT_API_KEY</code>, or the <code>boat</code> CLI; only with <code>--boat</code></p>
+      </li>
+    </ul>
+
+    <div class="split">
+      <div>
+        <h3 class="h3">auto-detect, in your own scope</h3>
+        <p>On start the office looks for those keys and logins (files and environment only) and watches the running sandboxes in your own scope, so a teammate's sandbox never ends up in your recording. A quiet poll is one exec of a few hundred bytes; idle Daytona and Railway sandboxes are left alone so they can still auto-stop.</p>
+        <dl class="flags">
+          <div><dt><code>--vercel [name]</code> <code>--daytona [id]</code> <code>--railway [id]</code></dt><dd>watch these; no value means every running one the login can see</dd></div>
+          <div><dt><code>--ssh &lt;host&gt;</code></dt><dd>an alias, <code>user@host</code> or <code>ssh://user@host:port</code>; repeatable</dd></div>
+          <div><dt><code>--no-cloud</code> <code>--local-only</code></dt><dd>no auto-detect; this machine only</dd></div>
+        </dl>
+      </div>
+      <div>
+        <h3 class="h3">claude in a vercel sandbox, in your office</h3>
+        <div class="term">
+          <div class="term-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+<pre><code><span class="t-dim"># once; the office reuses this login</span>
+<span class="t-dim">$</span> npx sandbox@latest login
+<span class="t-dim"># a fresh sandbox, removed when you exit</span>
+<span class="t-dim">$</span> npx sandbox@latest sh --rm
+<span class="t-dim"># inside it</span>
+<span class="t-dim">$</span> claude</code></pre>
+        </div>
+        <p class="small">Claude Code signs in separately inside the sandbox. On your machine, <code>npx theagentoffice</code> finds the sandbox and the worker beams into the cloud wing.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec mcp" id="mcp" aria-labelledby="mcp-title">
+    <div class="sec-head">
+      <p class="eyebrow">05 · mcp + skill</p>
+      <h2 id="mcp-title"><px-text>agents talk back</px-text></h2>
+      <p class="sec-lede"><code>agentoffice mcp</code> is a zero-dependency MCP server with five tools, and a short skill teaches agents when to use them.</p>
+    </div>
+
+    <ul class="tools-grid">
+      <li class="toolcard"><i-glyph n="mood"></i-glyph><code class="sig">office_status <span>{text, mood?}</span></code><p>The status line and emoji floating over the agent's head.</p></li>
+      <li class="toolcard"><i-glyph n="agent"></i-glyph><code class="sig">office_peers <span>{}</span></code><p>Who else is working right now and which files they just edited, with a heads-up before two agents edit the same file.</p></li>
+      <li class="toolcard"><i-glyph n="shout"></i-glyph><code class="sig">office_shout <span>{text}</span></code><p>A milestone on the office TV and in a toast. Rate-limited.</p></li>
+      <li class="toolcard"><i-glyph n="party"></i-glyph><code class="sig">office_celebrate <span>{reason?}</span></code><p>Confetti at the agent's desk.</p></li>
+      <li class="toolcard"><i-glyph n="flip"></i-glyph><code class="sig">office_flip <span>{reason?}</span></code><p>The agent flips its own table, in its own words. Once every 2 minutes per repo.</p></li>
+    </ul>
+
+    <div class="split split-install">
+      <div>
+        <h3 class="h3">install into every agent at once</h3>
+        <div class="term term-copy">
+          <div class="term-bar" aria-hidden="true"><span></span><span></span><span></span></div>
+<pre><code><span class="t-dim"># the plan, and the exact diff of every file</span>
+<span class="t-dim">$</span> npx theagentoffice install --dry-run
+<span class="t-dim"># do it</span>
+<span class="t-dim">$</span> <b>npx theagentoffice install</b>
+<span class="t-dim"># what's installed where, and is the office running</span>
+<span class="t-dim">$</span> npx theagentoffice doctor
+<span class="t-dim"># every file back the way it was</span>
+<span class="t-dim">$</span> npx theagentoffice uninstall</code></pre>
+          <button type="button" class="copy-btn" data-copy="npx theagentoffice install" aria-label="Copy the command: npx theagentoffice install"><i-icon n="copy"></i-icon><span>copy</span></button>
+        </div>
+      </div>
+      <div class="prose">
+        <p>It uses each agent's own mechanism (<code>claude mcp add</code>, <code>codex mcp add</code>, or its MCP JSON, plus its skills folder), touches only the agents it finds, backs up every file first, and keeps your comments and formatting. Re-running is a no-op. Add <code>--vercel all</code> or <code>--ssh me@gpu-box</code> to install inside sandboxes and boxes too.</p>
+        <p>Everything an agent sends is scrubbed before it reaches the screen: paths become file names, URLs become host names, anything that looks like a secret becomes <code>•••</code>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec rec" id="privacy" aria-labelledby="rec-title">
+    <div class="sec-head">
+      <p class="eyebrow">06 · privacy</p>
+      <h2 id="rec-title"><px-text>built to be screen-recorded</px-text></h2>
+      <p class="sec-lede">Leave it open on a second screen, put it on a stream, post a clip. What reaches the page is a label, never your code.</p>
+    </div>
+
+    <ul class="cards cards-4 privacy">
+      <li class="card rug rug-codex"><h3>local only</h3><p>The server binds <code>127.0.0.1</code>, rejects foreign <code>Host</code> headers and cross-site requests, and sends a strict CSP.</p></li>
+      <li class="card rug rug-cc"><h3>watching is read-only</h3><p>It never writes to your agents' transcripts or configs. Only <code>install</code> touches configs, and only when you ask.</p></li>
+      <li class="card rug rug-claude"><h3>nothing leaves your machine</h3><p>Except the calls to the sandbox platforms and ssh boxes you're logged in to or configured. No telemetry, no CDN; it works offline.</p></li>
+      <li class="card rug rug-gemini"><h3>labels, not content</h3><p>"Edit auth.ts", "$ npm test". Never prompt text, file contents, command arguments past the subcommand, or anything that looks like a key. Home shows as <code>~</code>, IPs are masked.</p></li>
+    </ul>
+
+    <div class="keys">
+      <div class="key-feature">
+        <kbd class="bigkey">R</kbd>
+        <div><h3 class="h3">clip that</h3><p>Something good just happened? The office keeps a rolling buffer and saves the last ~15 seconds as a clip, with a caption for the moment burned in. <kbd>Shift</kbd>+<kbd>R</kbd> records the next 10.</p></div>
+      </div>
+      <div class="key-feature">
+        <kbd class="bigkey">H</kbd>
+        <div><h3 class="h3">stream mode</h3><p>Hides the chrome; the camera cuts in on every flip, shout and arrival, with letterbox bars and a caption. <button type="button" class="link-btn" data-stream>Watch the office above in stream mode</button></p></div>
+      </div>
+      <ul class="keymap" aria-label="Every shortcut">
+        <li><kbd>A</kbd> pixel or ASCII</li>
+        <li><kbd>C</kbd> CRT scanlines</li>
+        <li><kbd>S</kbd> PNG screenshot</li>
+        <li><kbd>F</kbd> fullscreen</li>
+        <li><kbd>M</kbd> sound, off by default</li>
+        <li><kbd>\</kbd> the activity feed</li>
+        <li><kbd>?</kbd> every shortcut</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec how" id="how" aria-labelledby="how-title">
+    <div class="sec-head">
+      <p class="eyebrow">07 · how it works</p>
+      <h2 id="how-title"><px-text>how it works</px-text></h2>
+    </div>
+    <div class="split split-how">
+      <figure class="diagram">
+<pre aria-label="Transcripts from local agents and from sandboxes go through one small parser per agent into the office state, which streams events over Server-Sent Events on 127.0.0.1 to the browser, where a Canvas 2D office is drawn at pixel resolution."><code> <span class="d-a">~/.claude  ~/.codex  ~/.commandcode  opencode.db  ...</span>      <span class="d-c">sandboxes / ssh boxes</span>
+        \        |         |            /                   <span class="d-c">(same reads, over sh)</span>
+         <b>ingest:</b>  one small parser per agent  &lt;──────────────────────┘
+                 │  <span class="d-s">"worker X started Edit auth.ts"</span>
+         <b>state:</b>   re-redacts; who's here, who quit (ps), who went quiet
+                 │  Server-Sent Events on <span class="d-g">127.0.0.1</span>
+         <b>browser:</b> Canvas 2D office drawn at pixel resolution, scaled crisp</code></pre>
+      </figure>
+      <ul class="facts">
+        <li><h3 class="h3">one command</h3><p>The CLI tails transcript folders, backfills sessions active in the last 30 minutes, and watches which agent processes are running, so a worker walks in when its agent starts and leaves when it quits.</p></li>
+        <li><h3 class="h3">no runtime dependencies</h3><p>No framework: one bundled <code>dist/cli.js</code> and one bundled web app. The page you're reading is built the same way, from the same scene.</p></li>
+        <li><h3 class="h3">drawn at pixel resolution</h3><p>The office is painted at true pixel-art resolution into an offscreen buffer and scaled up crisp. Labels, ASCII mode and CRT are passes on the same canvas, so screenshots and clips include them.</p></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="sec faq" id="faq" aria-labelledby="faq-title">
+    <div class="sec-head">
+      <p class="eyebrow">08 · questions</p>
+      <h2 id="faq-title"><px-text>faq</px-text></h2>
+    </div>
+    <div class="faq-list">
+      <details>
+        <summary>Does it send my code anywhere?</summary>
+        <p>No. What reaches the browser is an action and a file name, like "Edit auth.ts" or "$ npm test": never prompt text, file contents or anything that looks like a key. The server binds <code>127.0.0.1</code>, there is no telemetry and no CDN, and it works offline. The only calls out are to the sandbox platforms and ssh boxes you're logged in to or configured.</p>
+      </details>
+      <details>
+        <summary>Do I have to set anything up?</summary>
+        <p>No. Run <code>npx theagentoffice</code> with Node 18 or newer and start an agent in another terminal: it walks in. Each agent's transcripts are read from their usual folder; <code>AGENT_OFFICE_&lt;AGENT&gt;_DIR</code> points one at another folder, and remotes you always want go in <code>~/.agentoffice/config.json</code>.</p>
+      </details>
+      <details>
+        <summary>Which agents does it watch?</summary>
+        <p>Claude Code, Codex, Command Code, opencode, Cursor (cursor-agent), Droid, Qwen Code and Gemini CLI. All but Gemini CLI are tested against real transcripts on a real machine; Gemini CLI is built from its recorder source and untested on real data. Cursor records no tool results, so it can't show a pass or a fail. Formats drift between versions: if your agent stops showing up, <a href="https://github.com/bas3line/agent-office/issues/new/choose">open an issue</a> with its version.</p>
+      </details>
+      <details>
+        <summary>Does it touch my agents' files?</summary>
+        <p>Watching is read-only. Only <code>npx theagentoffice install</code> touches configs, when you ask: it shows the exact diff with <code>--dry-run</code>, backs up every file first, and <code>uninstall</code> puts every file back.</p>
+      </details>
+      <details>
+        <summary>How does it know a test failed?</summary>
+        <p>From the transcript: a test command whose result came back as a failure is a <code>test_fail</code>, and the worker flips the table. A passing run gets a cheer and a green monitor. Agents can also flip their own table through <code>office_flip</code>, in their own words.</p>
+      </details>
+      <details>
+        <summary>Can I put it on a stream?</summary>
+        <p>That's what it's for. <kbd>R</kbd> saves the last ~15 seconds as a clip, <kbd>H</kbd> turns on stream mode, <kbd>S</kbd> takes a PNG. Labels never carry prompt text or keys, your home directory shows as <code>~</code>, and sandbox auto-detect only watches your own scope, so a teammate's sandbox never ends up in your recording. <code>--demo --seed &lt;n&gt;</code> gives you a busy office that replays the same way every time.</p>
+      </details>
+      <details>
+        <summary>Is the office on this page real?</summary>
+        <p>Yes. It's the same scene the CLI serves, driven by the same <code>--demo</code> simulator and the same office state, running in your browser. Nothing on this page reads your agents; every worker here is invented.</p>
+      </details>
+      <details>
+        <summary>What does it cost?</summary>
+        <p>Nothing; it's MIT licensed. If you use it, a link back is appreciated, and so is a star. Sandboxes you watch or hire bill on your own platform account, as they always do.</p>
+      </details>
+    </div>
+  </section>
+
+  <section class="sec outro" aria-labelledby="outro-title">
+    <h2 id="outro-title" class="sr-only">Get started</h2>
+    <div class="outro-in">
+      <p class="outro-line">Give your agents an office.</p>
+      <div class="sign-wrap">
+        <button class="sign" type="button" data-copy="npx theagentoffice" aria-label="Copy the command: npx theagentoffice">
+          <span class="sign-dollar" aria-hidden="true"><px-text decorative flat>$</px-text></span>
+          <span class="sign-text"><px-text decorative flat>npx theagentoffice</px-text></span>
+          <span class="sign-copy" aria-hidden="true"><i-icon n="copy"></i-icon><span class="sign-copy-label">copy</span></span>
+        </button>
+        <span class="copied" role="status" aria-live="polite"></span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="foot-in">
+    <img class="banner" src="assets/banner.svg" width="565" height="88" loading="lazy" decoding="async" alt="agent office: your coding agents, working in a pixel office, as an ascii banner from ascii.rest">
+    <nav class="foot-links" aria-label="Project">
+      <a href="https://github.com/bas3line/agent-office">github</a>
+      <a href="https://www.npmjs.com/package/theagentoffice">npm</a>
+      <a href="https://github.com/bas3line/agent-office/blob/main/CONTRIBUTING.md">contributing</a>
+      <a href="https://github.com/bas3line/agent-office/issues/new/choose">report an issue</a>
+    </nav>
+    <p class="support">Support it: <a href="https://github.com/sponsors/bas3line">GitHub Sponsors</a> · <a href="https://buymeacoffee.com/bas3line">Buy Me a Coffee</a> · <a href="https://paypal.me/ShubhamYadav886">PayPal</a></p>
+    <p class="byline">by <a href="https://github.com/bas3line">@bas3line</a> · MIT · banner by <a href="https://ascii.rest">ascii.rest</a></p>
+    <p class="tm">Claude, Codex, Command Code, opencode, Cursor, Droid and Factory, Qwen, Gemini, Daytona, boat, Railway and Vercel are trademarks of their owners. Their logos appear only to name those products; agent office is not affiliated with or endorsed by any of them.</p>
+  </div>
+</footer>
+</body>
+</html>

@@ -100,3 +100,17 @@ export function pixels(rows: string[], scale = 2, cls = "px"): SVGSVGElement {
 
 export const reducedMotion = (): boolean =>
   typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/* A constructed stylesheet is not inline CSS, so a strict CSP (no
+ * 'unsafe-inline' for styles) still lets it apply. <style> is the fallback. */
+export function adoptCss(text: string): void {
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(text);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  } catch {
+    const style = document.createElement("style");
+    style.textContent = text;
+    document.head.append(style);
+  }
+}

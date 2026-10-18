@@ -12,13 +12,20 @@
  *   GET /healthz        liveness; ?challenge=<hex> also returns proof, an HMAC of
  *                       the challenge under the secret in office.json, so the MCP
  *                       server can tell this office from an impostor
+ *
+ * With a control plane (src/control), /unlock, /api/control/** and
+ * /api/hook/** are handed to it before the GET-only gate; the snapshot says
+ * per browser whether controls are "enabled", "locked" or "off", and only
+ * unlocked /events clients get its control, control_gone and control_info
+ * frames.
  */
 import { createHmac } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { hostname, networkInterfaces } from "node:os";
 import { resolve } from "node:path";
 import type { AddressInfo } from "node:net";
-import type { OfficeEvent } from "../shared/events.ts";
+import type { OfficeEvent, Snapshot } from "../shared/events.ts";
+import type { ControlPlane } from "../control/types.ts";
 import type { OfficeState } from "./state.ts";
 import { defaultWebRoot, safeResolve, serveFile } from "./static.ts";
 
@@ -32,6 +39,9 @@ const MAX_BACKLOG = 1 << 20;
 export const CSP = [
   "default-src 'self'",
   "script-src 'self'",
+  // Inline styles (never scripts) for xterm.js, the session terminal: its DOM
+  // renderer injects <style> elements and colour style attributes. The chrome
+  // itself uses a constructed stylesheet and needs no exemption.
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
@@ -44,7 +54,7 @@ export const CSP = [
   "frame-ancestors 'none'",
 ].join("; ");
 
-const SECURITY_HEADERS: Record<string, string> = {
+export const SECURITY_HEADERS: Record<string, string> = {
   "Content-Security-Policy": CSP,
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
@@ -67,6 +77,8 @@ export interface ServerOptions {
   secret?: string;
   /** Called as a live view opens, before its snapshot is sent; `first`: nobody else is watching. */
   onViewer?: (first: boolean) => void;
+  /** Hiring and driving agents from the page (src/control). Absent: watch-only ("off"). */
+  control?: ControlPlane;
 }
 
 export interface OfficeServer {
@@ -86,16 +98,33 @@ export async function startServer(opts: ServerOptions): Promise<OfficeServer> {
   const webRoot = resolve(opts.webRoot ?? defaultWebRoot());
   const assetsRoot = resolve(webRoot, "assets");
   const clients = new Set<ServerResponse>();
+  /** /events clients whose request carried a valid unlock cookie and page token: they get control frames (re-checked per frame, so a rotation cuts them off). */
+  const unlocked = new Map<ServerResponse, IncomingMessage>();
   const allowed = allowedHosts(host);
+  const control = opts.control;
+  const controlState = (req: IncomingMessage): NonNullable<Snapshot["control"]> =>
+    !control?.enabled ? "off" : control.unlocked(req) ? "enabled" : "locked";
+  const snapshotFor = (req: IncomingMessage): Snapshot => ({ ...state.snapshot(), control: controlState(req) });
 
   const send = (res: ServerResponse, frame: string) => {
     if (res.writableLength > MAX_BACKLOG) {
       clients.delete(res);
+      unlocked.delete(res);
       res.destroy();
       return;
     }
     res.write(frame);
   };
+
+  const frames = control?.onFrame((f) => {
+    if (!unlocked.size) return;
+    const frame = `event: ${f.event}\ndata: ${JSON.stringify(f.data)}\n\n`;
+    for (const [res, req] of unlocked) {
+      if (control.unlocked(req)) send(res, frame);
+      else unlocked.delete(res);
+    }
+  });
+  control?.setViewers?.(() => unlocked.size);
 
   const unsubscribe = state.subscribe((e: OfficeEvent) => {
     if (!clients.size) return;
@@ -121,14 +150,15 @@ export async function startServer(opts: ServerOptions): Promise<OfficeServer> {
     if (!hostAllowed(req.headers.host, allowed)) {
       return text(res, 403, "Forbidden: agent office only answers to localhost.");
     }
-    if (req.method !== "GET" && req.method !== "HEAD") {
-      res.setHeader("Allow", "GET, HEAD");
-      return text(res, 405, "Method not allowed");
-    }
     const raw = req.url ?? "/";
     if (!raw.startsWith("/") || raw.startsWith("//")) return text(res, 400, "Bad request");
     const q = raw.indexOf("?");
     const path = q === -1 ? raw : raw.slice(0, q);
+    if (control?.handle(req, res, path)) return;
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      res.setHeader("Allow", "GET, HEAD");
+      return text(res, 405, "Method not allowed");
+    }
 
     if (path === "/" || path === "/index.html") {
       const ok = serveFile(req, res, webRoot, resolve(webRoot, "index.html"), {
@@ -147,7 +177,7 @@ export async function startServer(opts: ServerOptions): Promise<OfficeServer> {
     }
     if (path === "/events" || path === "/api/snapshot") {
       if (crossSite(req, allowed)) return text(res, 403, "Forbidden: cross-site request.");
-      if (path === "/api/snapshot") return json(res, 200, state.snapshot());
+      if (path === "/api/snapshot") return json(res, 200, snapshotFor(req));
       return openStream(req, res);
     }
     if (path === "/healthz") {
@@ -199,9 +229,13 @@ export async function startServer(opts: ServerOptions): Promise<OfficeServer> {
     } catch {
       // A hook must never cost a viewer its stream.
     }
-    res.write(`retry: 2000\n\nevent: snapshot\ndata: ${JSON.stringify(state.snapshot())}\n\n`);
+    res.write(`retry: 2000\n\nevent: snapshot\ndata: ${JSON.stringify(snapshotFor(req))}\n\n`);
     clients.add(res);
-    const drop = () => clients.delete(res);
+    if (control?.enabled && control.unlocked(req)) unlocked.set(res, req);
+    const drop = () => {
+      clients.delete(res);
+      unlocked.delete(res);
+    };
     req.on("close", drop);
     res.on("close", drop);
     res.on("error", drop);
@@ -221,8 +255,10 @@ export async function startServer(opts: ServerOptions): Promise<OfficeServer> {
       closing ??= new Promise<void>((done) => {
         clearInterval(ping);
         unsubscribe();
+        frames?.dispose();
         for (const res of clients) res.end();
         clients.clear();
+        unlocked.clear();
         server.close(() => done());
         server.closeAllConnections?.();
       });

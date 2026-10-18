@@ -29,6 +29,10 @@ export interface OfficeFile {
   demo?: boolean;
   /** 32 random bytes, hex: the key /healthz proves itself with. */
   secret?: string;
+  /** The background service's office (src/control/service.ts). */
+  service?: boolean;
+  /** Whether this office has the control plane (hire from the page); false: watch-only. */
+  control?: boolean;
 }
 
 /** A new office secret. */

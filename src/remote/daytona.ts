@@ -33,7 +33,7 @@ const PAGE = 100;
 const MAX_PAGES = 20;
 const ORGS_TTL_MS = 10 * 60_000;
 
-interface Login {
+export interface DaytonaLogin {
   api: string;
   headers: Record<string, string>;
   via: string;
@@ -51,7 +51,7 @@ export function daytonaConfigPaths(env: NodeJS.ProcessEnv, platform = process.pl
 }
 
 /** The login to use, or a reason there is none. Reads files, no network. */
-export function daytonaLogin(o: ProviderOptions = {}): Login | { why: string; code: "missing" | "auth" } {
+export function daytonaLogin(o: ProviderOptions = {}): DaytonaLogin | { why: string; code: "missing" | "auth" } {
   const env = o.env ?? process.env;
   const now = (o.now ?? Date.now)();
   const apiFromEnv = str(env.DAYTONA_API_URL) ?? str(env.DAYTONA_SERVER_URL);
@@ -99,11 +99,11 @@ interface Box {
 export function createDaytonaProvider(o: ProviderOptions = {}): Provider {
   const timeoutMs = o.timeoutMs ?? 20_000;
   const cache = new Map<string, { d: Discovered; box: Box }>();
-  let login: Login | undefined;
+  let login: DaytonaLogin | undefined;
   let orgCheck: { at: number; key: string; personal: boolean | null } | undefined;
 
   /** Is the login's organization the user's personal one? null when Daytona won't say. */
-  async function personalOrg(l: Login): Promise<boolean | null> {
+  async function personalOrg(l: DaytonaLogin): Promise<boolean | null> {
     const id = l.headers["x-daytona-organization-id"] ?? "";
     const now = (o.now ?? Date.now)();
     if (orgCheck && orgCheck.key === id && now - orgCheck.at < ORGS_TTL_MS) return orgCheck.personal;
@@ -120,7 +120,7 @@ export function createDaytonaProvider(o: ProviderOptions = {}): Provider {
     return personal;
   }
 
-  const getLogin = (): Login => {
+  const getLogin = (): DaytonaLogin => {
     const l = daytonaLogin(o);
     if ("why" in l) throw new RemoteError(l.code, `Daytona: ${l.why}`);
     login = l;
@@ -129,15 +129,7 @@ export function createDaytonaProvider(o: ProviderOptions = {}): Provider {
 
   async function proxyOf(box: Box): Promise<string> {
     if (box.proxy) return box.proxy;
-    const l = login ?? getLogin();
-    try {
-      const j = jsonOf(await http(`${l.api}/sandbox/${encodeURIComponent(box.id)}/toolbox-proxy-url`, { headers: l.headers, timeoutMs, fetch: o.fetch }), "Daytona toolbox url");
-      if (str(j?.url)) return (box.proxy = trim(j.url));
-    } catch (err) {
-      if ((err as RemoteError).code !== "gone") throw err;
-    }
-    // Older APIs served the toolbox under the API itself.
-    return (box.proxy = `${l.api}/toolbox`);
+    return (box.proxy = await daytonaToolboxUrl(login ?? getLogin(), box.id, { timeoutMs, fetch: o.fetch }));
   }
 
   function targetFor(box: Box): RemoteTarget {
@@ -212,6 +204,20 @@ export function createDaytonaProvider(o: ProviderOptions = {}): Provider {
       return out;
     },
   };
+}
+
+/**
+ * The toolbox base for a sandbox, as the SDK resolves it: GET /sandbox/{id}/toolbox-proxy-url,
+ * else (older APIs) the toolbox under the API itself. Exec and the PTY live under `<url>/<id>`.
+ */
+export async function daytonaToolboxUrl(l: DaytonaLogin, id: string, o: { timeoutMs: number; fetch?: ProviderOptions["fetch"] }): Promise<string> {
+  try {
+    const j = jsonOf(await http(`${l.api}/sandbox/${encodeURIComponent(id)}/toolbox-proxy-url`, { headers: l.headers, timeoutMs: o.timeoutMs, fetch: o.fetch }), "Daytona toolbox url");
+    if (str(j?.url)) return trim(j.url);
+  } catch (err) {
+    if ((err as RemoteError).code !== "gone") throw err;
+  }
+  return `${l.api}/toolbox`;
 }
 
 /** For `--daytona <all|id|name>` and the installer. */

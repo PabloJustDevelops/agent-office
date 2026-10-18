@@ -3,7 +3,9 @@
  * the cloud wing, one remote host): two agents on the same repo share a pod,
  * each at a desk in its own colours, both marks on the sign. A pod is sized to its crew:
  * one desk per session, an intern bench that grows with its subagents, no
- * empty stations. Pods are shelf-packed into rows in creation order, local
+ * empty stations. A bench seats MAX_BENCH; a busy pod's overflow interns go
+ * to a shared hot desk at the end of the pod (more hot desks as it grows), so
+ * nobody is ever left standing. Pods are shelf-packed into rows in creation order, local
  * pods in the office, remote pods in the glass-walled cloud wing beside it
  * (below it on portrait screens). When a pod grows or shrinks the rows
  * reflow and pods glide to their new spots with their crews seated; empty
@@ -38,16 +40,22 @@ export const LANE_DY = 38;
 export const RUG_TOP = 18;
 export const POD_PAD = 8;
 export const BENCH_GAP = 4;
-export const SEAT_W = 14;
+/** One intern place on a bench: a 10 px laptop and some elbow room. */
+export const SEAT_W = 16;
+/** A laptop's left edge inside its seat. */
+export const LAPTOP_DX = (SEAT_W - 10) >> 1;
 export const STATION_GAP = 8;
-export const MAX_BENCH = 4;
+/** Seats on a main desk's own bench; more interns go to a hot desk. */
+export const MAX_BENCH = 6;
+/** Seats at one shared hot desk. */
+export const MAX_HOT = 8;
 export const MAX_STATIONS = 6;
 /** Empty desks / bench seats linger this long before the pod shrinks. */
 const DESK_LINGER = 5000;
 const BENCH_LINGER = 14000;
 
 export type Zone = "local" | "cloud";
-export type SeatKind = "main" | "intern" | "stand";
+export type SeatKind = "main" | "intern";
 export type PodProp = "plant" | "cabinet" | "board" | "printer" | "server" | "cooler";
 export type DecorKind = "lounge" | "pingpong" | "arcade" | "books" | "plants" | "beanbags" | "racks";
 
@@ -56,6 +64,8 @@ export interface Rect { x: number; y: number; w: number; h: number }
 
 export interface Station {
   main: string | null;
+  /** A shared hot desk: a bench with no main desk, for the pod's overflow interns. */
+  hot?: boolean;
   /** The agent at this desk (a project pod can mix agents). */
   agent?: AgentKind;
   interns: (string | null)[];
@@ -102,26 +112,23 @@ export const MARK_STEP = 8;
 /** Room a cloud pod's sign needs for its platform tag ("RAILWAY ", 3x5 caps at 4 px a letter). */
 const TAG_LEN: Record<string, number> = { ssh: 3, daytona: 7, boat: 4, railway: 7, vercel: 6 };
 export const tagW = (b: { zone: Zone; host?: Host }) => (b.zone === "cloud" && b.host && b.host.kind !== "local" ? (TAG_LEN[b.host.kind] ?? 0) * 4 + 4 : 0);
-const stationW = (s: Station) => DESK_W + (s.seats ? BENCH_GAP + s.seats * SEAT_W : 0);
+const stationW = (s: Station) => (s.hot ? Math.max(1, s.seats) * SEAT_W : DESK_W + (s.seats ? BENCH_GAP + s.seats * SEAT_W : 0));
+/** Where a station's bench starts, relative to the station. */
+export const benchDX = (s: Station) => (s.hot ? 0 : DESK_W + BENCH_GAP);
 
 /** A live view of a seat: positions follow the pod while it glides. */
 export class Seat {
   constructor(readonly kind: SeatKind, readonly block: Block, readonly st: Station, readonly slot: number) {}
   get deskX() { return Math.round(this.block.x + this.st.x); }
   get deskY() { return Math.round(this.block.y) + DESK_DY; }
-  get benchX() { return this.deskX + DESK_W + BENCH_GAP; }
+  get benchX() { return this.deskX + benchDX(this.st); }
   get laneY() { return this.deskY + LANE_DY; }
   get x() {
-    if (this.kind === "intern") return this.benchX + 7 + this.slot * SEAT_W;
-    if (this.kind === "stand") {
-      const k = this.slot, side = k % 2 ? 1 : -1;
-      return this.deskX + DESK_W / 2 + side * (7 + Math.floor(k / 2) * 9);
-    }
+    if (this.kind === "intern") return this.benchX + (SEAT_W >> 1) + this.slot * SEAT_W;
     return this.deskX + DESK_W / 2;
   }
   get y() {
     if (this.kind === "intern") return this.deskY + SEAT_DY - 1;
-    if (this.kind === "stand") return this.laneY + 2 + (this.slot % 3);
     return this.deskY + SEAT_DY;
   }
   get remote() { return this.block.zone === "cloud"; }
@@ -169,7 +176,8 @@ export class Layout {
       const key = `local:${project}:${n}`;
       const b = this.blocks.get(key);
       if (!b) return this.newBlock(key, "local", agent, project, undefined, n ? `${project} ${n + 1}` : project);
-      if (b.stations.length < MAX_STATIONS || b.stations.some((s) => !s.main && !s.interns.some(Boolean))) {
+      const desks = b.stations.filter((s) => !s.hot);
+      if (desks.length < MAX_STATIONS || desks.some((s) => !s.main && !s.interns.some(Boolean))) {
         b.dying = false;
         return b;
       }
@@ -192,10 +200,12 @@ export class Layout {
     const have = this.seats.get(id);
     if (have) return have;
     const b = this.podFor(agent, project, host, now);
-    let st = b.stations.find((s) => !s.main && !s.interns.some(Boolean));
+    let st = b.stations.find((s) => !s.hot && !s.main && !s.interns.some(Boolean));
     if (!st) {
       st = { main: null, interns: [], seats: 0, ox: 0, x: NaN, emptyAt: 0, benchAt: 0 };
-      b.stations.push(st);
+      // desks first, the shared hot desks stay at the end of the pod
+      const hot = b.stations.findIndex((s) => s.hot);
+      b.stations.splice(hot < 0 ? b.stations.length : hot, 0, st);
       this.dirty = true;
     }
     st.main = id;
@@ -211,22 +221,24 @@ export class Layout {
     if (have) return have;
     const ps = this.seats.get(parentId);
     if (!ps || ps.kind !== "main") return this.allocMain(id, agent, project, host, now);
-    const st = ps.st;
-    let slot = -1;
-    for (let i = 0; i < st.seats; i++) if (!st.interns[i]) { slot = i; break; }
-    if (slot < 0 && st.seats < MAX_BENCH) {
-      slot = st.seats++;
+    const b = ps.block;
+    // the parent's own bench, then any hot desk in the pod with room, then a new hot desk
+    const benches = [ps.st, ...b.stations.filter((s) => s.hot)];
+    let st: Station | undefined, slot = -1;
+    for (const cand of benches) {
+      const cap = cand.hot ? MAX_HOT : MAX_BENCH;
+      for (let i = 0; i < cand.seats; i++) if (!cand.interns[i]) { slot = i; break; }
+      if (slot < 0 && cand.seats < cap) { slot = cand.seats++; this.dirty = true; }
+      if (slot >= 0) { st = cand; break; }
+    }
+    if (!st) {
+      st = { main: null, hot: true, interns: [], seats: 1, ox: 0, x: NaN, emptyAt: 0, benchAt: 0 };
+      b.stations.push(st);
+      slot = 0;
       this.dirty = true;
     }
-    let s: Seat;
-    if (slot >= 0) {
-      st.interns[slot] = id;
-      s = new Seat("intern", ps.block, st, slot);
-    } else {
-      let k = 0;
-      for (const v of this.seats.values()) if (v.kind === "stand" && v.st === st) k = Math.max(k, v.slot + 1);
-      s = new Seat("stand", ps.block, st, k);
-    }
+    st.interns[slot] = id;
+    const s = new Seat("intern", b, st, slot);
     this.seats.set(id, s);
     return s;
   }
@@ -243,12 +255,26 @@ export class Layout {
     }
   }
 
+  /** A worker took over another one in place (OfficeEvent.replaces): same seat, new id. */
+  rename(from: string, to: string) {
+    const s = this.seats.get(from);
+    if (!s || this.seats.has(to)) return;
+    this.seats.delete(from);
+    this.seats.set(to, s);
+    if (s.kind === "main") s.st.main = to;
+    else s.st.interns[s.slot] = to;
+  }
+
   free(id: string, now: number) {
     const s = this.seats.get(id);
     if (!s) return;
     this.seats.delete(id);
     if (s.kind === "main") { s.st.main = null; s.st.emptyAt = now; this.remix(s.block); }
-    else if (s.kind === "intern") { s.st.interns[s.slot] = null; s.st.benchAt = now; }
+    else {
+      s.st.interns[s.slot] = null;
+      s.st.benchAt = now;
+      if (s.st.hot && !s.st.interns.some(Boolean)) s.st.emptyAt = now;
+    }
   }
 
   clear() {

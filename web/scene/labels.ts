@@ -8,6 +8,11 @@
  * are placed greedily by priority (selected, needs-you, flipping, moods,
  * recently active), tried at a few offsets before giving up, and a budget
  * scaled to the screen keeps a crowded office down to the labels that matter.
+ * A busy pod's interns (more than CROWD) fold their role tags into one summary
+ * chip under the bench ("5 interns · fork ×4 · general-purpose"); each role
+ * still shows on hover or when selected. Chips under the chairs stay on the rug.
+ * "needs you" chips never pile up: one that finds no free spot (a crowded pod
+ * on a phone) joins its pod's "3 need you" chip; the raised hands say who.
  */
 import type { AgentKind } from "../../src/shared/events.ts";
 import { BRAND, HOST_BRAND } from "../../src/shared/events.ts";
@@ -17,8 +22,8 @@ import { drawMark, pixelLogo, type LogoKind } from "./logos.ts";
 import type { Camera } from "./camera.ts";
 import { brandInk, type Act, type Crew, type Worker } from "./workers.ts";
 import { podInk, asciiOnly, SIGN_LOGO, SHOUT_MS, PLATFORM_TAG } from "./room.ts";
-import { MARK_STEP, tagW } from "./layout.ts";
-import { bitmap, clamp, type Bitmap } from "./util.ts";
+import { MARK_STEP, POD_H, tagW, type Block } from "./layout.ts";
+import { bitmap, clamp, internSummary, type Bitmap } from "./util.ts";
 
 const ACT_COL: Record<Act, string> = {
   idle: C.slate3, thinking: C.slate4, read: C.slate5, edit: C.blue4, bash: C.green4, search: C.gold3,
@@ -33,6 +38,9 @@ const SHORT: Record<string, string> = {
 };
 
 interface Box { x: number; y: number; w: number; h: number; id?: string }
+/** More interns than this in one pod and their role tags fold into a summary chip. */
+const CROWD = 2;
+
 const hit = (a: Box, b: Box) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
 
 /** In ASCII mode labels are terminal text: a flat black field between square brackets. */
@@ -161,11 +169,47 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
   }
 
   const ws = [...crew.workers.values()].filter((w) => !w.gone && w.alpha > 0.4 && !w.tp);
+  const crowds = new Map<Block, Worker[]>();
+  for (const w of ws) {
+    if (!w.intern || w.leaving) continue;
+    const list = crowds.get(w.seat.block);
+    if (list) list.push(w);
+    else crowds.set(w.seat.block, [w]);
+  }
+  for (const [b, list] of crowds) if (list.length <= CROWD) crowds.delete(b);
+  const folded = (w: Worker) => w.intern && crowds.has(w.seat.block);
+  /** A chip under the chairs stays on its pod's rug: never below it, never past its ends when it fits. */
+  const onRug = (b: Block, c: Box): Box => {
+    const [x0, y0] = cam.toScreen(b.x + 1, b.y);
+    const [x1, y1] = cam.toScreen(b.x + b.w - 1, b.y + POD_H - 2);
+    const x = x1 - x0 >= c.w ? clamp(c.x, x0, x1 - c.w) : c.x;
+    const y = Math.min(c.y, y1 - c.h);
+    return { ...c, x: Math.round(x), y: Math.round(Math.max(y, y0)) };
+  };
   const prio = (w: Worker) =>
     (crew.selected === w.id ? 1000 : 0) + (crew.hovered === w.id ? 500 : 0) + (w.show?.kind === "flip" ? 400 : 0) +
     (w.needsHuman ? 300 : 0) + (w.show ? 100 : 0) + (w.mood ? 80 + Math.max(0, 40 - (now - w.mood.at) / 1000) : 0) +
     Math.max(0, 60 - (now - w.summaryAt) / 200) + (w.intern ? 0 : 10);
   ws.sort((a, b) => prio(b) - prio(a));
+  /** Pod -> waiting workers whose own "needs you" chip had no free spot, and whether one of the pod's did. */
+  const waitFold = new Map<Block, { n: number; shown: boolean; at: Worker }>();
+  const waitText = (w: Worker) => (w.summary && !/^(needs you|waiting)$/i.test(w.summary) ? `needs you · ${w.summary}` : "needs you");
+  /** Pods too narrow on screen for each waiting worker's chip side by side: one "N need you" chip instead. */
+  const foldAll = new Set<Block>();
+  {
+    const waiting = new Map<Block, Worker[]>();
+    for (const w of ws) {
+      if (!w.needsHuman || w.leaving || w.show?.kind === "flip" || crew.selected === w.id || crew.hovered === w.id) continue;
+      const list = waiting.get(w.seat.block);
+      if (list) list.push(w);
+      else waiting.set(w.seat.block, [w]);
+    }
+    for (const [b, list] of waiting) {
+      if (list.length < 2) continue;
+      const need = list.reduce((sum, w) => sum + textW(fit(FONT(), waitText(w), 26 * 6), fs) + pad * 2 + 6 * fs, 0);
+      if (need > (b.w - 4) * z) foldAll.add(b);
+    }
+  }
 
   // how many free-floating labels the screen can take before it turns to soup
   const onScreen = ws.filter((w) => { const [x, y] = cam.toScreen(w.x, w.y); return x > -20 && y > -20 && x < cam.vw + 20 && y < cam.vh + 20; }).length;
@@ -255,7 +299,7 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
     const tagH = lineH + pad + (showMood ? fs * 2 : 0);
     const zoomedIn = 74 * z > 520;
     // remote pods mix agents, so their people carry a name tag when there is room
-    const wantTag = !flipping && (vip || showMood || ((w.intern || w.remote) && !crowded) || zoomedIn);
+    const wantTag = !flipping && (vip || showMood || (!folded(w) && (((w.intern || w.remote) && !crowded) || zoomedIn)));
     if (wantTag && (vip || spent < budget)) {
       const lift = (w.needsHuman || (w.seated && w.act === "thinking" && !mood)) ? 20 * z : 4 * z;
       const ty = Math.round(hy - tagH - lift);
@@ -330,14 +374,23 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
     // --- status chip under the chair
     const fresh = now - w.summaryAt < 9000;
     // A waiting worker always gets its chip: it is the one thing on screen the viewer has to act on.
-    const wantChip = !w.leaving && !flipping && (w.needsHuman || (w.summary && (vip || (fresh && (!crowded || spent < budget * 0.7)) || zoomedIn)));
+    const wantChip = !w.leaving && !flipping && (w.needsHuman || (w.summary && (vip || (!folded(w) && ((fresh && (!crowded || spent < budget * 0.7)) || zoomedIn)))));
     if (wantChip && (vip || w.needsHuman || spent < budget)) {
-      const raw = w.needsHuman ? (w.summary && !/^(needs you|waiting)$/i.test(w.summary) ? `needs you · ${w.summary}` : "needs you") : w.summary;
+      const raw = w.needsHuman ? waitText(w) : w.summary;
       const s = fit(FONT(), raw, (sel ? 44 : 26) * 6);
       const cw = textW(s, fs) + pad * 2 + 4 * fs;
       const cy = Math.round(fy + 6 * z);
-      const cands: Box[] = [0, 1, -1].map((k) => inZone(w, { x: inX(hx - cw / 2 + k * cw * 0.6, cw), y: cy + (k ? Math.round(lineH * 0.6) : 0), w: cw, h: lineH + pad }));
-      const chip = tryPlace(cands, sel || hov || w.needsHuman);
+      const cands: Box[] = [0, 1, -1].map((k) => onRug(w.seat.block, inZone(w, { x: inX(hx - cw / 2 + k * cw * 0.6, cw), y: cy + (k ? Math.round(lineH * 0.6) : 0), w: cw, h: lineH + pad })));
+      // A waiting worker's chip may cover a pod sign, never another label: with no such spot, or in a pod
+      // too narrow for them all, it joins the pod's "N need you" chip below instead.
+      const pooled = w.needsHuman && !sel && !hov && foldAll.has(w.seat.block);
+      const chip = pooled ? null : tryPlace(cands, sel || hov) ?? (w.needsHuman ? cands.find((c) => !placed.some((p) => hit(p, c))) ?? null : null);
+      if (w.needsHuman && !sel && !hov) {
+        const f = waitFold.get(w.seat.block) ?? { n: 0, shown: false, at: w };
+        if (chip) f.shown = true;
+        else f.n++;
+        waitFold.set(w.seat.block, f);
+      }
       if (chip) {
         spent++;
         const pulse = w.needsHuman ? 0.5 + 0.5 * Math.sin(now * 0.008) : 0;
@@ -352,6 +405,86 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
         placed.push(chip);
       }
     }
+  }
+
+  /* ---- one "N need you" chip per pod for the waiting workers that had no room of their own */
+  for (const [b, f] of waitFold) {
+    if (!f.n || b.alpha < 0.5) continue;
+    const s = f.shown ? `+${f.n} more need${f.n === 1 ? "s" : ""} you` : f.n === 1 ? "needs you" : `${f.n} need you`;
+    const cw = textW(s, fs) + pad * 2 + 4 * fs;
+    const [, fy] = cam.toScreen(f.at.x, f.at.y);
+    const [px0] = cam.toScreen(b.x + 2, 0);
+    const [px1] = cam.toScreen(b.x + b.w - 2, 0);
+    const mid = (px0 + px1) / 2;
+    const ch = lineH + pad;
+    const cy = Math.round(fy + 6 * z);
+    const cands: Box[] = [
+      { x: Math.round(mid - cw / 2), y: cy, w: cw, h: ch },
+      { x: Math.round(px1 - cw), y: cy, w: cw, h: ch },
+      { x: Math.round(px0), y: cy, w: cw, h: ch },
+      { x: Math.round(mid - cw / 2), y: cy + ch + fs, w: cw, h: ch },
+    ].map((c) => onRug(b, { ...c, x: inX(c.x, cw) }));
+    // Over a sign if it must, never over another label (the raised hands still say who waits).
+    const chip = tryPlace(cands, false) ?? cands.find((c) => !placed.some((p) => hit(p, c)));
+    if (!chip) continue;
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.008);
+    g.globalAlpha = 0.95 * b.alpha;
+    pill(g, chip.x, chip.y, chip.w, chip.h, fs, mix(C.gold2, C.ink, 0.25 + 0.2 * (1 - pulse)), rgba(C.white, 0.5 + pulse * 0.5));
+    g.fillStyle = C.white;
+    g.fillRect(chip.x + pad, chip.y + pad, 2 * fs, lineH - pad);
+    text(g, s, C.white, chip.x + pad + 4 * fs, chip.y + fs, fs);
+    g.globalAlpha = 1;
+    placed.push(chip);
+  }
+
+  /* ---- one summary chip per busy pod, under its interns' bench */
+  for (const [b, list] of crowds) {
+    if (b.alpha < 0.5) continue;
+    let wx0 = Infinity, wx1 = -Infinity, wy = -Infinity;
+    for (const w of list) { wx0 = Math.min(wx0, w.seat.x - 7); wx1 = Math.max(wx1, w.seat.x + 7); wy = Math.max(wy, w.seat.y); }
+    const [sx0, sy] = cam.toScreen(wx0, wy);
+    const [sx1] = cam.toScreen(wx1, wy);
+    if (sx1 < -50 || sx0 > cam.vw + 50 || sy < -50 || sy > cam.vh + 50) continue;
+    const roles = list.map((w) => asciiOnly(w.role || "") || "intern");
+    const chars = (px: number) => Math.max(12, Math.floor((px - pad * 2 - 12 * fs) / (6 * fs)));
+    // the whole story if the pod has room, a shorter one that fits under the bench otherwise
+    const long = internSummary(roles, chars(b.w * z - 4 * z));
+    const short = internSummary(roles, chars(Math.max(sx1 - sx0, 1)));
+    const ch = lineH + pad;
+    const mid = (sx0 + sx1) / 2;
+    const cy = Math.round(sy + 6 * z);
+    const [, rugTop] = cam.toScreen(0, b.y + 18);
+    const [podR] = cam.toScreen(b.x + b.w - 2, 0);
+    const box = (txt: string, x: number | "mid" | "right", y: number) => {
+      const w = textW(txt, fs) + pad * 2 + 12 * fs;
+      const bx = x === "mid" ? mid - w / 2 : x === "right" ? podR - w : x;
+      return { ...onRug(b, { x: Math.round(bx), y, w, h: ch }), text: txt };
+    };
+    // longest text first, shortened step by step ("… · fork ×4 · +1"), centred under the bench or at the pod's end
+    const texts = [long];
+    for (let n = long.length - 1; n >= short.length; n--) {
+      const t = internSummary(roles, n);
+      if (t !== texts[texts.length - 1]) texts.push(t);
+    }
+    if (texts[texts.length - 1] !== short) texts.push(short);
+    const cands = [
+      ...texts.flatMap((t) => [box(t, "mid", cy), box(t, "right", cy)]),
+      box(long, "mid", cy - ch - fs),
+      box(short, "mid", cy - ch - fs),
+      // last resort: above the bench, on the rug's top edge, clear of the sign
+      box(short, "mid", Math.round(rugTop - ch / 2)),
+    ];
+    const chip = (tryPlace(cands, false) ?? tryPlace([box(short, "mid", cy)], true)) as (Box & { text?: string }) | null;
+    if (!chip) continue;
+    g.globalAlpha = 0.9 * b.alpha;
+    pill(g, chip.x, chip.y, chip.w, chip.h, fs, mix(C.ink, C.blue2, 0.3), mix(C.blue5, C.ink, 0.45));
+    g.globalAlpha = b.alpha;
+    // three little heads: a crew, not one person
+    g.fillStyle = C.blue5;
+    for (let i = 0; i < 3; i++) g.fillRect(chip.x + pad + i * 3 * fs, chip.y + Math.round(chip.h / 2) - fs, 2 * fs, 2 * fs);
+    text(g, chip.text ?? short, C.blue5, chip.x + pad + 10 * fs, chip.y + fs, fs);
+    g.globalAlpha = 1;
+    placed.push(chip);
   }
   return hitboxes;
 }

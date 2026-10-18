@@ -17,20 +17,20 @@
 Claude Code, Codex, Command Code and five more agents, working in a live pixel-art office.<br>
 On this machine, in Daytona, Vercel and Railway sandboxes, or over ssh. A failing test flips the table.
 
-[install](#install) · [what you're looking at](#what-youre-looking-at) · [agents](#supported-agents) · [sandboxes](#sandboxes-and-ssh-boxes) · [mcp + skill](#with-an-ai-coding-agent) · [privacy](#privacy) · [contributing](CONTRIBUTING.md)
+[install](#install) · [what you're looking at](#what-youre-looking-at) · [agents](#supported-agents) · [sandboxes](#sandboxes-and-ssh-boxes) · [hire from the page](#hire-agents-from-the-page) · [mcp + skill](#with-an-ai-coding-agent) · [privacy](#privacy) · [contributing](CONTRIBUTING.md)
 
 [![by @bas3line](https://img.shields.io/badge/by-%40bas3line-181717?logo=github&logoColor=white)](https://github.com/bas3line)
 [![CI](https://github.com/bas3line/agent-office/actions/workflows/ci.yml/badge.svg)](https://github.com/bas3line/agent-office/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/theagentoffice?color=181717&logo=npm&logoColor=white)](https://www.npmjs.com/package/theagentoffice)
 [![MIT](https://img.shields.io/badge/license-MIT-181717)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-181717?logo=typescript&logoColor=white)](tsconfig.json)
-[![zero dependencies](https://img.shields.io/badge/dependencies-0-181717)](package.json)
+[![zero dependencies](https://img.shields.io/badge/dependencies-0%20%2B%201%20optional-181717)](package.json)
 
 </div>
 
 <br>
 
-Written in TypeScript by [@bas3line](https://github.com/bas3line). `npx theagentoffice` reads the transcripts your agents already write and turns them into an office you can watch: every session is a worker at a desk, subagents are interns who walk in from the lift, a raised hand means an agent is waiting on you, and a failing `npm test` gets the table flipped. One command, zero dependencies, nothing to configure, nothing leaves your machine.
+Written in TypeScript by [@bas3line](https://github.com/bas3line). `npx theagentoffice` reads the transcripts your agents already write and turns them into an office you can watch: every session is a worker at a desk, subagents are interns who walk in from the lift, a raised hand means an agent is waiting on you, and a failing `npm test` gets the table flipped. You can also hire agents from the page, here or in a sandbox, and drive them in a real terminal right in the office. One command, no required dependencies, nothing to configure, nothing leaves your machine that you didn't send.
 
 <p align="center">
   <img src="docs/hero.png" width="49%" alt="The office at full size: one desk per agent on the left, a glass cloud wing of Daytona, boat, Railway and Vercel sandboxes on the right, a Claude Code worker who just flipped a table">
@@ -64,7 +64,7 @@ npx theagentoffice          # your real agents (Node 18+)
 npx theagentoffice --demo   # a busy simulated office, for a first look or a recording
 ```
 
-It opens `http://127.0.0.1:4747`. Start Claude Code, Codex or any agent below in another terminal and it walks in; quit it and it walks back to the lift. `npm install -g theagentoffice` gives you the `agentoffice` command instead.
+It opens `http://127.0.0.1:4747`. Start Claude Code, Codex or any agent below in another terminal and it walks in the moment it starts; quit it and it walks back to the lift. Or press **Hire** on the page and start one from there ([below](#hire-agents-from-the-page)). `npm install -g theagentoffice` gives you the `agentoffice` command instead.
 
 Something good just happened? Press <kbd>R</kbd>: the office keeps a rolling buffer and saves the last ~15 seconds as a clip, with a caption for the moment burned in. <kbd>H</kbd> turns on stream mode, where the camera cuts to every flip, shout and arrival. The demo starts from the top for each new viewer, so every recording opens on the arrivals.
 
@@ -151,6 +151,82 @@ claude                       # inside it; Claude Code, Codex and opencode are pr
 
 Claude Code signs in separately inside the sandbox. On your machine, `npx theagentoffice` finds the sandbox and the worker beams into the cloud wing.
 
+## Hire agents from the page
+
+Press **Hire**, pick an agent, a folder (or a sandbox, or an ssh box) and a first prompt, and a worker walks in. Its desk opens a panel with the agent's own TUI in a real terminal, so everything the agent can do in a terminal works there, plus buttons for what the office can do natively:
+
+| | terminal | prompt box, Interrupt, Stop | Approve / Deny on the page | chat mode |
+| --- | --- | --- | --- | --- |
+| **Claude Code** | yes | yes | yes (a permission hook passed for that run only) | yes (`claude -p` stream-json) |
+| **Codex** | yes | yes | in chat mode | yes (`codex app-server`) |
+| **opencode** | yes (this machine only, for now) | yes (its own HTTP API) | yes | yes (`opencode serve`) |
+| **Command Code, Droid, Gemini CLI, Qwen Code, Cursor** | yes | yes | in the terminal | no |
+
+The prompt box pastes your text into the agent and presses Enter, **Interrupt** sends one Esc (opencode: its abort call), and **Stop** sends SIGHUP, then SIGKILL four seconds later if the agent is still there. Close the tab and come back later: the office keeps the current screen and the last 3,000 lines, and redraws them when you reconnect, in as many browsers as you like.
+
+Chat mode is the agent's headless protocol shown as a conversation: replies, tool calls with the same redacted labels as the office, approvals as buttons. An approval, in either mode, shows what it asks for in full (the whole command, the file and its change, the URL; anything that looks like a key masked), and **Always allow** appears only when the agent offers a rule of its own for it: the office never makes up a rule that would allow every command. Pick a permission mode when you hire (default, accept edits, plan, or bypass, for the agents that have them); the office always passes one explicitly, and the form only offers the modes an agent has (Droid starts in its own default; Cursor has default or `--force`). Claude Code's approvals reach the page through a permission hook passed on its command line for that run; when no unlocked browser is watching, the hook steps aside at once and Claude asks in its terminal as usual. When the agent's transcript appears, the worker the hire created hands its desk to the transcript's worker: exactly by session id for Claude Code, Gemini CLI, Qwen Code, opencode and Codex's chat mode, by folder and start time for the rest.
+
+First-run screens: the office passes the agents' own flags to skip what they let you skip (Codex's update check, Command Code's onboarding and folder trust, Gemini's per-session trust). Claude Code and Codex ask whether you trust a new folder; the office doesn't answer that for you, and the panel says "Answer the trust question in the terminal" (in Claude's dialog the default is **No**: press Down, then Enter).
+
+The terminal needs the optional `@lydell/node-pty` package, which npm installs with the office (prebuilt, no compiler); without it the office falls back to `python3`, and without that only chat mode is offered. `agentoffice doctor` says which one you have. Agents you start in a terminal stay watch-only.
+
+### Unlock
+
+Watching needs nothing; driving does. The browser `agentoffice` opens is unlocked with a one-time link (valid two minutes, used once) that sets an `HttpOnly`, `SameSite=Strict` cookie for 30 days and hands the page a token it keeps in its own storage. Every control request needs both: browsers send cookies for `127.0.0.1` to every port there, so another local server that sees the cookie still can't drive the office. The link is opened, never printed, so it can't end up in a recording. To unlock another browser:
+
+```sh
+agentoffice open            # opens the running office, unlocked
+agentoffice open --print    # prints the link instead (it works once, for 2 minutes)
+agentoffice open --rotate   # logs every browser out first
+```
+
+Every control request also has to come from the office's own page: the right `Host`, no foreign `Origin` or `Sec-Fetch-Site`, and an `X-Agent-Office` header that another site can't send. A locked browser keeps the read-only office. Controls are off with `--demo`, `--no-control`, a `--host` other than loopback, and on Windows.
+
+### Keys: the office passes your keys
+
+To run an agent in a sandbox or on an ssh box you can give it API keys from the page (or **Import** them from your login shell, which reads only the key names the office knows, never the rest of your environment). The office stores the keys you add in `~/.agentoffice/keys.json` (readable only by you), never sends them back to the browser, and when you pick keys for an agent in a sandbox or on an ssh box it hands them to that agent's process there. The page only ever sees a key's name and a short preview (`sk-ant…a1b2`). Values are never logged, never put on a command line, never written into the service's unit file. `keys.json` is plain JSON with the same protection the agents' own auth files get: anything running as you can read it. Platform tokens (`DAYTONA_API_KEY`, `VERCEL_TOKEN`, `RAILWAY_API_TOKEN`) stored there are what the office itself uses for those platforms when no other login is found; they are never handed to an agent. Agents hired on this machine get your own environment, as in a terminal, and no stored keys.
+
+How a key reaches a remote agent, the least persistent way each platform has:
+
+- **Vercel:** in the environment of the agent's own command (the interactive shell's start frame). No file. Vercel keeps every command's arguments; the office never puts a key or a prompt there.
+- **Daytona, Railway, ssh:** a file readable only by you, `~/.agentoffice/run/<id>.env` on the remote, written by one command that carries the values in its own environment (Daytona, Railway) or in a script on ssh's input, then read and deleted by the line that starts the agent, before it starts. Daytona's terminal settings and a sandbox's create-time variables are stored by the platform, so keys never go there.
+- **Railway chat mode:** in the environment of the agent's command on Railway's exec bridge. No file.
+- Codex with `OPENAI_API_KEY` is started with a provider definition on its command line that reads the key from its environment, so it skips its login screen without writing `~/.codex/auth.json`.
+
+What stays on the remote: the agent's own files, a pid file in `~/.agentoffice/run` (so the office can stop the agent), and on Railway the relay's copy of about 8 MiB of the terminal's scrollback.
+
+### Sandboxes from the page
+
+Hire an agent into a new sandbox, a running one, or an ssh box, and its terminal opens in the office. The office uses the logins it already reads for watching (the same keys and CLIs as above).
+
+| | new sandbox | terminal | chat mode |
+| --- | --- | --- | --- |
+| **Daytona** | `agentoffice-…`, labelled `agentoffice=1`, deleted as soon as it stops, never alive past its lifetime | Daytona's own PTY; `daytona ssh` if that fails | no (v1) |
+| **Vercel Sandbox** | `agentoffice-…`, tagged `agentoffice=1`, not persistent (no snapshot is kept), in `vercel-sandbox-default-project` (created on your first sandbox if it's missing; the page says so first) or `VERCEL_PROJECT_ID` | Vercel's interactive shell; the pinned `npx sandbox@4.8.1` CLI if that fails | no (v1) |
+| **Railway** | in the environment of a `RAILWAY_TOKEN` project token, or the one you set in `config.json` (below), or the `railway link` of the folder you started the office in, or your account's only environment; destroyed by Railway once it has been idle for its lifetime | `railway sandbox ssh` (needs the `railway` CLI, which registers its ssh key on your Railway account the first time, as it always does) | Claude Code and Codex |
+| **ssh box** | | your own `ssh`, sharing the watcher's connection, with no prompts: a key with a passphrase must be in your ssh-agent and the host key already known (run `ssh <host>` once), or the hire says so | Claude Code and Codex |
+
+```json
+{ "control": { "railway": { "project": "<project id>", "environment": "<environment id>" } } }
+```
+
+**What it costs.** A new sandbox lives 30 minutes unless you pick another lifetime (1 to 240; Railway caps idle time at 120, Vercel's Hobby plan at 45). The office never extends one, keeps at most three of its own at once, and stops its heartbeats when the agent quits, so the platform's own timers end the sandbox. Every sandbox it creates is recorded in `~/.agentoffice/sandboxes.json`; only those can be deleted from the page without "force".
+
+**Agents.** Claude Code, Codex and opencode are preinstalled on Vercel's image (and, per their docs, on Daytona's and Railway's). Anything missing is installed when you hire it: `npm i -g` when the sandbox's Node is new enough (retried under `~/.local` if the global folder isn't writable), otherwise the agent's own installer (Claude Code, Droid, Cursor). Daytona's lower tiers block Droid's and Command Code's download and API sites. In a sandbox the office created, it also skips first-run screens: Claude Code's onboarding and folder trust in `~/.claude.json`, Codex's folder trust in `~/.codex/config.toml`, Gemini CLI's auth choice when you hand it `GEMINI_API_KEY`. Only missing entries are written. On an ssh box or a sandbox you made, nothing is seeded.
+
+**Two questions you answer once, in the panel.** Claude Code asks whether to use an `ANTHROPIC_API_KEY` it finds in its environment, the first time it sees that key; its default is **No**, so pick **1. Yes** to use the key you handed over. That dialog is Claude's own screen and shows the key's last characters, so it is on your screen (and in a recording) while it is open. On Railway, the first terminal ever asks which of your ssh keys the `railway` CLI should register on your Railway account (chat mode doesn't need one).
+
+### Background service
+
+Agents hired from the page belong to the office process that started them: close the terminal running `npx theagentoffice` and they stop. The background service is an office that starts at login and keeps them:
+
+```sh
+agentoffice install --service     # install it and start it now (or switch it on from the page)
+agentoffice uninstall --service   # stop it and remove it
+```
+
+On macOS it is a LaunchAgent (`~/Library/LaunchAgents/com.agentoffice.office.plist`), on Linux a `systemd --user` unit (`~/.config/systemd/user/agentoffice.service`; run `loginctl enable-linger` if agents should outlive your login). It runs a stable copy of the office in `~/.agentoffice/app/` with the node that installed it, so an npx cache being cleared or a checkout moving doesn't break it, and it logs to `~/.agentoffice/logs/office.log` (agent, project and mode per hire, never prompts, commands or keys). The unit file holds only `PATH`, `HOME` and `LANG`; the office reads the rest of your login shell's environment into memory when it starts, so agents and logins see what a terminal would. Turning "start at login" off from the page keeps a running service going until you log out. Switching the service on from a terminal office with no agents running hands the page straight over to it on the same port; with agents running it waits for the next login. Restarting or upgrading the service ends the agents it runs.
+
 ## With an AI coding agent
 
 Agents can talk back. `agentoffice mcp` is a zero-dependency MCP server with five tools, and a short skill teaches agents when to use them:
@@ -178,10 +254,14 @@ It uses each agent's own mechanism (`claude mcp add`, `codex mcp add`, or its MC
 
 agent office is built to be screen-recorded.
 
-- **Local only.** The server binds `127.0.0.1`, rejects foreign `Host` headers and cross-site requests, and sends a strict CSP. `--host` exists and warns you when you use it.
-- **Read-only.** It never writes to your agents' transcripts or configs; only `install` touches configs, and only when you ask.
-- **Nothing leaves your machine**, except the calls to the sandbox platforms and ssh boxes you're logged in to or configured. No telemetry, no CDN; it works offline.
-- **Labels, not content.** What reaches the browser is an action and a file name, "Edit auth.ts", "$ npm test". Never prompt text, file contents, command arguments past the subcommand, or anything that looks like a key. Your home directory shows as `~`, and IPs are masked.
+- **Local only.** The server binds `127.0.0.1`, rejects foreign `Host` headers and cross-site requests, and sends a strict CSP. `--host` exists, warns you when you use it, and turns the controls off.
+- **Watching is read-only.** Watching never writes to your agents' transcripts or configs; only `install` touches configs, and only when you ask.
+- **Hiring writes what the agent writes, plus a few office files.** Codex's chat mode records the folder as trusted in `~/.codex/config.toml` (what answering yes in its TUI does), and Command Code is started with `-t`, which trusts the folder; you picked it. Claude Code's two hooks (the permission hook, and a session-start hook so the desk follows the new transcript after `/clear`, which needs `curl` 8.3 or newer) are passed on its command line for that run, never written to a settings file. opencode runs its own server on a random loopback port with a random password, so only the office can drive it. The office's own new files in `~/.agentoffice` are `keys.json`, `control.json` (the unlock secret), `sandboxes.json`, `service.json` and `control-state.json` (recent folders), all `0600`.
+- **The office passes your keys** to the remote agents you choose them for, as described in [Keys](#keys-the-office-passes-your-keys), and to nothing else.
+- **Nothing leaves your machine**, except the calls to the sandbox platforms and ssh boxes you're logged in to or configured, and whatever you hire an agent to do. No telemetry, no CDN; it works offline.
+- **Labels, not content.** What reaches the browser is an action and a file name, "Edit auth.ts", "$ npm test". Never prompt text, file contents, command arguments past the subcommand, or anything that looks like a key. Your home directory shows as `~`, and IPs are masked. The exceptions are yours: a hired agent's terminal panel shows its screen, chat mode shows your prompts and its replies, and an approval shows the command or change it asks you to allow, in your own unlocked browser only (anything that looks like a key is still masked).
+- **Command lines are visible to your own machine.** A hired agent's first prompt is passed as its own argument (no keystroke timing), so other users of the same machine can see it with `ps` while the agent runs. So is the unlock link, for the moment `open` or `xdg-open` hands it to your browser; it works once, within two minutes, and the browser normally uses it first. On remotes it travels in the environment instead. Vercel keeps the arguments of every command run in a sandbox (never a key or a prompt here), and Railway's relay keeps about 8 MiB of a terminal's scrollback.
+- **The unlock cookie alone unlocks nothing.** Browsers send cookies for `127.0.0.1` to every port there, so another local server you visit can see it; control also needs the token the office's page keeps in its own origin's storage, which no other port can read. `agentoffice open --rotate` logs every browser out.
 
 ## How it works
 
@@ -193,15 +273,17 @@ agent office is built to be screen-recorded.
          state:  re-redacts; who's here, who quit (ps), who went quiet
                  │  Server-Sent Events on 127.0.0.1
          browser: Canvas 2D office drawn at pixel resolution, scaled crisp
+                 │  unlocked browsers only: /api/control
+         control: hire, PTYs and chat for the agents it starts, keys, sandboxes
 ```
 
-The CLI tails transcript folders, backfills sessions active in the last 30 minutes, watches which agent processes are running so a session leaves when its agent quits, and streams one event per line it understands. The office is drawn at true pixel-art resolution into an offscreen buffer and scaled up with crisp pixels; labels, ASCII mode and CRT are passes on the same canvas, so screenshots and clips include them. No framework, no runtime dependencies: one bundled `dist/cli.js` and one bundled web app.
+The CLI tails transcript folders, backfills sessions active in the last 30 minutes, watches which agent processes are running so a worker walks in when its agent starts and leaves when it quits, and streams one event per line it understands. A hired agent is a worker the moment it is hired; when its transcript appears, the transcript's worker takes over the same desk. The office is drawn at true pixel-art resolution into an offscreen buffer and scaled up with crisp pixels; labels, ASCII mode and CRT are passes on the same canvas, so screenshots and clips include them. No framework, no runtime dependencies: one bundled `dist/cli.js` and one bundled web app (xterm.js is bundled into it, no CDN). The one optional dependency is `@lydell/node-pty`, the prebuilt PTY the terminal panels run on.
 
 ## CLI
 
 ```sh
 npx theagentoffice [office] [options]     # open the office (the default command)
-npx theagentoffice <command> [options]    # install | uninstall | doctor | mcp
+npx theagentoffice <command> [options]    # install | uninstall | doctor | mcp | open
 ```
 
 | option | |
@@ -215,8 +297,9 @@ npx theagentoffice <command> [options]    # install | uninstall | doctor | mcp
 | `-q`, `--quiet` | banner only, no arrivals or flips in the terminal |
 | `--verbose` | log what the watchers are doing |
 | `--no-cloud`, `--local-only` | no sandbox auto-detect; this machine only |
+| `--no-control` | watch-only: no hiring or driving agents from the page |
 
-`AGENT_OFFICE_HOME` moves `~/.agentoffice`, and `AGENT_OFFICE_<AGENT>_DIR` points one agent at a non-default folder.
+`AGENT_OFFICE_HOME` moves `~/.agentoffice`, `AGENT_OFFICE_<AGENT>_DIR` points one agent at a non-default folder, and `AGENT_OFFICE_PTY` (`node-pty`, `python` or `none`) forces a terminal backend, for troubleshooting.
 
 | key | |
 | --- | --- |

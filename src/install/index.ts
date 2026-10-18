@@ -4,6 +4,8 @@
  *   agentoffice install   [flags]             register the server + skill in every agent
  *   agentoffice uninstall [flags]             take exactly that back out
  *   agentoffice doctor    [flags]             what's installed where, and is the office up
+ *   agentoffice open      [--print] [--rotate] unlock the office's controls in a browser
+ *   agentoffice install --service / uninstall --service   the background service
  * Shared flags: --agents a,b  --dry-run  --yes  --no-skill  --no-mcp, and a
  * target: --ssh <host> | --daytona|--boat|--railway|--vercel <id|all>
  * (repeatable). Without a target everything happens on this machine.
@@ -19,10 +21,11 @@ import { diagnose, install, printDoctor, uninstall, type Out } from "./installer
 import { REMOTE_KINDS, detectRemotes, resolveRemotes, type RemoteKind, type RemoteSelector } from "./remotes.ts";
 import { localSys, remoteSys, type Sys } from "./sys.ts";
 import { PAD, bold, cyan, dim, green, red, yellow } from "./ui.ts";
+import { doctorRows, runOpen, serviceCommand } from "../control/cli.ts";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-export const SUBCOMMANDS = new Set(["mcp", "install", "uninstall", "doctor"]);
+export const SUBCOMMANDS = new Set(["mcp", "install", "uninstall", "doctor", "open"]);
 
 class UsageError extends Error {}
 
@@ -36,10 +39,12 @@ interface Flags {
   help: boolean;
   verbose: boolean;
   agentHint?: AgentKind;
+  /** install / uninstall: the background service instead of the MCP server and skill. */
+  service: boolean;
 }
 
 function parse(cmd: string, argv: string[]): Flags {
-  const f: Flags = { dryRun: false, yes: false, mcp: true, skill: true, remotes: [], help: false, verbose: false };
+  const f: Flags = { dryRun: false, yes: false, mcp: true, skill: true, remotes: [], help: false, verbose: false, service: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     const eq = arg.startsWith("--") ? arg.indexOf("=") : -1;
@@ -98,6 +103,10 @@ function parse(cmd: string, argv: string[]): Flags {
       case "--verbose":
         f.verbose = true;
         break;
+      case "--service":
+        if (cmd !== "install" && cmd !== "uninstall") throw new UsageError(`unknown option ${flag}`);
+        f.service = true;
+        break;
       case "--help":
       case "-h":
         f.help = true;
@@ -146,6 +155,7 @@ ${bold(`agentoffice ${cmd}`)}  ${cmd === "install" ? "register the office MCP se
   --yes, -y             Don't ask before applying
   --no-skill            ${cmd === "install" ? "Register the MCP server only" : "Leave the skill"}
   --no-mcp              ${cmd === "install" ? "Install the skill only" : "Leave the MCP server"}
+  --service             ${cmd === "install" ? "Instead: run the office in the background from login (launchd / systemd), started now" : "Instead: remove the background service"}
 ${TARGET_HELP}
 
 Every changed file gets a timestamped backup next to it. Re-running is safe.
@@ -228,7 +238,10 @@ async function doctor(f: Flags, out: Out, version: string): Promise<number> {
     out();
     out(`${PAD}${bold("agent office")} ${dim("·")} doctor${sys.remote ? ` ${dim("on")} ${cyan(sys.where)}` : ""}`);
     out();
-    if (!sys.remote) await officeLine(out);
+    if (!sys.remote) {
+      await officeLine(out);
+      await doctorRows(version, out);
+    }
     out(`${PAD}${dim("Launch")}     ${launch.how === "npx" ? `npx -y ${npxPackage(version)} mcp` : "node + this copy of dist/cli.js"} ${dim(`· ${launch.why}`)}`);
     if (!sys.remote) {
       const hints = await remoteHints(sys);
@@ -302,6 +315,7 @@ async function publishedOrSay(version: string, dryRun: boolean, out: Out): Promi
 
 /** Entry point from src/cli.ts. Resolves the exit code (mcp resolves when stdin closes). */
 export async function runSubcommand(cmd: string, argv: string[], version: string): Promise<number> {
+  if (cmd === "open") return runOpen(argv, version, (line = "") => void process.stdout.write(`${line}\n`));
   let f: Flags;
   try {
     f = parse(cmd, argv);
@@ -321,6 +335,13 @@ export async function runSubcommand(cmd: string, argv: string[], version: string
       return 0;
     case "install":
     case "uninstall":
+      if (f.service) {
+        if (f.remotes.length) {
+          process.stderr.write(`agentoffice ${cmd}: --service is for this machine only\n`);
+          return 2;
+        }
+        return serviceCommand(cmd, version, out);
+      }
       return installOrUninstall(cmd, f, out, version);
     case "doctor":
       return doctor(f, out, version);

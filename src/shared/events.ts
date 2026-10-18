@@ -86,6 +86,12 @@ export interface OfficeEvent {
   tokens?: number;
   /** Subagent role / description, e.g. "Explore", "general-purpose". */
   role?: string;
+  /**
+   * On session_start only: this worker takes over another one in place (same
+   * desk, no walk out and back in). A hired agent ("ctl:<id>") or one seen
+   * launching ("proc:<pid>") is replaced by its real transcript's worker.
+   */
+  replaces?: string;
 }
 
 /** What the server sends on connect: the current office, then live events. */
@@ -97,6 +103,13 @@ export interface Snapshot {
   recent: OfficeEvent[]; // last <= 200 events, oldest first
   /** Remotes being watched and whether they answer (src/remote/index.ts hosts()). */
   hosts?: HostStatus[];
+  /**
+   * The control plane (src/shared/control.ts) for the browser that opened this
+   * stream: "enabled" (unlocked: the page fetches GET /api/control), "locked"
+   * (watch-only, nothing to fetch) or "off" (this server has none, e.g. --demo).
+   * Absent: the page probes GET /api/control and reads its 401 / 404.
+   */
+  control?: "enabled" | "locked" | "off";
 }
 
 export interface HostStatus {

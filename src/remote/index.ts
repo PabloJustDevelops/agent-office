@@ -30,7 +30,7 @@ import type { ListRequest } from "../ingest/source.ts";
 import { createBoatProvider, createBoatTargets } from "./boat.ts";
 import type { RemoteSelector } from "./config.ts";
 import { createDaytonaProvider, createDaytonaTargets } from "./daytona.ts";
-import { createRailwayProvider, createRailwayTargets } from "./railway.ts";
+import { createRailwayProvider, createRailwayTargets, type RailwayBudget } from "./railway.ts";
 import { createRemoteSource, type TunedTarget } from "./source.ts";
 import { createSshTarget } from "./ssh.ts";
 import { RemoteError, pick, type CloudKind, type Discovered, type Provider, type ProviderOptions, type RemoteKind } from "./util.ts";
@@ -83,6 +83,14 @@ export interface StartRemotesOptions {
   /** Ingest chatter, for --verbose. */
   debug?: (msg: string) => void;
   env?: NodeJS.ProcessEnv;
+  /** Shared with the control plane's Railway calls (createPlaces' railwayBudget). */
+  railwayBudget?: RailwayBudget;
+  /**
+   * Is this worker still in the office? The manager's own notes about a host
+   * (offline, back, stopped) go only to those; a worker the office already
+   * sent home (its hired agent ended) is forgotten instead of walked back in.
+   */
+  inOffice?: (workerId: string) => boolean;
   /* tests */
   providers?: Provider[];
   sshTarget?: (sel: RemoteSelector) => RemoteTarget;
@@ -103,6 +111,12 @@ export interface Remotes {
   summary(): { watching: string[]; problems: string[] };
   /** One discovery and housekeeping round now (tests; also run every DISCOVER_MS). */
   tick(): Promise<void>;
+  /**
+   * Follow this host's transcripts even outside auto-detect's scope (the control plane started
+   * an agent there). Ref-counted; discovery never drops a held host, and one this added is
+   * removed (its workers sent home) when the last hold is disposed.
+   */
+  watch(target: RemoteTarget): { dispose(): void };
   stop(): void;
 }
 
@@ -119,6 +133,10 @@ interface Rec {
   host: Host;
   raw: RemoteTarget;
   provider?: Provider;
+  /** watch() holds on it. */
+  pins: number;
+  /** Added by watch(), not by a flag or discovery: removed with its last hold. */
+  adopted?: boolean;
   gated: RemoteTarget;
   watcher?: { stop(): void };
   status: HostStatus["status"];
@@ -152,7 +170,7 @@ class Manager implements Remotes {
   private readonly problems = new Map<string, string>();
   private readonly now: () => number;
   private readonly log: (msg: string, level: "info" | "warn") => void;
-  private readonly watch: Watch;
+  private readonly startWatch: Watch;
   private timer?: ReturnType<typeof setInterval>;
   private stopped = false;
   private round?: Promise<void>;
@@ -162,7 +180,7 @@ class Manager implements Remotes {
   constructor(private readonly o: StartRemotesOptions) {
     this.now = o.now ?? Date.now;
     this.log = o.log ?? (() => {});
-    this.watch = o.watch ?? ingestWatch;
+    this.startWatch = o.watch ?? ingestWatch;
     const sels = o.selectors ?? [];
     const env = o.env ?? process.env;
 
@@ -175,7 +193,7 @@ class Manager implements Remotes {
       }
     }
 
-    const builtIn = o.providers ?? defaultProviders({ env });
+    const builtIn = o.providers ?? defaultProviders({ env, railwayBudget: o.railwayBudget });
     for (const p of builtIn) {
       const mine = sels.filter((s) => s.kind === p.kind).map((s) => s.id);
       if (mine.length) {
@@ -252,12 +270,16 @@ class Manager implements Remotes {
       if (!rec) {
         rec = this.add(d.target, p, d.pollMs);
         if (this.announced) this.log(`${p.label} ${d.host.name} is up: watching it`, "info");
+      } else if (rec.adopted) {
+        // Discovery sees it too now: it stays after the control plane lets go.
+        rec.provider = p;
+        rec.adopted = false;
       }
       rec.idleStopMin = d.idleStopMin;
       rec.activityAt = d.activityAt;
     }
     for (const rec of [...this.recs.values()]) {
-      if (rec.provider !== p || wanted.has(rec.host.id)) continue;
+      if (rec.provider !== p || wanted.has(rec.host.id) || rec.pins > 0) continue;
       this.log(`${p.label} ${rec.host.name} stopped${rec.workers.size ? "; its workers went home" : ""}`, "info");
       this.remove(rec, "session_end");
     }
@@ -270,6 +292,7 @@ class Manager implements Remotes {
       host: raw.host,
       raw,
       provider,
+      pins: 0,
       gated: undefined as unknown as RemoteTarget,
       status: "connecting",
       failures: 0,
@@ -287,7 +310,7 @@ class Manager implements Remotes {
       ...((raw as TunedTarget).readLimits ? { readLimits: (raw as TunedTarget).readLimits } : {}),
     } as TunedTarget;
     this.recs.set(rec.host.id, rec);
-    rec.watcher = this.watch(rec.gated, this.o.agents, (e) => this.onEvent(rec, e), this.o.debug ?? (() => {}), { pollMs });
+    rec.watcher = this.startWatch(rec.gated, this.o.agents, (e) => this.onEvent(rec, e), this.o.debug ?? (() => {}), { pollMs });
     return rec;
   }
 
@@ -365,7 +388,8 @@ class Manager implements Remotes {
     for (const rec of this.recs.values()) {
       for (const [id, w] of rec.workers) if (now - w.at > GONE_MS + 60_000) rec.workers.delete(id);
       const idle = rec.idleStopMin;
-      if (!rec.provider?.keepsAwake || !idle || idle <= 0) {
+      // A host the control plane holds has a live session (and its own heartbeats): never dormant.
+      if (!rec.provider?.keepsAwake || !idle || idle <= 0 || rec.pins > 0) {
         if (rec.status === "dormant") this.wake(rec, "");
         continue;
       }
@@ -442,6 +466,10 @@ class Manager implements Remotes {
   }
 
   private notify(rec: Rec, w: Seen, extra: Pick<RawEvent, "kind"> & Partial<RawEvent>): void {
+    if (this.o.inOffice && !this.o.inOffice(w.workerId)) {
+      rec.workers.delete(w.workerId);
+      return;
+    }
     const e: RawEvent = { ts: new Date(this.now()).toISOString(), agent: w.agent, workerId: w.workerId, project: w.project, host: rec.host, ...extra };
     if (w.cwd) e.cwd = w.cwd;
     if (w.model) e.model = w.model;
@@ -458,6 +486,26 @@ class Manager implements Remotes {
     if (this.problems.get(key) === msg) return;
     this.problems.set(key, msg);
     if (this.announced) this.log(msg, "warn");
+  }
+
+  watch(target: RemoteTarget): { dispose(): void } {
+    if (this.stopped) return { dispose() {} };
+    let rec = this.recs.get(target.host.id);
+    if (!rec) {
+      rec = this.add(target);
+      rec.adopted = true;
+    }
+    const held = rec;
+    held.pins++;
+    let done = false;
+    return {
+      dispose: () => {
+        if (done) return;
+        done = true;
+        held.pins = Math.max(0, held.pins - 1);
+        if (held.pins === 0 && held.adopted && this.recs.get(held.host.id) === held) this.remove(held, "session_end");
+      },
+    };
   }
 
   hosts(): HostStatus[] {
@@ -494,8 +542,9 @@ function shortReason(err: Error): string {
   return msg.slice(0, 120) || "unreachable";
 }
 
-export function defaultProviders(o: ProviderOptions = {}): Provider[] {
-  return [createDaytonaProvider(o), createBoatProvider(o), createRailwayProvider(o), createVercelProvider(o)];
+/** `railwayBudget`: one hourly API budget shared with the control plane's own Railway calls. */
+export function defaultProviders(o: ProviderOptions & { railwayBudget?: RailwayBudget } = {}): Provider[] {
+  return [createDaytonaProvider(o), createBoatProvider(o), createRailwayProvider({ ...o, budget: o.railwayBudget }), createVercelProvider(o)];
 }
 
 /** `--ssh | --daytona | --boat | --railway | --vercel <all|id>` -> targets, for the installer. */

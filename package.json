@@ -21,7 +21,9 @@
     "dev": "node scripts/build.mjs && node dist/cli.js --demo",
     "test": "node scripts/build.mjs && node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "prepack": "node scripts/build.mjs"
+    "prepack": "node scripts/build.mjs",
+    "site": "node scripts/build-site.mjs",
+    "site:dev": "node scripts/build-site.mjs --dev"
   },
   "keywords": [
     "claude-code",
@@ -54,8 +56,13 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-serialize": "0.14.0",
+    "@xterm/headless": "6.0.0",
     "@xterm/xterm": "^6.0.0",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2"
+  },
+  "optionalDependencies": {
+    "@lydell/node-pty": "1.2.0-beta.15"
   }
 }
