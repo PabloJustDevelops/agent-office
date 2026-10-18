@@ -162,18 +162,19 @@ export function createSetupSection(store: ControlStore, opts: { openSettings(tab
     } catch (e) {
       if (my !== gen) return;
       loading = false;
-      // a hiccup with something on screen already: keep showing it
-      if (inv) return;
-      loadErr = e instanceof ControlError ? e.message : "Couldn't read your setup.";
-      // A folder that went away: forget it and fall back to none.
+      // A folder that went away: forget it (and what was shown for it) and fall back to none.
       if (folder && e instanceof ControlError && (e.status === 404 || e.status === 403)) {
         seen.delete(key);
+        inv = null;
         mem().project = null;
         save();
         invKey = "";
         void load();
         return;
       }
+      // a hiccup with something on screen already: keep showing it
+      if (inv) return;
+      loadErr = e instanceof ControlError ? e.message : "Couldn't read your setup.";
       render();
       opts.changed();
     }
