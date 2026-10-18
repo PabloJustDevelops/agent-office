@@ -263,7 +263,7 @@ function* turn(c: Ctx, opening?: "interns"): Script {
 
 /** The scripted first turn of the first worker: a failing test (table flip) at ~13s, whatever the seed. */
 function* heroTurn(c: Ctx): Script {
-  const { files, testFiles, globs, test: cmd } = c.me.project;
+  const { files, testFiles, globs } = c.me.project;
   const t = c.tools.tools;
   function* step(category: ToolCategory, name: string, summary: string, dur: number, gap: number): Script {
     emit(c, "tool_start", { tool: name, category, summary, tokens: 900 });

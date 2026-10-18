@@ -12,7 +12,7 @@
  * ground, which is what the ASCII pass samples.
  */
 import type { AgentKind } from "../../src/shared/events.ts";
-import { BRAND, HOST_BRAND } from "../../src/shared/events.ts";
+import { HOST_BRAND } from "../../src/shared/events.ts";
 import { BRAND_ART, C, art, mix, rgba, type ArtKey, type BrandArt } from "./palette.ts";
 import { FONT, MICRO, drawText, fit, measure } from "./font.ts";
 import { pixelLogo, type LogoKind } from "./logos.ts";
