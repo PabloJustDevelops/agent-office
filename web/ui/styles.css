@@ -375,6 +375,29 @@ kbd {
   border-radius: 7px;
 }
 
+.stat-needs {
+  font: inherit;
+  color: #ffd89a;
+  background: rgba(255, 181, 71, 0.12);
+  border: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 181, 71, 0.32);
+  cursor: pointer;
+  margin-left: 4px;
+}
+.stat-needs .ticker { color: var(--wait); }
+.stat-needs:hover { background: rgba(255, 181, 71, 0.2); }
+.stat-needs:focus-visible { outline: 2px solid var(--wait); outline-offset: 2px; }
+.needs-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--wait);
+  box-shadow: 0 0 8px var(--wait);
+  animation: dot-glow 0.9s ease-in-out infinite;
+}
+.stat[hidden],
+.vsep[hidden] { display: none; }
+
 .vsep {
   flex: none;
   width: 1px;

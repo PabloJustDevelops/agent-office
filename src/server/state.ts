@@ -11,6 +11,7 @@
  * worker's mood line, the others are passed through for the client to play.
  */
 import { homedir } from "node:os";
+import { foldPrivate } from "../ingest/presence.ts";
 import {
   GONE_MS,
   IDLE_MS,
@@ -44,6 +45,13 @@ const ID_MAX = 200;
 const CATEGORIES = new Set<ToolCategory>([
   "read", "edit", "bash", "search", "web", "agent", "todo", "mcp", "other",
 ]);
+/**
+ * An intern counts as at work for this long after its last line. A session whose
+ * turn ended while its interns work is supervising them, not waiting on its human.
+ */
+const SUPERVISE_MS = 5 * 60_000;
+/** A local session with no agent process left goes home once it has been quiet this long. */
+export const PRESENCE_QUIET_MS = 15_000;
 /** Events that only describe an existing worker; never create one. */
 const ENDINGS = new Set<EventKind>(["session_end", "subagent_end", "idle"]);
 
@@ -68,6 +76,8 @@ interface Worker {
   lastActive: number;
   /** Set by subagent_end: drop the intern from the map at this time. */
   removeAt?: number;
+  /** Its turn ended while interns worked: it needs its human once they are done. */
+  heldWait?: boolean;
 }
 
 export class OfficeState {
@@ -100,7 +110,7 @@ export class OfficeState {
 
   /** Fold one event in. Returns the published event, or null if it was dropped. */
   ingest(raw: RawEvent): OfficeEvent | null {
-    const e = this.sanitize(raw);
+    let e = this.sanitize(raw);
     if (!e) return null;
     const now = this.now();
     let w = this.workers.get(e.workerId);
@@ -129,8 +139,68 @@ export class OfficeState {
     }
 
     if (e.kind === "session_end") return this.remove(w, e);
+    if (!e.parentId && e.kind !== "idle") w.heldWait = undefined;
+    if (!e.parentId && e.kind === "waiting" && this.busyInterns(w, now)) e = this.supervise(w, e.ts, now);
     this.fold(w, e, now);
-    return this.publish(e);
+    const out = this.publish(e);
+    // Interns that show up after their boss's turn ended turn the waiting into supervising.
+    const boss = e.parentId ? this.workers.get(e.parentId) : undefined;
+    if (boss && boss.state.status === "waiting" && boss.removeAt === undefined && this.busyInterns(boss, now)) {
+      const held = this.supervise(boss, e.ts, now);
+      this.fold(boss, held, now);
+      this.publish(held);
+    }
+    return out;
+  }
+
+  /** Interns of this session that are still at work. */
+  private busyInterns(w: Worker, now: number): number {
+    let n = 0;
+    for (const c of this.workers.values()) {
+      if (c.state.parentId === w.state.workerId && c.removeAt === undefined && now - c.lastActive < SUPERVISE_MS) n++;
+    }
+    return n;
+  }
+
+  /** The boss leans back and watches; the waiting is held until the interns are done. */
+  private supervise(w: Worker, ts: string, now: number): RawEvent {
+    w.heldWait = true;
+    const n = this.busyInterns(w, now);
+    return { ...this.base(w, ts), kind: "idle", summary: `supervising ${n} intern${n === 1 ? "" : "s"}` };
+  }
+
+  /**
+   * Send home local sessions whose agent has quit. Per agent and folder the
+   * office keeps as many sessions as there are running processes (the most
+   * recently active ones) and ends the rest once they have been quiet for
+   * PRESENCE_QUIET_MS. Remote workers are left to the quiet timer.
+   */
+  reconcileLocal(procs: { agent: AgentKind; cwd: string }[]): void {
+    const now = this.now();
+    const key = (agent: AgentKind, cwd: string) => `${agent}\0${foldPrivate(cwd)}`;
+    const running = new Map<string, number>();
+    for (const p of procs) {
+      const k = key(p.agent, this.tilde(p.cwd));
+      running.set(k, (running.get(k) ?? 0) + 1);
+    }
+    const groups = new Map<string, Worker[]>();
+    for (const w of this.workers.values()) {
+      const s = w.state;
+      if (s.parentId || s.host || !s.cwd || w.removeAt !== undefined) continue;
+      const k = key(s.agent, s.cwd);
+      const g = groups.get(k);
+      if (g) g.push(w);
+      else groups.set(k, [w]);
+    }
+    const ts = new Date(now).toISOString();
+    for (const [k, ws] of groups) {
+      const extra = ws.length - (running.get(k) ?? 0);
+      if (extra <= 0) continue;
+      ws.sort((a, b) => a.lastActive - b.lastActive);
+      for (const w of ws.slice(0, extra)) {
+        if (now - w.lastActive >= PRESENCE_QUIET_MS) this.remove(w, { ...this.base(w, ts), kind: "session_end" });
+      }
+    }
   }
 
   /** Emit idle / session_end for workers that went quiet. Called every second by start(). */
@@ -144,9 +214,19 @@ export class OfficeState {
       }
       const quiet = now - w.lastActive;
       const ts = new Date(now).toISOString();
-      if (quiet >= this.goneMs) {
+      const supervising = !w.state.parentId && this.busyInterns(w, now) > 0;
+      if (w.heldWait && !supervising) {
+        // The interns are done and nothing moved since: now it is the human's turn.
+        w.heldWait = undefined;
+        const e: RawEvent = { ...this.base(w, ts), kind: "waiting" };
+        this.fold(w, e, now);
+        this.publish(e);
+        continue;
+      }
+      if (quiet >= this.goneMs && !supervising) {
         this.remove(w, { ...this.base(w, ts), kind: w.state.parentId ? "subagent_end" : "session_end" });
-      } else if (quiet >= this.idleMs && w.state.status !== "idle") {
+      } else if (quiet >= this.idleMs && w.state.status !== "idle" && w.state.status !== "waiting") {
+        // A worker waiting on its human still needs them however long it waits; it only goes home.
         const e: RawEvent = { ...this.base(w, ts), kind: "idle" };
         this.fold(w, e, now);
         this.publish(e);

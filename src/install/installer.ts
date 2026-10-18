@@ -315,7 +315,7 @@ export async function install(sys: Sys, opts: RunOptions): Promise<number> {
   }
 
   if (!changes) {
-    out(`${PAD}${green("Everything is already in place.")} ${dim("Open the office with")} ${bold("npx agentoffice")}`);
+    out(`${PAD}${green("Everything is already in place.")} ${dim("Open the office with")} ${bold("npx theagentoffice")}`);
     out();
     return blocked ? 1 : 0;
   }
@@ -380,7 +380,7 @@ export async function install(sys: Sys, opts: RunOptions): Promise<number> {
     out(`${PAD}machine and watches the sandbox from there; agents in it can't see peers, but their status, shouts and flips show up.`);
   } else {
     out(`${PAD}${bold("Done.")} Restart running agents (or ${bold("/mcp")} in Claude Code) to pick up the office tools,`);
-    out(`${PAD}then open the office: ${bold("npx agentoffice")}`);
+    out(`${PAD}then open the office: ${bold("npx theagentoffice")}`);
   }
   out();
   return failed ? 1 : 0;

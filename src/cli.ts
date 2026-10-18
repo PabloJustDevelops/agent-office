@@ -1,5 +1,5 @@
 /*
- * `npx agentoffice`: parse flags, fill the state store from the transcript
+ * `npx theagentoffice`: parse flags, fill the state store from the transcript
  * watcher (or the demo), serve the office on localhost, print the banner and
  * open the browser. No dependencies: flags are parsed by hand and the colours
  * are raw ANSI, off for NO_COLOR and when stdout is not a terminal.
@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import type { AgentKind, OfficeEvent } from "./shared/events.ts";
 import { BRAND } from "./shared/events.ts";
 import { startIngest } from "./ingest/index.ts";
+import { scanAgentProcesses } from "./ingest/presence.ts";
 import { DEFAULT_SEED, startDemo } from "./demo/index.ts";
 import { DEFAULT_HOST, DEFAULT_PORT, isLoopback, isWildcard, startServer, type OfficeServer } from "./server/http.ts";
 import { OfficeState } from "./server/state.ts";
@@ -301,7 +302,7 @@ function logEvent(e: OfficeEvent): void {
 function readVersion(): string {
   try {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-    if (pkg && pkg.name === "agentoffice" && typeof pkg.version === "string") return pkg.version;
+    if (pkg && (pkg.name === "theagentoffice" || pkg.name === "agentoffice") && typeof pkg.version === "string") return pkg.version;
   } catch {
     // Fall through: running from somewhere without the package.json beside it.
   }
@@ -330,6 +331,27 @@ function openBrowser(url: string): void {
   }
 }
 
+/** Every few seconds, send home the local sessions whose agent process has quit. */
+function watchPresence(state: OfficeState, everyMs = 3_000): ReturnType<typeof setInterval> {
+  let busy = false;
+  const scan = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const procs = await scanAgentProcesses();
+      if (procs) state.reconcileLocal(procs);
+    } catch {
+      // A failed scan just means no early goodbyes this round.
+    } finally {
+      busy = false;
+    }
+  };
+  void scan();
+  const timer = setInterval(scan, everyMs);
+  timer.unref?.();
+  return timer;
+}
+
 /** Resolve once the watcher's backfill has gone quiet (or after `max` ms). */
 function settle(state: OfficeState, quietMs = 150, max = 1_200): Promise<void> {
   return new Promise((done) => {
@@ -352,8 +374,8 @@ function help(version: string): string {
 ${bold("agent office")} ${dim(`v${version}`)}  a live pixel-art office for your coding agents
 
 ${bold("Usage")}
-  npx agentoffice [office] [options]     open the office (the default command)
-  npx agentoffice <command> [options]    install | uninstall | doctor | mcp
+  npx theagentoffice [office] [options]     open the office (the default command)
+  npx theagentoffice <command> [options]    install | uninstall | doctor | mcp
 
 ${bold("Office options")}
   --port <n>, -p    Port to serve on (default ${DEFAULT_PORT}; tries the next ${PORT_FALLBACK} if taken)
@@ -483,6 +505,7 @@ async function main(): Promise<void> {
   if (!o.demo) await settle(state);
   if (remotes) await remotes.ready;
   state.tick();
+  const presence = o.demo ? undefined : watchPresence(state);
   banner(o, server, state, version, remotes);
   if (!o.quiet) state.subscribe(logEvent);
   if (o.open && env.BROWSER !== "none" && !env.CI) openBrowser(server.url);
@@ -493,6 +516,7 @@ async function main(): Promise<void> {
     closing = true;
     out(`\n${PAD}${dim("Closing the office. Bye.")}`);
     if (advertised) clearOfficeFile();
+    if (presence) clearInterval(presence);
     source.stop();
     state.stop();
     await Promise.race([server.close(), new Promise((r) => setTimeout(r, 1_500))]);

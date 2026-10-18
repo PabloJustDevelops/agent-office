@@ -506,7 +506,7 @@ class Watcher {
     switch (c.agent) {
       case "claude": {
         const info = claudeFileInfo(c.path);
-        const role = typeof meta?.agentType === "string" ? meta.agentType : undefined;
+        const role = claudeRole(meta);
         const state = createClaudeState({ ...info, ...(role ? { role } : {}) });
         if (!info.agentId) state.main.project = slugProject;
         return {
@@ -1280,3 +1280,15 @@ export const startIngest: StartIngest = (opts) => {
   ingest.start();
   return { stop: () => ingest.stop() };
 };
+
+/**
+ * An intern's role from its .meta.json. Workflow subagents all share one type,
+ * so they go by their script label ("research:local") when it is an
+ * identifier; free-text descriptions can echo the task, so they never show.
+ */
+function claudeRole(meta: Record<string, any> | null): string | undefined {
+  const type = typeof meta?.agentType === "string" ? meta.agentType : undefined;
+  const label = typeof meta?.description === "string" ? meta.description.trim() : "";
+  if (type === "workflow-subagent") return /^[\w.:/-]{1,32}$/.test(label) ? label : "workflow";
+  return type;
+}

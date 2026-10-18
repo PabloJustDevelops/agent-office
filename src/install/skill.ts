@@ -1,6 +1,6 @@
 /*
  * The agent-office skill, bundled into the CLI from skills/agent-office/SKILL.md
- * so `npx agentoffice install` can write it without shipping the skills folder.
+ * so `npx theagentoffice install` can write it without shipping the skills folder.
  * Every agent we support reads the same SKILL.md format (YAML frontmatter with
  * name + description, markdown body), so one file serves all of them.
  */

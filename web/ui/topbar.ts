@@ -30,7 +30,7 @@ export interface Topbar {
   update(model: OfficeModel, animate: boolean): void;
 }
 
-export function createTopbar(): Topbar {
+export function createTopbar(opts: { onNeedsYou?: () => void } = {}): Topbar {
   const liveText = h("span", { class: "pill-text", text: "live" });
   const pill = h("span", { class: "pill pill-live", attrs: { role: "status" } }, h("span", { class: "pill-dot" }), liveText);
 
@@ -61,6 +61,18 @@ export function createTopbar(): Topbar {
     flips: stat("flips", "tables flipped", "flips", h("span", { class: "flip-glyph" }, glyph("flip", 2))),
   };
 
+  // Who is waiting on you, as a button: each click takes you to the next one.
+  const needsTicker = new Ticker(String);
+  const needs = h(
+    "button",
+    { class: "stat stat-needs", attrs: { type: "button", hidden: true, title: "Show who needs you" } },
+    h("span", { class: "needs-dot" }),
+    needsTicker.el,
+    h("span", { class: "stat-label" }, h("span", { class: "long", text: "needs you" }), h("span", { class: "short", text: "need you" })),
+  );
+  needs.addEventListener("click", () => opts.onNeedsYou?.());
+  const needsSep = h("span", { class: "vsep", attrs: { hidden: true } });
+
   const statsEl = h(
     "div",
     { class: "island stats glass", attrs: { role: "group", "aria-label": "Office totals" } },
@@ -71,6 +83,8 @@ export function createTopbar(): Topbar {
     stats.tokens.el,
     h("span", { class: "vsep" }),
     stats.flips.el,
+    needsSep,
+    needs,
   );
 
   const chips = new Map<AgentKind, { el: HTMLElement; ticker: Ticker }>();
@@ -155,6 +169,11 @@ export function createTopbar(): Topbar {
       }
       lastFlips = model.flips;
       stats.flips.el.classList.toggle("has-flips", model.flips > 0);
+      let waiting = 0;
+      for (const w of model.workers.values()) if (w.status === "waiting" && !w.parentId) waiting++;
+      needsTicker.set(waiting, animate);
+      needs.hidden = needsSep.hidden = waiting === 0;
+      needs.setAttribute("aria-label", `${waiting} need${waiting === 1 ? "s" : ""} you: show`);
       const counts = model.byAgent();
       const present = AGENTS.filter((a) => (counts[a] ?? 0) > 0);
       // Only who is here: an empty office shows no row of zeros (the empty card lists every agent).

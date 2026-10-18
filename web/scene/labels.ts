@@ -193,7 +193,7 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
   for (const w of ws) {
     const sel = crew.selected === w.id;
     const hov = crew.hovered === w.id;
-    // Waiting is drawn in the world (raised hand, a bobbing "!"): it doesn't force a pill of its own.
+    // Waiting is drawn in the world (raised hand, a bobbing "!") and always gets its chip below; it doesn't force the name tag.
     const vip = sel || hov || w.show?.kind === "flip";
     const h = crew.headPos(w);
     const [hx, hy] = cam.toScreen(h.x, h.y);
@@ -329,10 +329,9 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
 
     // --- status chip under the chair
     const fresh = now - w.summaryAt < 9000;
-    // A waiting worker's chip ("needs you · ...") only when someone points at it.
-    const waitingQuiet = w.needsHuman && !sel && !hov;
-    const wantChip = w.summary && !w.leaving && !flipping && !waitingQuiet && (vip || (fresh && (!crowded || spent < budget * 0.7)) || zoomedIn);
-    if (wantChip && (vip || spent < budget)) {
+    // A waiting worker always gets its chip: it is the one thing on screen the viewer has to act on.
+    const wantChip = !w.leaving && !flipping && (w.needsHuman || (w.summary && (vip || (fresh && (!crowded || spent < budget * 0.7)) || zoomedIn)));
+    if (wantChip && (vip || w.needsHuman || spent < budget)) {
       const raw = w.needsHuman ? (w.summary && !/^(needs you|waiting)$/i.test(w.summary) ? `needs you · ${w.summary}` : "needs you") : w.summary;
       const s = fit(FONT(), raw, (sel ? 44 : 26) * 6);
       const cw = textW(s, fs) + pad * 2 + 4 * fs;
@@ -344,7 +343,7 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
         const pulse = w.needsHuman ? 0.5 + 0.5 * Math.sin(now * 0.008) : 0;
         const bg = w.needsHuman ? mix(ink === C.cc9 ? C.slate2 : ink, C.ink, 0.25 + 0.2 * (1 - pulse)) : C.ink2;
         const age = clamp((now - w.summaryAt) / 9000, 0, 1);
-        g.globalAlpha = vip ? 0.95 : 0.88 - age * 0.3;
+        g.globalAlpha = vip || w.needsHuman ? 0.95 : 0.88 - age * 0.3;
         pill(g, chip.x, chip.y, chip.w, chip.h, fs, bg, w.needsHuman ? rgba(C.white, 0.5 + pulse * 0.5) : undefined);
         g.fillStyle = w.needsHuman ? C.white : ACT_COL[w.act];
         g.fillRect(chip.x + pad, chip.y + pad, 2 * fs, lineH - pad);
