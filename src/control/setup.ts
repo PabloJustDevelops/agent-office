@@ -550,20 +550,21 @@ function duCapped(dir: string, cap: number, skip?: (rel: string) => boolean): nu
 
 /**
  * What of .git stays here: hooks (they run), the reflogs and FETCH_HEAD (a clone's reflog reads
- * "clone: from <url>", token included), other worktrees' admin folders (paths on this Mac), and
- * anything that looks like stored credentials.
+ * "clone: from <url>", token included), config.worktree (a second config that can hold the same
+ * headers; worktreeConfig isn't kept, so git won't look for it), other worktrees' admin folders
+ * (paths on this Mac), and anything that looks like stored credentials.
  */
-const GIT_LEFT_HERE = /^\.git\/(?:modules\/.+\/)?(?:hooks|logs)(?:\/|$)|^\.git\/worktrees(?:\/|$)|^\.git\/(?:modules\/.+\/)?FETCH_HEAD$|^\.git\/[^/]*credential[^/]*$/i;
+const GIT_LEFT_HERE = /^\.git\/(?:modules\/.+\/)?(?:hooks|logs)(?:\/|$)|^\.git\/worktrees(?:\/|$)|^\.git\/(?:modules\/.+\/)?(?:FETCH_HEAD|config\.worktree)$|^\.git\/[^/]*credential[^/]*$/i;
 
 /**
- * Which keys of a repo's .git/config go to the sandbox, by section; "*" is every key. Everything
+ * Which keys of a repo's .git/config go to the sandbox, by section. Everything
  * else stays here: http.extraheader and credential helpers (tokens), url.<base>.insteadOf (often
  * a token in the base), include/includeIf (files on this Mac), core.sshCommand, fsmonitor, hooks.
  */
 const GIT_CONFIG_KEEP: Record<string, readonly string[]> = {
   core: ["repositoryformatversion", "filemode", "bare", "logallrefupdates", "ignorecase", "precomposeunicode", "symlinks"],
-  extensions: ["*"],
-  remote: ["url", "pushurl", "fetch", "push", "tagopt", "prune"],
+  extensions: ["objectformat", "refstorage", "partialclone"],
+  remote: ["url", "pushurl", "fetch", "push", "tagopt", "prune", "promisor", "partialclonefilter"],
   branch: ["remote", "merge", "rebase", "pushremote"],
   user: ["name", "email"],
 };

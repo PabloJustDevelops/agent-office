@@ -123,6 +123,7 @@ function fakeHome() {
   const config = readFileSync(join(dotGit, "config"), "utf8");
   w(join(dotGit, "config"), `${config}[http "https://github.com/"]\n\textraheader = AUTHORIZATION: basic ${GIT_SECRET}\n[url "https://x:${GIT_SECRET}@github.com/"]\n\tinsteadOf = https://github.com/\n[credential]\n\thelper = store\n[core]\n\tfsmonitor = touch ${join(home, "fsmonitor-ran")}\n`);
   w(join(dotGit, "logs", "HEAD"), `0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 t <t@example.com> 1 +0000\tclone: from https://someone:ghp_secretinurl0005@github.com/me/app.git\n`);
+  w(join(dotGit, "config.worktree"), `[http]\n\textraheader = AUTHORIZATION: bearer ${GIT_SECRET}\n`);
   w(join(dotGit, "FETCH_HEAD"), `1111111111111111111111111111111111111111\t\tbranch 'main' of https://someone:ghp_secretinurl0005@github.com/me/app\n`);
   return { home, project };
 }
@@ -526,6 +527,7 @@ test("a project's .git/config goes over rebuilt: remotes, branches and format on
     "\tfsmonitor = /tmp/run-me",
     "[extensions]",
     "\tobjectformat = sha256",
+    "\tworktreeConfig = true",
     '[remote "origin"]',
     '\turl = "https://me:tok-0007@github.com/me/app.git"',
     "\tpushurl = ssh://git@github.com/me/app.git",
