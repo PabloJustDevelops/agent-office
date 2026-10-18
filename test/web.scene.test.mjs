@@ -26,8 +26,12 @@ async function load(...entries) {
   }
 }
 
-const { Layout, SEAT_W, MAX_BENCH, MAX_HOT, POD_H, internSummary, OfficeModel, ControlStore } = await load(
+const {
+  Layout, Camera, SEAT_W, MAX_BENCH, MAX_HOT, POD_H, DESK_W, DESK_DY, SEAT_DY, DESK_ROW, ROOM_MIN_W, ROOM_MIN_W_TALL,
+  internSummary, OfficeModel, ControlStore,
+} = await load(
   "web/scene/layout.ts",
+  "web/scene/camera.ts",
   "web/scene/util.ts",
   "web/ui/state.ts",
   "web/ui/control/store.ts",
@@ -94,6 +98,152 @@ test("rename keeps the seat: a replacing worker takes over the desk in place", (
   assert.equal(layout.seatOf("sess-1"), seat);
   assert.equal(layout.seatOf("ctl:ab12"), undefined);
   assert.equal(seat.st.main, "sess-1");
+});
+
+/* ---- the floor plan by screen shape: a phone held upright vs a landscape screen ---- */
+
+/** The owner's phone repro: six sessions in one project, three more one each. */
+const HIRES = [["alpha", 6], ["beta", 1], ["gamma", 1], ["ledger", 1]];
+/** The free area of a 390x844 phone between the top bar and the toolbar. */
+const PHONE = 390 / 528;
+
+function office(pods, aspect, tall, layout = new Layout()) {
+  let n = 0;
+  for (const [project, desks] of pods) for (let i = 0; i < desks; i++) layout.allocMain(`${project}-${n++}`, "claude", project, undefined, 0);
+  return settle(layout, aspect, tall);
+}
+
+function settle(layout, aspect, tall) {
+  layout.setAspect(aspect, tall);
+  for (let t = 0; t < 300; t++) layout.update(16, t * 16);
+  return layout;
+}
+
+const pod = (layout, project) => [...layout.blocks.values()].find((b) => b.project === project);
+const rowsOf = (b) => new Set(b.stations.map((s) => s.oy)).size;
+/** How big auto-fit can draw the room in a free area of this shape (relative units). */
+const scale = (layout, aspect) => { const r = layout.room(); return Math.min(aspect / (r.w + 20), 1 / (r.h + 20)); };
+
+test("portrait: a pod too wide for the screen wraps its desks into balanced rows", () => {
+  const layout = office(HIRES, PHONE, true);
+  const alpha = pod(layout, "alpha");
+  const rows = rowsOf(alpha);
+  assert.ok(rows >= 2, `alpha has ${rows} desk row(s)`);
+  assert.equal(alpha.h, POD_H + (rows - 1) * DESK_ROW);
+  const perRow = [...new Set(alpha.stations.map((s) => s.oy))].map((oy) => alpha.stations.filter((s) => s.oy === oy).length);
+  assert.ok(Math.max(...perRow) - Math.min(...perRow) <= 1, `unbalanced rows ${perRow}`);
+  for (const b of ["beta", "gamma", "ledger"].map((p) => pod(layout, p))) assert.equal(b.h, POD_H, `${b.project} stays one row`);
+});
+
+test("portrait: every wrapped desk sits on its own rug, in its row, with no desk on another", () => {
+  const layout = office(HIRES, PHONE, true);
+  const alpha = pod(layout, "alpha");
+  const seats = alpha.stations.map((st) => layout.seatOf(st.main));
+  for (const s of seats) {
+    assert.ok(s.deskX >= alpha.x && s.deskX + DESK_W <= alpha.x + alpha.w, `desk at x ${s.deskX} is off the rug`);
+    assert.equal(s.deskY, Math.round(alpha.y + s.st.oy) + DESK_DY, "the desk is in its row");
+    assert.equal(s.y, s.deskY + SEAT_DY, "the chair hangs off the desk");
+    assert.ok(s.laneY < alpha.y + alpha.h, "the lane to the chair is on the rug");
+  }
+  for (const a of seats) for (const b of seats) {
+    if (a === b || a.deskY !== b.deskY) continue;
+    assert.ok(Math.abs(a.deskX - b.deskX) >= DESK_W, `desks at ${a.deskX} and ${b.deskX} overlap`);
+  }
+});
+
+test("landscape keeps the plan it always had: one row per pod, the wide room", () => {
+  const layout = office(HIRES, 1.6, false);
+  for (const b of layout.blocks.values()) {
+    assert.equal(b.h, POD_H, `${b.project} is one row`);
+    assert.ok(b.stations.every((s) => s.oy === 0));
+  }
+  assert.ok(layout.room().w >= ROOM_MIN_W);
+});
+
+test("portrait packing frames the office bigger than the landscape rules would on the same screen", () => {
+  const tall = office(HIRES, PHONE, true);
+  const wide = office(HIRES, PHONE, false);
+  assert.ok(tall.room().w < wide.room().w, `portrait room ${tall.room().w} wide, landscape rules ${wide.room().w}`);
+  assert.ok(tall.room().w >= ROOM_MIN_W_TALL);
+  assert.ok(scale(tall, PHONE) > scale(wide, PHONE) * 1.15, `portrait ${scale(tall, PHONE)} vs ${scale(wide, PHONE)}`);
+});
+
+test("small pods on a phone don't wrap: there is nothing to gain", () => {
+  const layout = office([["api", 1], ["web", 2], ["docs", 1]], PHONE, true);
+  for (const b of layout.blocks.values()) assert.equal(b.h, POD_H, `${b.project} wrapped`);
+});
+
+test("turning the screen re-packs: wrapped desks go back to one row and the seats follow", () => {
+  const layout = office(HIRES, PHONE, true);
+  assert.ok(pod(layout, "alpha").h > POD_H);
+  settle(layout, 1.6, false);
+  const alpha = pod(layout, "alpha");
+  assert.equal(alpha.h, POD_H);
+  for (const st of alpha.stations) {
+    const s = layout.seatOf(st.main);
+    assert.equal(s.deskY, Math.round(alpha.y) + DESK_DY);
+  }
+});
+
+/** A camera on a 390x844 phone at 3x, the chrome's top bar and toolbar as insets. */
+function phoneCamera() {
+  const cam = new Camera();
+  Object.assign(cam, { vw: 1170, vh: 2532, dpr: 3 });
+  cam.insets = { top: 116, right: 0, bottom: 200, left: 0 };
+  return cam;
+}
+const podSpan = (layout) => {
+  const bs = [...layout.blocks.values()];
+  return { x0: Math.min(...bs.map((b) => b.tx)) - 26, x1: Math.max(...bs.map((b) => b.tx + b.w)) + 26 };
+};
+
+test("auto-fit on a phone rests on a whole zoom and keeps every pod in the free area", () => {
+  const cam = phoneCamera();
+  const layout = office(HIRES, cam.layoutAspect(), true);
+  cam.fit(layout.room(), podSpan(layout));
+  assert.ok(Number.isInteger(cam.tz), `zoom ${cam.tz}`);
+  for (const b of layout.blocks.values()) {
+    const [x0, y0] = cam.toScreen(b.x, b.y);
+    const [x1, y1] = cam.toScreen(b.x + b.w, b.y + b.h);
+    assert.ok(x0 >= 0 && x1 <= cam.vw, `${b.project} cut at the side: ${x0}..${x1}`);
+    assert.ok(y0 >= 116 * 3 && y1 <= cam.vh - 200 * 3, `${b.project} under the chrome: ${y0}..${y1}`);
+  }
+});
+
+test("drags and pinches stay over the office, and end on a whole zoom", () => {
+  const layout = office([["api", 1]], 1, false);
+  const room = layout.room();
+  const cam = new Camera();
+  Object.assign(cam, { vw: 1000, vh: 1000, dpr: 1 });
+  cam.bounds = room;
+  cam.fit(room);
+  assert.equal(cam.tz, 3, "a whole zoom");
+  // the whole office in frame: nothing to drag to, the camera stays on auto
+  cam.panBy(0, 300);
+  assert.equal(cam.mode, "auto");
+  // pinch in: manual, and the gesture ends on the next whole zoom it was heading for
+  cam.zoomAt(500, 500, 2.5);
+  assert.equal(cam.mode, "manual");
+  cam.settle(500, 500, 3);
+  assert.equal(cam.tz, 8);
+  // one small wheel notch still takes a whole step, either way
+  cam.zoomAt(500, 500, 1.1);
+  cam.settle(500, 500, 8);
+  assert.equal(cam.tz, 9);
+  cam.zoomAt(500, 500, 0.95);
+  cam.settle(500, 500, 9);
+  assert.equal(cam.tz, 8);
+  // a drag far past the corner stops a few px past the room's edge
+  cam.z = cam.tz;
+  cam.panBy(-1e5, -1e5);
+  const [sx, sy] = cam.toScreen(room.x + room.w, room.y + room.h);
+  assert.ok(sx >= cam.vw - 12 - 1e-6 && sy >= cam.vh - 12 - 1e-6, `the room's corner is at ${sx}, ${sy}`);
+  // zoomed out past the room it sits centred, wherever the drag goes
+  cam.zoomAt(500, 500, 0.01);
+  cam.z = cam.tz;
+  cam.panBy(400, -250);
+  const [cx, cy] = cam.toScreen(room.x + room.w / 2, room.y + room.h / 2);
+  assert.ok(Math.abs(cx - 500) < 1e-6 && Math.abs(cy - 500) < 1e-6, `centre at ${cx}, ${cy}`);
 });
 
 test("intern summary: counts roles, folds the rest into +N when it doesn't fit", () => {
