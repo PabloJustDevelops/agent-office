@@ -423,3 +423,21 @@ test("gemini: a reply followed by a few seconds of quiet is the end of the turn:
   ingest.stop();
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("gemini: a hashed project folder takes its cwd from .project_root, a Windows path included", async () => {
+  for (const root of ["/tmp/demo-app", "C:\\Users\\me\\demo-app"]) {
+    const dir = mkdtempSync(join(tmpdir(), "agentoffice-gemini-"));
+    const proj = join(dir, "tmp", "0f".repeat(32));
+    mkdirSync(join(proj, "chats"), { recursive: true });
+    writeFileSync(join(proj, ".project_root"), root);
+    const at = new Date().toISOString();
+    writeFileSync(join(proj, "chats", "session-2026-10-18T10-00-abcd1234.jsonl"), JSON.stringify({ sessionId: "abcd1234-0000-4000-8000-000000000001", startTime: at, lastUpdated: at, kind: "main" }) + "\n" +
+      JSON.stringify({ id: "m1", timestamp: at, type: "user", content: [{ text: "hi" }] }) + "\n");
+    const events = [];
+    const ingest = I.createIngest({ agents: ["gemini"], onEvent: (e) => events.push(e), watch: false, env: { AGENT_OFFICE_GEMINI_DIR: dir, AGENT_OFFICE_HOME: join(dir, "ao") } });
+    await ingest.tick();
+    ingest.stop();
+    assert.equal(events.find((e) => e.kind === "session_start")?.cwd, root);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

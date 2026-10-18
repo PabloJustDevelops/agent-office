@@ -34,26 +34,30 @@ export function parseSignal(line: string): AgentSignal | null {
   return s;
 }
 
+/** A Windows path ("C:\x", "c:/x"): one separator, and case doesn't count. */
+const WIN_PATH = /^[A-Za-z]:(?:[\\/]|$)/;
+
 function normPath(p: string, home?: string): string {
   let s = p.trim();
-  if (home && (s === "~" || s.startsWith("~/"))) s = home + s.slice(1);
+  if (home && (s === "~" || s.startsWith("~/") || s.startsWith("~\\"))) s = home + s.slice(1);
+  if (WIN_PATH.test(s)) s = s.replace(/\//g, "\\").toLowerCase();
   s = s.replace(/[\\/]+$/, "") || "/";
   return s.replace(/^\/private(?=\/(?:var|tmp|etc)\b)/, "");
 }
 
-/** Path equality that survives trailing slashes, macOS's /private prefix and "~". */
+/** Path equality that survives trailing slashes, macOS's /private prefix, "~" and Windows' case and separators. */
 export function sameCwd(a: string | undefined, b: string | undefined, home?: string): boolean {
   if (!a || !b) return false;
   return normPath(a, home) === normPath(b, home);
 }
 
-/** Is one folder inside the other? Never through "/" or the home folder itself, which contain everything. */
+/** Is one folder inside the other? Never through "/", a drive's root or the home folder itself, which contain everything. */
 export function nestedCwd(a: string | undefined, b: string | undefined, home?: string): boolean {
   if (!a || !b) return false;
   const x = normPath(a, home), y = normPath(b, home);
   const [outer, inner] = x.length <= y.length ? [x, y] : [y, x];
-  if (outer === "/" || (home && outer === normPath(home))) return false;
-  return inner.startsWith(outer + "/");
+  if (outer === "/" || /^[a-z]:$/.test(outer) || (home && outer === normPath(home))) return false;
+  return inner.startsWith(outer + (WIN_PATH.test(outer) ? "\\" : "/"));
 }
 
 function recency(c: WorkerCtx): number {
