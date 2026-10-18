@@ -1,20 +1,50 @@
 /*
- * The landing page: copy buttons, the screenshot tabs, and the live office in
- * the hero. The office (site/office.ts: the real scene, demo and state, about
- * 85 KB gzipped) is a separate chunk, loaded once the page has painted; until
- * it runs, a still of it stands in. It pauses whenever it can't be seen
- * (scrolled away, hidden tab), and with prefers-reduced-motion it waits for
- * the visitor to press play. The legend below it plays its moments on hover,
- * or on a tap or Enter.
+ * The landing page. The office is site/office.ts (the real scene, demo and
+ * state, in the browser), imported as a separate chunk once the page has
+ * painted; until it runs, a still of it stands in. Around it:
+ *
+ *   - the hero: the command types itself, the office boots in its window, and
+ *     a small HUD counts what happens while you're here;
+ *   - the journey: the office stays pinned while its story scrolls past, and
+ *     each beat makes its moment happen, with the camera on it;
+ *   - live views: small canvases further down copy the middle of the one
+ *     running scene, pixel for pixel, while a moment holds the camera there
+ *     (there is no second scene);
+ *   - the delights: a transcript line scrubbing down to its label, magnetic
+ *     buttons, a pixel confetti puff on copy, F to flip a table, the tour.
+ *
+ * The office pauses whenever none of it can be seen, and with
+ * prefers-reduced-motion it waits for a press of play and nothing animates.
  */
 import type { Moment, Office } from "./office.ts";
 
 const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T | null;
 const $$ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => [...root.querySelectorAll(sel)] as T[];
 const reduced = matchMedia("(prefers-reduced-motion: reduce)");
-const canHover = matchMedia("(hover: hover) and (pointer: fine)");
+const fine = matchMedia("(hover: hover) and (pointer: fine)");
+const root = document.documentElement;
+const wait = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 
-/* ------------------------------------------------------------------ copy */
+/* ------------------------------------------------------------------ theme */
+
+const prefersLight = matchMedia("(prefers-color-scheme: light)");
+const themeBtn = $<HTMLButtonElement>("[data-theme-toggle]");
+const isLight = () => (root.dataset.theme ? root.dataset.theme === "light" : prefersLight.matches);
+const paintTheme = () => themeBtn?.setAttribute("aria-label", isLight() ? "Switch to the dark theme" : "Switch to the light theme");
+themeBtn?.addEventListener("click", () => {
+  const next = isLight() ? "dark" : "light";
+  root.dataset.theme = next;
+  try {
+    localStorage.setItem("ao-theme", next);
+  } catch {
+    /* private mode: the choice lasts this page view */
+  }
+  paintTheme();
+});
+prefersLight.addEventListener("change", paintTheme);
+paintTheme();
+
+/* ------------------------------------------------------------------ copy, with a confetti puff */
 
 async function copyText(text: string): Promise<boolean> {
   try {
@@ -38,6 +68,32 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
+/** The office's confetti colours, as square pixels flung out of a point. */
+const CONFETTI = ["#8e75ff", "#d97757", "#10a37f", "#ffd36c", "#f293b5", "#4888cf", "#ededed"];
+function puff(x: number, y: number) {
+  if (reduced.matches) return;
+  for (let i = 0; i < 22; i++) {
+    const b = document.createElement("i");
+    b.className = "bit";
+    const s = 4 + Math.floor(Math.random() * 3);
+    b.style.cssText = `left:${x - s / 2}px;top:${y - s / 2}px;width:${s}px;height:${s}px;background:${CONFETTI[i % CONFETTI.length]}`;
+    document.body.append(b);
+    const a = Math.random() * Math.PI * 2;
+    const v = 40 + Math.random() * 70;
+    const dx = Math.cos(a) * v;
+    const dy = Math.sin(a) * v * 0.7 - 30;
+    const anim = b.animate(
+      [
+        { transform: "translate(0, 0)", opacity: 1 },
+        { transform: `translate(${dx * 0.8}px, ${dy}px)`, opacity: 1, offset: 0.55 },
+        { transform: `translate(${dx}px, ${dy + 46}px)`, opacity: 0 },
+      ],
+      { duration: 760 + Math.random() * 300, easing: "cubic-bezier(.2,.7,.3,1)" },
+    );
+    anim.onfinish = () => b.remove();
+  }
+}
+
 for (const btn of $$<HTMLButtonElement>("[data-copy]")) {
   let t = 0;
   btn.addEventListener("click", async () => {
@@ -45,52 +101,61 @@ for (const btn of $$<HTMLButtonElement>("[data-copy]")) {
     const status = btn.parentElement?.querySelector(".copied");
     btn.classList.toggle("is-copied", ok);
     if (status) status.textContent = ok ? "Copied to the clipboard" : "Couldn't copy; select the command instead";
+    if (ok) {
+      const r = btn.querySelector(".cmd-i")?.getBoundingClientRect() ?? btn.getBoundingClientRect();
+      puff(r.left + r.width / 2, r.top + r.height / 2);
+    }
     clearTimeout(t);
     t = window.setTimeout(() => {
       btn.classList.remove("is-copied");
       if (status) status.textContent = "";
-    }, 1800);
+    }, 1600);
   });
 }
 
-/* ------------------------------------------------------------------ tabs */
+/* ------------------------------------------------------------------ fade-ups and the marquee */
 
-for (const box of $$("[data-tabs]")) {
-  const tabs = $$<HTMLButtonElement>('[role="tab"]', box);
-  const select = (tab: HTMLButtonElement, focus = false) => {
-    for (const t of tabs) {
-      const on = t === tab;
-      t.setAttribute("aria-selected", String(on));
-      t.tabIndex = on ? 0 : -1;
-      const panel = document.getElementById(t.getAttribute("aria-controls") ?? "");
-      if (panel) panel.hidden = !on;
-    }
-    if (focus) tab.focus();
-  };
-  tabs.forEach((tab, i) => {
-    tab.addEventListener("click", () => select(tab));
-    tab.addEventListener("keydown", (e) => {
-      const k = e.key;
-      const j = k === "ArrowRight" ? i + 1 : k === "ArrowLeft" ? i - 1 : k === "Home" ? 0 : k === "End" ? tabs.length - 1 : -1;
-      if (j === -1) return;
-      e.preventDefault();
-      select(tabs[(j + tabs.length) % tabs.length]!, true);
-    });
-  });
+const reveals = $$("[data-reveal]");
+if (reveals.length) {
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        if (!e.isIntersecting) continue;
+        e.target.classList.add("is-in");
+        io.unobserve(e.target);
+      }
+    },
+    { rootMargin: "0px 0px -8% 0px" },
+  );
+  for (const el of reveals) io.observe(el);
+}
+
+// the marquee loops by sliding half its width: a second, hidden copy of the logos makes the seam
+for (const track of $$(".marquee-track")) {
+  for (const li of [...track.children]) {
+    const c = li.cloneNode(true) as HTMLElement;
+    c.setAttribute("aria-hidden", "true");
+    track.append(c);
+  }
 }
 
 /* ---------------------------------------------------------------- office */
 
 const win = $("#office-window");
 const mount = $("#office");
+const stage = $(".stage");
+const journey = $(".journey");
 const caption = $("#caption");
 const announce = $("#announce");
 const playBtn = $<HTMLButtonElement>(".play");
+const IDLE = "The real office, running its --demo in your browser.";
 let office: Office | null = null;
 let loading: Promise<Office | null> | null = null;
 let userPaused = false;
-let inView = true;
+let inView = false;
+let minisInView = 0;
 let captionAt = 0;
+let onRunning: (() => void) | null = null;
 
 function say(text: string, live = true) {
   if (caption) {
@@ -103,19 +168,37 @@ function say(text: string, live = true) {
   captionAt = performance.now();
 }
 
+/* the HUD: what has happened since you opened the page */
+const hud = { crew: $("[data-hud=crew]"), tools: $("[data-hud=tools]"), flips: $("[data-hud=flips]") };
+const counts = { tools: 0, flips: 0 };
+function bump(el: HTMLElement | null, n: number) {
+  if (!el || el.textContent === String(n)) return;
+  el.textContent = n.toLocaleString("en-US");
+  if (reduced.matches) return;
+  el.classList.remove("tick");
+  void el.offsetWidth;
+  el.classList.add("tick");
+}
+setInterval(() => {
+  const s = office?.running ? office.scene?.stats() : null;
+  if (s) bump(hud.crew, s.workers);
+}, 1000);
+
 function load(): Promise<Office | null> {
   if (!mount || !win) return Promise.resolve(null);
   loading ??= import("./office.ts")
     .then(({ createOffice }) => {
       const o = createOffice(mount, { fastForward: 10_000, hour: 21.5 });
       o.onEvent((e) => {
-        // the office's own big moments make the caption too, when the visitor isn't driving it
+        if (e.kind === "tool_start") bump(hud.tools, ++counts.tools);
+        else if (e.kind === "test_fail" || e.kind === "flip") bump(hud.flips, ++counts.flips);
+        // the office's own big moments make the caption too, when nobody is driving it
         if (performance.now() - captionAt < 6_000) return;
-        if (e.kind === "test_fail") say(`${e.project}: a test failed and the table flipped (${e.summary ?? "tests"})`, false);
+        if (e.kind === "test_fail") say(`${e.project}: a test failed and the table flipped`, false);
         else if (e.kind === "flip") say(`${e.project}: the agent flipped its own table, "${e.summary ?? ""}"`, false);
         else if (e.kind === "shout" && e.summary) say(`${e.project} on the office TV: ${e.summary.replace(/\s*\p{Extended_Pictographic}.*$/u, "")}`, false);
       });
-      o.onSelect((w) => say(w ? w.text : "The real office, running its --demo in your browser.", false));
+      o.onSelect((w) => say(w ? w.text : IDLE, false));
       office = o;
       (window as unknown as { __agentOffice?: Office }).__agentOffice = o;
       return o;
@@ -130,10 +213,13 @@ function load(): Promise<Office | null> {
 
 function sync() {
   if (!office || !win) return;
-  const want = !userPaused && inView && !document.hidden;
+  const want = !userPaused && !document.hidden && (inView || minisInView > 0);
   if (want && !office.running) office.start();
   if (!want && office.running) office.pause();
-  win.classList.toggle("is-live", office.running || win.classList.contains("is-live"));
+  if (office.running) {
+    win.classList.add("is-live");
+    onRunning?.();
+  }
   paintPause();
 }
 
@@ -156,6 +242,370 @@ async function play() {
   sync();
 }
 
+/** Resolves once the office is running, scrolling the pinned window into view first if asked. */
+async function ready(scroll = false): Promise<Office | null> {
+  if (!win) return null;
+  if (scroll && !inView) {
+    journey?.scrollIntoView({ behavior: reduced.matches ? "auto" : "smooth", block: "start" });
+    for (let i = 0, y = -1, still = 0; i < 40 && still < 3; i++) {
+      still = scrollY === y ? still + 1 : 0;
+      y = scrollY;
+      await wait(50);
+    }
+  }
+  await play();
+  for (let i = 0; i < 40 && !office?.running; i++) await wait(50);
+  return office?.running ? office : null;
+}
+
+/* the last worker each moment landed on: when the office is too full or busy for a new one, the camera goes back to it */
+const lastFor = new Map<string, string>();
+function fire(o: Office, m: Moment, focus: boolean, live: boolean) {
+  const fired = o.trigger(m, { focus });
+  if (fired) {
+    lastFor.set(m, fired.workerId);
+    say(fired.text, live);
+    return fired;
+  }
+  const again = lastFor.get(m);
+  if (again && focus) o.focus(again);
+  return null;
+}
+
+/* ------------------------------------------------------------------ the boot */
+
+const typer = $<HTMLButtonElement>("[data-type]");
+async function typeCommand(): Promise<void> {
+  const t = typer?.querySelector(".cmd-t");
+  if (!typer || !t) return;
+  const text = typer.dataset.copy ?? t.textContent ?? "";
+  typer.classList.add("type-ready");
+  if (reduced.matches) return;
+  t.textContent = "";
+  typer.classList.add("is-typing");
+  await wait(320);
+  for (const ch of text) {
+    t.textContent += ch;
+    await wait(ch === " " ? 90 : 42 + Math.random() * 30);
+  }
+  await wait(500);
+  typer.classList.remove("is-typing");
+}
+
+async function boot() {
+  if (!win) return;
+  const r = win.getBoundingClientRect();
+  const visible = r.top < innerHeight && r.bottom > 0;
+  if (reduced.matches || !visible) {
+    win.classList.add("is-booted");
+    void typeCommand();
+    return;
+  }
+  const typed = typeCommand();
+  const running = new Promise<void>((ok) => {
+    onRunning = () => {
+      onRunning = null;
+      ok();
+    };
+  });
+  await typed;
+  win.classList.add("b1");
+  await wait(260);
+  win.classList.add("b2");
+  await Promise.race([Promise.all([running, wait(700)]), wait(7000)]);
+  win.classList.add("b3");
+  await wait(320);
+  win.classList.add("is-booted");
+}
+
+/* ------------------------------------------------------------------ the journey */
+
+const beats = $$(".beat");
+let activeBeat = -1;
+let beatTimer = 0;
+const narrow = matchMedia("(max-width: 899.98px)");
+const phone = matchMedia("(max-width: 639.98px)");
+
+function layoutStage() {
+  if (!stage || !journey) return;
+  const h = stage.offsetHeight;
+  journey.style.setProperty("--stage-h", `${h}px`);
+  const nav = $(".nav")?.offsetHeight ?? 56;
+  const top = narrow.matches ? nav + 8 : nav + Math.max(16, Math.round((innerHeight - nav - h) / 2));
+  stage.style.top = `${top}px`;
+}
+
+function checkBeats() {
+  if (!beats.length || !stage) return;
+  const nav = $(".nav")?.offsetHeight ?? 56;
+  const sh = stage.offsetHeight;
+  const line = narrow.matches ? nav + sh + (innerHeight - nav - sh) / 2 : innerHeight / 2;
+  let best = -1;
+  let bestD = Infinity;
+  beats.forEach((b, i) => {
+    const r = (b.firstElementChild ?? b).getBoundingClientRect();
+    const d = Math.abs(r.top + r.height / 2 - line);
+    if (d < bestD) {
+      bestD = d;
+      best = i;
+    }
+  });
+  if (bestD > innerHeight * 0.32) best = -1;
+  if (best === activeBeat) return;
+  activeBeat = best;
+  beats.forEach((b, i) => b.classList.toggle("is-on", i === best));
+  journey?.classList.toggle("is-telling", best >= 0);
+  $$(".rail i").forEach((t, i) => t.classList.toggle("is-on", i === best));
+  clearTimeout(beatTimer);
+  const m = best >= 0 ? (beats[best]!.dataset.beat as Moment | undefined) : undefined;
+  if (!m) return;
+  // a beat has to stay put for a moment before it plays: scrolling fast past it doesn't fire it
+  beatTimer = window.setTimeout(async () => {
+    const o = office?.running ? office : null;
+    if (!o || activeBeat !== best) return;
+    if (!fire(o, m, !reduced.matches, false)) {
+      await wait(1500);
+      if (activeBeat === best && office?.running) fire(office, m, !reduced.matches, false);
+    }
+  }, 380);
+}
+
+/* the office window stands tilted back on its floor under the headline, and straightens as it reaches its pinned place */
+function tiltWindow() {
+  if (!win || !stage || !journey) return;
+  if (reduced.matches || narrow.matches) return void (win.style.transform = "");
+  const pinAt = journey.offsetTop - parseFloat(stage.style.top || "0");
+  const p = pinAt > 0 ? Math.min(1, Math.max(0, scrollY / pinAt)) : 1;
+  // flat means no transform at all, so the canvas is drawn pixel for pixel
+  win.style.transform = p >= 1 ? "" : `perspective(1600px) rotateX(${(11 * (1 - p) ** 1.4).toFixed(2)}deg) scale(${(0.94 + 0.06 * p).toFixed(4)})`;
+}
+
+/* on narrow screens the pinned office gets a solid backing, so the story scrolls under it; only once it is pinned */
+function markPinned() {
+  if (!stage || !journey) return;
+  const pinned = narrow.matches && stage.getBoundingClientRect().top <= parseFloat(stage.style.top || "0") + 1 && journey.getBoundingClientRect().top < 0;
+  journey.classList.toggle("is-pinned", pinned);
+}
+
+let scrollQueued = false;
+function onScroll() {
+  if (scrollQueued) return;
+  scrollQueued = true;
+  requestAnimationFrame(() => {
+    scrollQueued = false;
+    checkBeats();
+    tiltWindow();
+    markPinned();
+    tiltShowcase();
+  });
+}
+
+/* ------------------------------------------------------------------ live views cut from the running office */
+
+interface Mini {
+  el: HTMLElement;
+  canvas: HTMLCanvasElement;
+  moment: Moment;
+  /** Where in the view the camera's centre lands (0-1 each way), to keep the moment clear of overlays. */
+  ax: number;
+  ay: number;
+  visible: boolean;
+  until: number;
+}
+const minis: Mini[] = $$(".mini[data-mini]").map((el) => {
+  const [ax = 0.5, ay = 0.5] = (el.dataset.anchor ?? "").split(",").map(Number).filter((n) => n >= 0 && n <= 1);
+  return { el, canvas: el.querySelector("canvas")!, moment: el.dataset.mini as Moment, ax, ay, visible: false, until: 0 };
+});
+let current: Mini | null = null;
+let copyRaf = 0;
+let directorTimer = 0;
+let turn = 0;
+
+function copyFrame() {
+  copyRaf = 0;
+  const m = current;
+  const src = office?.scene?.canvas;
+  if (!m || !src || !src.width || performance.now() > m.until) {
+    m?.el.classList.remove("is-live");
+    return;
+  }
+  const c = m.canvas;
+  const dpr = devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(c.clientWidth * dpr));
+  const h = Math.max(1, Math.round(c.clientHeight * dpr));
+  if (c.width !== w || c.height !== h) {
+    c.width = w;
+    c.height = h;
+  }
+  // the middle of the scene's own canvas, where the camera has put the moment: a little more than the
+  // view's own size, so a worker the camera can't centre (by a wall) still makes it into the frame
+  const k = Math.min(src.width / w, src.height / h, 1.5);
+  const sw = w * k;
+  const sh = h * k;
+  const g = c.getContext("2d");
+  if (g) {
+    g.imageSmoothingEnabled = k !== 1;
+    g.imageSmoothingQuality = "high";
+    // on a phone the code card sits under the view rather than over it, so the moment can take the middle
+    const ax = phone.matches ? 0.5 : m.ax;
+    const ay = phone.matches ? 0.5 : m.ay;
+    const sx = Math.min(Math.max(0, src.width / 2 - sw * ax), src.width - sw);
+    const sy = Math.min(Math.max(0, src.height / 2 - sh * ay), src.height - sh);
+    g.drawImage(src, sx, sy, sw, sh, 0, 0, w, h);
+  }
+  copyRaf = requestAnimationFrame(copyFrame);
+}
+
+async function direct() {
+  directorTimer = 0;
+  const vis = minis.filter((m) => m.visible);
+  // the pinned office has the camera while it's on screen
+  if (!vis.length || inView) return;
+  const m = vis[turn++ % vis.length]!;
+  const o = await ready();
+  if (!o || !m.visible) {
+    directorTimer = window.setTimeout(direct, 1200);
+    return;
+  }
+  const fired = fire(o, m.moment, true, false);
+  if (fired || lastFor.has(m.moment)) {
+    if (m.moment === "rage" && fired) typeReason(fired.text);
+    current?.el.classList.remove("is-live");
+    current = m;
+    m.until = performance.now() + 5200;
+    m.el.classList.add("is-live");
+    if (!copyRaf) copyRaf = requestAnimationFrame(copyFrame);
+  }
+  directorTimer = window.setTimeout(direct, fired ? 7600 : 2500);
+}
+
+const reasonEl = $("[data-reason]");
+async function typeReason(text: string) {
+  const why = /"([^"]+)"\s*$/.exec(text)?.[1];
+  if (!reasonEl || !why) return;
+  if (reduced.matches) {
+    reasonEl.textContent = `"${why}"`;
+    return;
+  }
+  reasonEl.textContent = '"';
+  reasonEl.classList.add("is-typing");
+  for (const ch of `${why}"`) {
+    reasonEl.textContent += ch;
+    await wait(34);
+  }
+  reasonEl.classList.remove("is-typing");
+}
+
+if (minis.length) {
+  const io = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) {
+        const m = minis.find((x) => x.el === e.target);
+        if (m) m.visible = e.isIntersecting;
+      }
+      minisInView = reduced.matches ? 0 : minis.filter((m) => m.visible).length;
+      if (minisInView && !userPaused) void load().then(() => {
+        sync();
+        if (!directorTimer) directorTimer = window.setTimeout(direct, 500);
+      });
+      else sync();
+    },
+    { threshold: 0.4 },
+  );
+  for (const m of minis) io.observe(m.el);
+}
+
+/* ------------------------------------------------------------------ the redaction */
+
+const redact = $(".redact");
+if (redact) {
+  if (reduced.matches) redact.classList.add("s3");
+  else {
+    let on = false;
+    let running = false;
+    const loop = async () => {
+      running = true;
+      while (on) {
+        redact.classList.remove("s1", "s2", "s3");
+        await wait(1300);
+        redact.classList.add("s1");
+        await wait(1100);
+        redact.classList.add("s2");
+        await wait(700);
+        redact.classList.add("s3");
+        await wait(3400);
+      }
+      running = false;
+    };
+    new IntersectionObserver((es) => {
+      on = es.some((e) => e.isIntersecting);
+      if (on && !running) void loop();
+    }, { threshold: 0.5 }).observe(redact);
+  }
+}
+
+/* ------------------------------------------------------------------ the showcase tilts flat as it arrives */
+
+const showcase = $(".showcase");
+function tiltShowcase() {
+  if (!showcase || reduced.matches) return;
+  const r = showcase.getBoundingClientRect();
+  if (r.bottom < 0 || r.top > innerHeight) return;
+  const p = Math.min(1, Math.max(0, (innerHeight - r.top) / (innerHeight * 0.75)));
+  showcase.style.setProperty("--tilt", `${(8 * (1 - p)).toFixed(2)}deg`);
+  showcase.style.setProperty("--lift", `${(-36 * p).toFixed(1)}px`);
+}
+
+/* ------------------------------------------------------------------ magnetic buttons and the spotlight */
+
+const magnets = $$(".magnetic");
+const beam = $(".beam");
+let pointer: { x: number; y: number } | null = null;
+let pointerQueued = false;
+function pull() {
+  pointerQueued = false;
+  if (!pointer) return;
+  for (const el of magnets) {
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const cy = r.top + r.height / 2;
+    const dx = pointer.x - cx;
+    const dy = pointer.y - cy;
+    const near = Math.abs(dx) < r.width / 2 + 28 && Math.abs(dy) < r.height / 2 + 28;
+    el.style.transform = near ? `translate(${(dx * 0.14).toFixed(1)}px, ${(dy * 0.24).toFixed(1)}px)` : "";
+  }
+  if (beam && pointer.y < innerHeight) beam.style.transform = `translateX(${((pointer.x - innerWidth / 2) * 0.05).toFixed(1)}px)`;
+}
+if (!reduced.matches) {
+  addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse" || !fine.matches) return;
+    pointer = { x: e.clientX, y: e.clientY };
+    if (!pointerQueued) {
+      pointerQueued = true;
+      requestAnimationFrame(pull);
+    }
+  }, { passive: true });
+}
+
+/* ------------------------------------------------------------------ the tour */
+
+const tourDlg = $<HTMLDialogElement>(".tour-dlg");
+const tourVideo = tourDlg?.querySelector("video");
+for (const b of $$("[data-tour]")) {
+  b.addEventListener("click", () => {
+    if (!tourDlg) return;
+    tourDlg.showModal();
+    void tourVideo?.play().catch(() => {});
+  });
+}
+tourDlg?.querySelector(".tour-close")?.addEventListener("click", () => tourDlg.close());
+tourDlg?.addEventListener("click", (e) => {
+  if (e.target === tourDlg) tourDlg.close();
+});
+tourDlg?.addEventListener("close", () => tourVideo?.pause());
+
+/* ------------------------------------------------------------------ wiring the office */
+
 if (win && mount) {
   userPaused = reduced.matches;
   paintPause();
@@ -174,87 +624,66 @@ if (win && mount) {
   if (document.readyState === "complete") setTimeout(begin, 60);
   else addEventListener("load", () => setTimeout(begin, 60), { once: true });
   document.addEventListener("visibilitychange", sync);
+  void boot();
 
-  /* toolbar */
-  const setPressed = (sel: string, on: boolean) => $(sel, win)?.setAttribute("aria-pressed", String(on));
-  const modeTo = (m: "pixel" | "ascii") => {
-    for (const b of $$<HTMLButtonElement>("[data-mode]", win)) b.setAttribute("aria-pressed", String(b.dataset.mode === m));
-    void load().then((o) => o?.setMode(m));
-  };
-  const toggles = { crt: false, stream: false };
-  const toggle = (k: keyof typeof toggles, on = !toggles[k]) => {
-    toggles[k] = on;
-    setPressed(`[data-toggle="${k}"]`, on);
-    void load().then((o) => (k === "crt" ? o?.setCrt(on) : o?.setDirector(on)));
-  };
-  for (const b of $$<HTMLButtonElement>("[data-mode]", win)) b.addEventListener("click", () => modeTo(b.dataset.mode as "pixel" | "ascii"));
-  $('[data-toggle="crt"]', win)?.addEventListener("click", () => toggle("crt"));
-  $('[data-toggle="stream"]', win)?.addEventListener("click", () => toggle("stream"));
+  for (const b of $$<HTMLButtonElement>("[data-mode]", win)) {
+    b.addEventListener("click", () => {
+      for (const x of $$<HTMLButtonElement>("[data-mode]", win)) x.setAttribute("aria-pressed", String(x === b));
+      void load().then((o) => o?.setMode(b.dataset.mode as "pixel" | "ascii"));
+    });
+  }
   $('[data-toggle="pause"]', win)?.addEventListener("click", () => {
     if (userPaused) return void play();
     userPaused = true;
     sync();
   });
-  for (const b of $$("[data-stream]")) {
-    b.addEventListener("click", () => {
-      toggle("stream", true);
-      void play();
-      (matchMedia("(min-width: 1200px)").matches ? $("#top") : win)?.scrollIntoView({ behavior: reduced.matches ? "auto" : "smooth", block: "start" });
+
+  /* the "your turn" chips */
+  let last: { m: string; id: string; at: number } | null = null;
+  for (const btn of $$<HTMLButtonElement>("[data-moment]")) {
+    btn.addEventListener("click", async () => {
+      const m = btn.dataset.moment as Moment;
+      const o = await ready(true);
+      if (!o) return;
+      if (last && last.m === m && performance.now() - last.at < 2_500) {
+        // a double press brings the camera back to the same worker instead of starting another
+        o.focus(last.id);
+        return;
+      }
+      const fired = fire(o, m, true, true);
+      btn.classList.remove("fired", "busy");
+      void btn.offsetWidth;
+      clearTimeout(Number(btn.dataset.t));
+      btn.dataset.t = String(window.setTimeout(() => btn.classList.remove("fired", "busy"), 2_400));
+      if (fired) {
+        last = { m, id: fired.workerId, at: performance.now() };
+        btn.classList.add("fired");
+      } else {
+        btn.classList.add("busy");
+        say(m === "arrive" ? "The office is full for now; try again in a moment." : "Everyone's in the middle of something; try again in a moment.");
+      }
     });
   }
-  // The office's own keys, for the bits that make sense here.
-  addEventListener("keydown", (e) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return;
-    const t = e.target as HTMLElement;
-    if (t.closest("input, textarea, select, [contenteditable]")) return;
-    const k = e.key.toLowerCase();
-    if (k === "a") modeTo($('[data-mode="ascii"]', win)?.getAttribute("aria-pressed") === "true" ? "pixel" : "ascii");
-    else if (k === "c") toggle("crt");
-    else if (k === "h") toggle("stream");
+
+  /* F flips a table, wherever you are on the page */
+  addEventListener("keydown", async (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || e.key.toLowerCase() !== "f") return;
+    if ((e.target as HTMLElement).closest("input, textarea, select, [contenteditable], dialog")) return;
+    const o = await ready(true);
+    if (o) fire(o, "flip", !reduced.matches, true);
   });
 
-  /* the legend */
-  let hoverTimer = 0;
-  let last: { m: string; id: string; at: number } | null = null;
-  const fire = async (btn: HTMLButtonElement, focus: boolean, start: boolean) => {
-    const m = btn.dataset.moment as Moment;
-    // wiggling the mouse over one line plays it once, not on every re-entry
-    if (!focus && last && last.m === m && performance.now() - last.at < 2_500) return;
-    let o = office;
-    if (start && (!o || !o.running)) {
-      await play();
-      o = office;
-    }
-    if (!o || !o.running) return;
-    if (focus && last && last.m === m && performance.now() - last.at < 3_000) {
-      // the hover already played it: a click just brings the camera in
-      o.focus(last.id);
-      return;
-    }
-    const fired = o.trigger(m, { focus });
-    btn.classList.remove("fired", "busy");
-    void btn.offsetWidth;
-    clearTimeout(Number(btn.dataset.t));
-    btn.dataset.t = String(window.setTimeout(() => btn.classList.remove("fired", "busy"), 2_600));
-    if (fired) {
-      last = { m, id: fired.workerId, at: performance.now() };
-      btn.classList.add("fired");
-      say(fired.text);
-    } else {
-      btn.classList.add("busy");
-      say(m === "arrive" || m === "beam" ? "The office is full for now; try again in a moment." : "Everyone's in the middle of something; try again in a moment.");
-    }
-  };
-  for (const btn of $$<HTMLButtonElement>(".moment")) {
-    btn.addEventListener("pointerenter", (e) => {
-      if (e.pointerType !== "mouse" || !canHover.matches) return;
-      clearTimeout(hoverTimer);
-      hoverTimer = window.setTimeout(() => void fire(btn, false, false), 180);
-    });
-    btn.addEventListener("pointerleave", () => clearTimeout(hoverTimer));
-    btn.addEventListener("click", () => {
-      clearTimeout(hoverTimer);
-      void fire(btn, true, true);
-    });
-  }
+  layoutStage();
+  new ResizeObserver(() => {
+    layoutStage();
+    checkBeats();
+    tiltWindow();
+  }).observe(stage ?? win);
+  addEventListener("resize", layoutStage);
+  addEventListener("scroll", onScroll, { passive: true });
+  checkBeats();
+  tiltWindow();
+  markPinned();
+  tiltShowcase();
 }
+
