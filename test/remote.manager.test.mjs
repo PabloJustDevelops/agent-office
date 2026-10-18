@@ -407,3 +407,33 @@ test("through the manager with the real ingest watcher: a sandbox's workers walk
   assert.ok(events.every((e) => e.host.id === "vercel:agentoffice-test" && e.workerId.startsWith("vercel:agentoffice-test/")));
   assert.deepEqual(r.hosts(), []);
 });
+
+test("a CLI that is a .cmd on Windows: npm's shim runs its script with node, any other goes through cmd.exe quoted", async () => {
+  assert.deepEqual(M.spawnLine("/usr/bin/railway", ["list", "--json"], "linux"), { file: "/usr/bin/railway", args: ["list", "--json"], cmd: false });
+  assert.deepEqual(M.spawnLine("C:\\bin\\railway.exe", ["a b"], "win32"), { file: "C:\\bin\\railway.exe", args: ["a b"], cmd: false });
+  assert.deepEqual(M.spawnLine("C:\\Program Files (x86)\\npm\\railway.cmd", ["sandbox", "list", "--json", "-p", "a b&c", ""], "win32", "C:\\Windows\\system32\\cmd.exe"), {
+    file: "C:\\Windows\\system32\\cmd.exe",
+    args: ["/d", "/s", "/c", '""C:\\Program Files (x86)\\npm\\railway.cmd" sandbox list --json -p "a b&c" """'],
+    cmd: true,
+  });
+  for (const bad of ['say "hi"', "%PATH%", "line\nbreak", "C:\\my dir\\", "!x!"]) {
+    assert.throws(() => M.spawnLine("C:\\npm\\boat.cmd", ["exec", bad], "win32"), /can't pass .* to a \.cmd on Windows/, JSON.stringify(bad));
+  }
+  // npm's shim (cmd-shim's own text): its script, with node, so even a multi-line sh script arrives intact.
+  const dir = tmp();
+  writeFileSync(join(dir, "argv.js"), "process.stdout.write(JSON.stringify(process.argv.slice(2)))");
+  const npmShim = join(dir, "railway.cmd");
+  writeFileSync(npmShim, '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\argv.js" %*\r\n');
+  const script = ["sandbox", "exec", "--", "sh", "-c", 'printf "%s" "$HOME"\nexit 0\n'];
+  assert.deepEqual(M.spawnLine(npmShim, script, "win32"), { file: process.execPath, args: [join(dir, "argv.js"), ...script], cmd: false });
+  if (process.platform !== "win32") return;
+  // The real thing, both ways, started the way the railway and boat providers start their CLIs.
+  const r = await M.run(npmShim, script, { timeoutMs: 20_000 });
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), script);
+  writeFileSync(join(dir, "other cli.cmd"), `@"${process.execPath}" "${join(dir, "argv.js")}" %*\r\n`);
+  const args = ["list", "--json", "-p", "a b", "x&y|z", "(paren)", "^caret", "<in>", ""];
+  const r2 = await M.run(join(dir, "other cli.cmd"), args, { timeoutMs: 20_000 });
+  assert.equal(r2.code, 0, r2.stderr);
+  assert.deepEqual(JSON.parse(r2.stdout), args);
+});

@@ -7,9 +7,9 @@
  * are scrubbed so a token echoed back by an API never reaches the terminal.
  */
 import { spawn } from "node:child_process";
-import { accessSync, constants, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import type { Host, HostKind, RemoteTarget } from "../shared/events.ts";
 
 export type CloudKind = Exclude<HostKind, "local" | "ssh">;
@@ -58,13 +58,63 @@ export interface RunOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+/** An argument as cmd.exe hands it on intact: a plain word bare, anything else quoted; null when quoting can't protect it. */
+function cmdArg(a: string): string | null {
+  if (/^[A-Za-z0-9_@+=:,./\\-]+$/.test(a)) return a;
+  // Inside quotes cmd.exe still expands %VAR% (and !VAR!), a line break ends the command, and a
+  // trailing backslash would escape the closing quote for the program reading its arguments.
+  if (/["%!\r\n]/.test(a) || a.endsWith("\\")) return null;
+  return `"${a}"`;
+}
+
+/** The script an npm .cmd shim runs with node ("%dp0%\node_modules\@railway\cli\bin\railway.js" %*), if `cmd` is one. */
+function npmShimScript(cmd: string): string | undefined {
+  try {
+    const text = readFileSync(cmd, "utf8");
+    const m = text.length < 16 << 10 ? /"%(?:dp0%|~dp0)\\?([^"%*?<>|]+\.[cm]?js)"\s+%\*/i.exec(text) : null;
+    const script = m ? join(dirname(cmd), m[1]!) : undefined;
+    return script && existsSync(script) ? script : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface SpawnLine {
+  file: string;
+  args: string[];
+  /** Through cmd.exe: the command line is already quoted. */
+  cmd: boolean;
+}
+
+/**
+ * How to start `cmd args` without a shell. On Windows a .cmd or .bat only runs inside cmd.exe, and
+ * Node refuses to start one directly. npm's shims (the railway CLI's, say) just run a script with
+ * node, so that script runs with node here, arguments intact; any other .cmd goes through cmd.exe
+ * with every argument quoted for it, or not at all.
+ */
+export function spawnLine(cmd: string, args: string[], platform: string = process.platform, comspec = process.env.ComSpec): SpawnLine {
+  if (platform !== "win32" || !/\.(cmd|bat)$/i.test(cmd)) return { file: cmd, args, cmd: false };
+  const script = npmShimScript(cmd);
+  if (script) return { file: process.execPath, args: [script, ...args], cmd: false };
+  const quoted = args.map(cmdArg);
+  const odd = /["%!\r\n]/.test(cmd) ? cmd : args.find((_, i) => quoted[i] === null);
+  if (odd !== undefined) throw new RemoteError("failed", `${cmd}: can't pass ${JSON.stringify(odd.slice(0, 40))} to a .cmd on Windows`);
+  return { file: comspec || "cmd.exe", args: ["/d", "/s", "/c", `""${cmd}"${quoted.map((q) => ` ${q}`).join("")}"`], cmd: true };
+}
+
 /** Run a program (no shell). Rejects only when it cannot start; a non-zero exit resolves. */
 export function run(cmd: string, args: string[], o: RunOptions): Promise<RunResult> {
   const max = o.maxBytes ?? 64 << 20;
   return new Promise((resolve, reject) => {
+    let line: SpawnLine;
     let child;
     try {
-      child = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], env: o.env ?? process.env, windowsHide: true });
+      line = spawnLine(cmd, args);
+    } catch (err) {
+      return reject(err);
+    }
+    try {
+      child = spawn(line.file, line.args, { stdio: ["pipe", "pipe", "pipe"], env: o.env ?? process.env, windowsHide: true, windowsVerbatimArguments: line.cmd });
     } catch (err) {
       return reject(new RemoteError("missing", `${cmd}: ${(err as Error).message}`));
     }
@@ -76,6 +126,8 @@ export function run(cmd: string, args: string[], o: RunOptions): Promise<RunResu
     let overflow = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const kill = () => {
+      // Killing cmd.exe would leave the program it started running: end the whole tree.
+      if (line.cmd && child.pid) spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
       child.kill("SIGTERM");
       killTimer ??= setTimeout(() => child.kill("SIGKILL"), 2_000);
       killTimer.unref?.();
