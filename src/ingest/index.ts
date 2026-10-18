@@ -117,7 +117,10 @@ interface Tracked {
   parentPath?: string;
   metaPath?: string;
   metaMtime?: number;
-  /** Claude subagent whose .meta.json says finished: its lines are no longer shown. */
+  /**
+   * Claude subagent whose .meta.json says finished: its lines are no longer shown. Not for good: a
+   * message to a finished agent resumes it and rewrites its meta without the flag.
+   */
   finished?: boolean;
   /** Pulled in as the parent of an active intern: announce it as active at this wall ms. */
   activeAt?: number;
@@ -792,16 +795,16 @@ class Watcher {
     const prefetching = pre.size > 0;
     const mustStat = (path: string) => !fresh.has(path) && (!prefetching || full || !pre.get(path));
     const need = list.filter((t) => mustStat(t.path)).map((t) => t.path);
-    const metas = list.filter((t) => t.metaPath && !t.finished && !fresh.has(t.metaPath) && (!prefetching || full)).map((t) => t.metaPath!);
+    const metas = list.filter((t) => t.metaPath && !fresh.has(t.metaPath) && (!prefetching || full)).map((t) => t.metaPath!);
     const asked = [...need, ...metas];
     const stats = asked.length ? await this.source.stat(asked) : [];
     const statOf = new Map<string, FileStat | null>();
     asked.forEach((p, i) => statOf.set(p, stats[i] ?? null));
     const metaStat = (p: string) => fresh.get(p) ?? statOf.get(p) ?? undefined;
 
-    // Sibling meta files that changed.
+    // Sibling meta files that changed (a finished subagent's too: it may have been resumed).
     const metaChanged = list.filter((t) => {
-      if (!t.metaPath || t.finished) return false;
+      if (!t.metaPath) return false;
       const m = metaStat(t.metaPath)?.mtimeMs;
       return m !== undefined && m !== t.metaMtime;
     });
@@ -811,8 +814,14 @@ class Watcher {
         t.metaMtime = metaStat(t.metaPath!)!.mtimeMs;
         const j = json[i] ?? null;
         if (t.agent === "claude") {
-          if (j?.finished !== true) return;
-          t.finished = true;
+          const done = j?.finished === true;
+          if (done === !!t.finished) return;
+          t.finished = done;
+          if (!done) {
+            // Resumed: the intern walks back in with its next line.
+            t.parser.state.main.announced = false;
+            return;
+          }
         }
         this.forwardAll(t.parser.meta?.(j) ?? []);
       });

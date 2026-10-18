@@ -266,6 +266,54 @@ test("claude subagents: walk in, leave on end_turn, on meta finished, or when qu
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("claude subagents: one resumed after it finished (a message to it) walks back in", async () => {
+  const dir = fixtureDir("claude");
+  const o = office(dir, ["claude"]);
+  await o.tick();
+  const file = join(SUBAGENTS(dir), "agent-r1.jsonl");
+  const meta = join(SUBAGENTS(dir), "agent-r1.meta.json");
+  const L = (l) => claudeLine({ isSidechain: true, agentId: "r1", ...l });
+  const call = (id) => L({ type: "assistant", message: { id: `m-${id}`, content: [{ type: "tool_use", id, name: "Bash", input: { command: "git status" } }], stop_reason: "tool_use" } });
+  const result = (id) => L({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: "ok" }] } });
+  const done = L({ type: "assistant", message: { id: "m-done", content: [{ type: "text", text: "report" }], stop_reason: "end_turn" } });
+  let metaAt = Date.now();
+  const writeMeta = (m) => {
+    writeFileSync(meta, JSON.stringify({ agentType: "general-purpose", ...m }));
+    touch(meta, (metaAt += 5_000));
+  };
+  const mine = (evs) => evs.filter((e) => e.workerId === "agent-r1");
+
+  writeMeta({});
+  writeFileSync(file, L({ type: "user", message: { role: "user", content: "do the thing" } }) + call("c1"));
+  assert.deepEqual(kinds(mine(await o.tick())), ["subagent_start", "tool_start"]);
+
+  // It finishes: its turn ends, and Claude Code marks the meta finished (read first: it just leaves).
+  appendFileSync(file, result("c1") + done);
+  writeMeta({ finished: true });
+  assert.deepEqual(kinds(mine(await o.tick())), ["subagent_end"]);
+  assert.deepEqual(mine(await o.tick()), []);
+
+  // A message resumes it: the meta is rewritten without "finished" and it gets to work again.
+  writeMeta({});
+  appendFileSync(file, L({ type: "user", message: { role: "user", content: "<made-up>message</made-up>" }, origin: { kind: "peer" } }) + call("c2"));
+  let evs = mine(await o.tick());
+  assert.deepEqual(kinds(evs), ["subagent_start", "tool_start"]);
+  assert.equal(evs[0].parentId, SID);
+  assert.equal(evs[0].role, "general-purpose");
+  appendFileSync(file, result("c2") + call("c3"));
+  assert.deepEqual(kinds(mine(await o.tick())), ["tool_end", "tool_start"]);
+
+  // ...and finishes again.
+  appendFileSync(file, result("c3") + done);
+  writeMeta({ finished: true });
+  evs = mine(await o.tick());
+  assert.equal(evs.at(-1).kind, "subagent_end");
+  appendFileSync(file, call("c4"));
+  assert.deepEqual(mine(await o.tick()), [], "a finished agent's stray lines stay hidden");
+  o.ingest.stop();
+  rmSync(dir, { recursive: true, force: true });
+});
+
 test("a busy intern keeps its quiet parent in the office", async () => {
   const dir = fixtureDir("claude");
   const o = office(dir, ["claude"]);
