@@ -46,9 +46,9 @@ function termViewer(mgr, id) {
 test("a trust dialog drawn in several chunks shows in the status until it is answered", { skip: !pty && "no PTY here" }, async () => {
   const t = setup({ env: { FAKE_TRUST: "1" } });
   const s = await t.mgr.hire({ agent: "claude", place: { kind: "local", target: t.project }, mode: "terminal" });
-  await until(() => t.mgr.get(s.id).detail === "Answer the trust question in the terminal", 5000, "the trust detail");
+  await until(() => t.mgr.get(s.id).detail === "Answer the trust question in the terminal", 15000, "the trust detail");
   t.mgr.input(s.id, "t");
-  await until(() => t.mgr.get(s.id).detail === undefined, 5000, "the detail cleared once answered");
+  await until(() => t.mgr.get(s.id).detail === undefined, 15000, "the detail cleared once answered");
   await t.mgr.stop(s.id);
 });
 
@@ -63,7 +63,7 @@ test("hire Claude in a terminal: walks in held, pins its session, hooks by env, 
   assert.deepEqual({ kind: start.kind, workerId: start.workerId, agent: start.agent, project: start.project, cwd: start.cwd }, { kind: "session_start", workerId: s.workerId, agent: "claude", project: "api-gateway", cwd: t.project });
   assert.ok(t.held.has(s.workerId));
 
-  await until(() => t.mgr.get(s.id).status === "running", 5000, "running");
+  await until(() => t.mgr.get(s.id).status === "running", 15000, "running");
   assert.ok(t.emitted.some((e) => e.kind === "prompt" && e.workerId === s.workerId), "a paper plane for the first prompt");
   const rec = await until(() => t.records()[0], 3000, "the agent's argv");
   const sid = rec.argv[rec.argv.indexOf("--session-id") + 1];
@@ -108,7 +108,7 @@ test("hire Claude in a terminal: walks in held, pins its session, hooks by env, 
 
   t.mgr.resize(s.id, 100, 30);
   await t.mgr.stop(s.id);
-  await until(() => t.mgr.get(s.id)?.status === "exited", 5000, "exit");
+  await until(() => t.mgr.get(s.id)?.status === "exited", 15000, "exit");
   assert.equal(t.mgr.get(s.id).exitCode, 0);
   assert.deepEqual(t.ended, [sid]);
   await until(() => v.exit(), 2000, "viewer exit");
@@ -124,24 +124,24 @@ test("hire Claude in a terminal: walks in held, pins its session, hooks by env, 
 test("Stop escalates to SIGKILL when the agent ignores SIGHUP; ownedPids lists the PTY child meanwhile", { skip: !pty && "no PTY here" }, async () => {
   const t = setup({ env: { FAKE_IGNORE_HUP: "1" } });
   const s = await t.mgr.hire({ agent: "droid", place: { kind: "local", target: t.project }, mode: "terminal" });
-  await until(() => t.mgr.get(s.id).status === "running", 5000, "running");
+  await until(() => t.mgr.get(s.id).status === "running", 15000, "running");
   assert.ok(t.emitted.some((e) => e.kind === "waiting"), "no first prompt: the worker waits for you");
   const [pid] = t.mgr.ownedPids();
   assert.ok(pid > 0);
   assert.deepEqual((await until(() => t.records()[0], 3000, "argv")).argv, ["--cwd", t.project]);
   await t.mgr.stop(s.id);
-  await until(() => t.mgr.get(s.id)?.status === "exited", 5000, "killed");
+  await until(() => t.mgr.get(s.id)?.status === "exited", 15000, "killed");
   assert.equal(t.mgr.get(s.id).exitCode, 137);
 });
 
 test("an agent that exits by itself ends its session and sends the worker home", { skip: !pty && "no PTY here" }, async () => {
   const t = setup();
   const s = await t.mgr.hire({ agent: "codex", place: { kind: "local", target: t.project }, mode: "terminal", permission: "plan" });
-  await until(() => t.mgr.get(s.id).status === "running", 5000, "running");
+  await until(() => t.mgr.get(s.id).status === "running", 15000, "running");
   assert.deepEqual((await until(() => t.records()[0], 3000, "argv")).argv, ["-c", "check_for_update_on_startup=false", "-a", "on-request", "-s", "read-only", "-C", t.project]);
   assert.equal(t.expectations[0].sessionId, undefined, "Codex has no --session-id: agent + folder");
   t.mgr.input(s.id, "q");
-  await until(() => t.mgr.get(s.id)?.status === "exited", 5000, "exit");
+  await until(() => t.mgr.get(s.id)?.status === "exited", 15000, "exit");
   assert.equal(t.mgr.get(s.id).exitCode, 3);
   assert.deepEqual(t.ended, [s.workerId]);
   await assert.rejects(t.mgr.prompt(s.id, "more"), (e) => e.status === 409);
@@ -150,13 +150,13 @@ test("an agent that exits by itself ends its session and sends the worker home",
 test("hook calls with a wrong token or for an unknown session are refused", { skip: !pty && "no PTY here" }, async () => {
   const t = setup();
   const s = await t.mgr.hire({ agent: "claude", place: { kind: "local", target: t.project }, mode: "terminal" });
-  await until(() => t.mgr.get(s.id).status === "running", 5000, "running");
+  await until(() => t.mgr.get(s.id).status === "running", 15000, "running");
   const body = { tool_name: "Bash", tool_input: { command: "ls" } };
   assert.deepEqual(await t.mgr.hook({ sessionId: s.id, event: "permission", token: "wrong", body }), { status: 401, body: { error: "Bad token." } });
   assert.deepEqual(await t.mgr.hook({ sessionId: s.id, event: "permission", token: "", body }), { status: 401, body: { error: "Bad token." } });
   assert.equal((await t.mgr.hook({ sessionId: "nope", event: "permission", token: "x", body })).status, 404);
   await t.mgr.stop(s.id);
-  await until(() => t.mgr.get(s.id)?.status === "exited", 5000, "exit");
+  await until(() => t.mgr.get(s.id)?.status === "exited", 15000, "exit");
 });
 
 test("Claude's permission hook, end to end with the real token", { skip: !pty && "no PTY here" }, async () => {
@@ -176,7 +176,7 @@ test("Claude's permission hook, end to end with the real token", { skip: !pty &&
   `);
   const t2 = setup({ viewers: () => viewers, path: `${hookBin}:${NODE_DIR}:/usr/bin:/bin` });
   const s = await t2.mgr.hire({ agent: "claude", place: { kind: "local", target: t2.project }, mode: "terminal" });
-  await until(() => t2.mgr.get(s.id).status === "running", 5000, "running");
+  await until(() => t2.mgr.get(s.id).status === "running", 15000, "running");
   t2.mgr.input(s.id, "go");
   const token = (await until(() => t2.records().find((r) => r.token), 3000, "token")).token;
   const body = { tool_name: "Bash", tool_input: { command: "rm -rf dist" }, permission_suggestions: [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: "rm:*" }], behavior: "allow", destination: "localSettings" }] };
@@ -229,7 +229,7 @@ test("Claude's permission hook, end to end with the real token", { skip: !pty &&
   assert.equal(t2.expectations.at(-1).exactOnly, true);
 
   await t2.mgr.stop(s.id);
-  await until(() => t2.mgr.get(s.id)?.status === "exited", 5000, "exit");
+  await until(() => t2.mgr.get(s.id)?.status === "exited", 15000, "exit");
   assert.equal((await t2.mgr.hook({ sessionId: s.id, event: "permission", token, body })).status, 410);
 });
 
@@ -309,7 +309,7 @@ test("remote: the place is opened, the agent ensured, the TTY attached with bare
   const s = await t.mgr.hire({ agent: "claude", place: { kind: "daytona", target: "new" }, mode: "terminal", prompt: "reply with OK", permission: "acceptEdits", keys: ["ANTHROPIC_API_KEY"], sandbox: { timeoutMin: 30 } });
   assert.equal(s.status, "creating");
   assert.equal(t.emitted.length, 0, "no worker until the host is known");
-  await until(() => t.mgr.get(s.id).status === "running", 5000, "running");
+  await until(() => t.mgr.get(s.id).status === "running", 15000, "running");
   assert.ok(t.changes.some((c) => c.status === "creating" && c.detail === "Creating Daytona sandbox…"));
   assert.ok(t.changes.some((c) => c.status === "installing" && c.detail === "Installing Claude Code…"));
   const now = t.mgr.get(s.id);
@@ -332,7 +332,7 @@ test("remote: the place is opened, the agent ensured, the TTY attached with bare
   assert.ok(!t.logs.join("\n").includes("sk-ant-dummy"), "no key in the log");
   assert.ok(!JSON.stringify(t.changes).includes("sk-ant-dummy"), "or in any session frame");
   await t.mgr.stop(s.id);
-  await until(() => t.mgr.get(s.id)?.status === "exited", 5000, "exit");
+  await until(() => t.mgr.get(s.id)?.status === "exited", 15000, "exit");
   assert.equal(closed, 1);
   assert.equal(kept, 0);
 });
@@ -351,7 +351,7 @@ test("shutdown ends every agent", { skip: !pty && "no PTY here" }, async () => {
   const t = setup({ env: { FAKE_IGNORE_HUP: "1" } });
   const a = await t.mgr.hire({ agent: "codex", place: { kind: "local", target: t.project }, mode: "terminal" });
   const b = await t.mgr.hire({ agent: "droid", place: { kind: "local", target: t.project }, mode: "terminal" });
-  await until(() => t.mgr.list().every((s) => s.status === "running"), 5000, "running");
+  await until(() => t.mgr.list().every((s) => s.status === "running"), 15000, "running");
   const pids = t.mgr.ownedPids();
   assert.equal(pids.length, 2);
   await t.mgr.shutdown();

@@ -142,6 +142,7 @@ export const AGENT_FACTS: Record<AgentKind, AgentFacts> = {
     installCmd: "npm i -g command-code",
     nodeMin: 22,
     keyNames: ["COMMAND_CODE_API_KEY"],
+    chat: "acp",
   },
   codex: {
     bins: ["codex"],

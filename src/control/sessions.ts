@@ -25,6 +25,7 @@ import { safe } from "../ingest/redact.ts";
 import { scrubMessage } from "../remote/util.ts";
 import { chatLaunch, driveOf, findBin, permissionsOf, pinsSessionId, probeAgents, terminalLaunch, type FoundBins } from "./agents.ts";
 import { ApprovalQueue, approvalPose, claudeToolDetail, claudeToolLabel, hookReply, sessionPermissions, tokenMatches, type HookOutcome } from "./approvals.ts";
+import { AcpChat, ACP_PROFILES } from "./chat/acp.ts";
 import { ClaudeChat } from "./chat/claude.ts";
 import { CodexChat } from "./chat/codex.ts";
 import { localPipe } from "./chat/common.ts";
@@ -474,6 +475,11 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
       const proc = await pipe(file!, args, l.cwd, localEnv(l, launch), { watchdog: true });
       const client = opencodeClient({ port: oc.port, password: oc.password, directory: l.cwd });
       await runChat(l, proc, new OpencodeChat({ client, mode: "chat", proc, where: l.s.title, permission, home: ctx.userHome, now: ctx.now }));
+    } else if (AGENT_FACTS[agent].chat === "acp") {
+      const launch = chatLaunch({ agent, bin, cwd: l.cwd, permission });
+      const [file, ...args] = argvOf(launch);
+      const proc = await pipe(file!, args, l.cwd, localEnv(l, launch));
+      await runChat(l, proc, new AcpChat({ proc, cwd: l.cwd, where: l.s.title, name: name(agent), permission, version: ctx.version, home: ctx.userHome, now: ctx.now, ...ACP_PROFILES[agent] }));
     } else throw new ControlError(400, `${name(agent)} has no chat mode.`);
   }
 
@@ -536,7 +542,9 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
       }
       const conn = agent === "claude"
         ? new ClaudeChat({ proc, sessionId: sessionId!, where, home: "", now: ctx.now })
-        : new CodexChat({ proc, cwd: rp.cwd, where, permission, version: ctx.version, home: "", now: ctx.now });
+        : AGENT_FACTS[agent].chat === "acp"
+          ? new AcpChat({ proc, cwd: rp.cwd, where, name: name(agent), permission, version: ctx.version, home: "", now: ctx.now, ...ACP_PROFILES[agent] })
+          : new CodexChat({ proc, cwd: rp.cwd, where, permission, version: ctx.version, home: "", now: ctx.now });
       await runChat(l, proc, conn);
     }
     if (!l.finished) l.keep = rp.keepAlive();
@@ -707,7 +715,7 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
 
   /* --------------------------------------------------------------- chat */
 
-  async function runChat(l: Live, proc: PipeProc, conn: ClaudeChat | CodexChat | OpencodeChat): Promise<void> {
+  async function runChat(l: Live, proc: PipeProc, conn: ClaudeChat | CodexChat | OpencodeChat | AcpChat): Promise<void> {
     l.proc = proc;
     l.conn = conn;
     l.subs.push(
