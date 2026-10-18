@@ -127,6 +127,28 @@ test("a login shell that hangs is killed and import says so", async () => {
   assert.ok(Date.now() - t < 3_000);
 });
 
+test("jobs the rc files leave running neither hold up the read nor outlive it", async () => {
+  // One keeps the shell's stdout open, one doesn't; both are in the probe's process group.
+  const pids = join(TMP, `pids-${n++}`);
+  const sh = fakeShell(`sleep 30 & echo $! >> '${pids}'\nsleep 31 >/dev/null 2>&1 & echo $! >> '${pids}'`);
+  const t = Date.now();
+  const got = await M.loginShellVars(["ANTHROPIC_API_KEY"], { shell: sh, env: { PATH: process.env.PATH, HOME: TMP }, timeoutMs: 10_000 });
+  assert.equal(got?.ANTHROPIC_API_KEY, DUMMY, "the answer, not the timeout");
+  assert.ok(Date.now() - t < 5_000, "taken at the closing marker, not when stdout closes");
+  const jobs = readFileSync(pids, "utf8").trim().split("\n").map(Number);
+  assert.equal(jobs.length, 2);
+  const alive = (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (const end = Date.now() + 2_000; jobs.some(alive) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 20));
+  assert.deepEqual(jobs.filter(alive), [], "both jobs are gone");
+});
+
 test("loginShellEnv reads the whole environment (service only); adoptLoginEnv drops the nested-agent markers", async () => {
   const sh = fakeShell();
   const env = await M.loginShellEnv({ shell: sh, env: { PATH: process.env.PATH, HOME: TMP } });
