@@ -1,6 +1,6 @@
 {
   "name": "theagentoffice",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A live pixel-art office for your coding agents. Claude Code, Codex, Command Code, opencode, Cursor, Droid, Qwen Code and Gemini CLI sessions, local or in Daytona, Railway, Vercel and boat sandboxes, become little workers at desks.",
   "type": "module",
   "bin": {
