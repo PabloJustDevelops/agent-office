@@ -23,9 +23,12 @@ import { ptyKind } from "./pty.ts";
 import {
   defaultRun, installService, readServiceFile, serviceStatus, startService, supported, uninstallService, unitPath, type ServiceDeps,
 } from "./service.ts";
-import { ControlError, FILES } from "./types.ts";
+import { ControlError, FILES, controlSupported } from "./types.ts";
 
 type Out = (line?: string) => void;
+
+/** Why the office is watch-only on Windows (and anything else that isn't macOS or Linux). */
+export const WATCH_ONLY = "hiring and driving agents from the page needs macOS or Linux; on this machine the office is watch-only.";
 
 /** Open a URL in the default browser; quietly does nothing without an opener. */
 export function openBrowser(url: string): void {
@@ -97,8 +100,12 @@ export async function waitForOffice(ms: number, o: { service?: boolean; notPid?:
 }
 
 /** `agentoffice open [--print] [--rotate]`. */
-export async function runOpen(argv: string[], version: string, out: Out): Promise<number> {
+export async function runOpen(argv: string[], version: string, out: Out, platform: string = process.platform): Promise<number> {
   const flags = new Set(argv);
+  if (!controlSupported(platform) && !flags.has("--help") && !flags.has("-h")) {
+    out(`${PAD}${yellow("There are no controls to unlock here:")} ${dim(WATCH_ONLY)}`);
+    return 1;
+  }
   if (flags.has("--help") || flags.has("-h")) {
     out(`
 ${bold("agentoffice open")}  unlock hiring and driving agents in a browser
@@ -197,9 +204,13 @@ export async function serviceCommand(cmd: "install" | "uninstall", version: stri
 }
 
 /** doctor's rows for the control plane (this machine only). */
-export async function doctorRows(version: string, out: Out): Promise<void> {
+export async function doctorRows(version: string, out: Out, platform: string = process.platform): Promise<void> {
   const d = serviceDeps(version);
   const label = (s: string) => dim(s.padEnd(11));
+  if (!controlSupported(platform)) {
+    out(`${PAD}${label("Controls")}${dim(`off: ${WATCH_ONLY}`)}`);
+    return;
+  }
   const secret = existsSync(join(d.home, FILES.control));
   out(`${PAD}${label("Controls")}${secret ? green("unlock secret set up") : dim("set up on the first start")} ${dim("· agentoffice open unlocks a browser")}`);
   const pty = await ptyKind().catch(() => null);

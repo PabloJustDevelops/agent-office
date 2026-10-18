@@ -47,6 +47,11 @@ export class ControlError extends Error {
 
 /* ------------------------------------------------------------ constants */
 
+/** Where the control plane runs: it needs PTYs, process groups, POSIX signals and file modes. Elsewhere (Windows) the office is watch-only. */
+export function controlSupported(platform: string = process.platform): boolean {
+  return platform === "darwin" || platform === "linux";
+}
+
 /** The unlock cookie. HttpOnly, SameSite=Strict, Path=/. */
 export const COOKIE = "ao_key";
 /** Agent -> office callbacks (Claude Code's http hooks): POST /api/hook/<sessionId>/<event>. Not a browser route. */

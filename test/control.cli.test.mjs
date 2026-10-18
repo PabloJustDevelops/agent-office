@@ -2,7 +2,7 @@
 // src/cli.ts against a fake HOME and a scratch AGENT_OFFICE_HOME: the banner's Controls line
 // (never the unlock link), `agentoffice open --print` and `--rotate`, a watch-only office with
 // --no-control, help and doctor rows. No service is installed or loaded.
-import test, { after, before } from "node:test";
+import nodeTest, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { spawn, spawnSync } from "node:child_process";
@@ -10,7 +10,10 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TMP = realpathSync(mkdtempSync(join(tmpdir(), "agentoffice-ctl-cli-")));
@@ -186,4 +189,25 @@ test("doctor shows the control plane's rows (names only for keys)", () => {
   const r = run(["doctor"], env);
   for (const w of ["Controls", "Terminals", "Service", "Keys"]) assert.match(r.stdout, new RegExp(`${w}\\s`), w);
   assert.match(r.stdout, /not installed · agentoffice install --service/);
+});
+
+nodeTest("where the control plane can't run (Windows), doctor and open say the office is watch-only", async () => {
+  const outfile = join(TMP, "control-cli.mjs");
+  await build({ entryPoints: [join(ROOT, "src/control/cli.ts")], outfile, bundle: true, platform: "node", format: "esm", target: "node18", external: ["@lydell/node-pty"], logLevel: "error" });
+  const C = await import(pathToFileURL(outfile).href);
+  const lines = [];
+  const out = (l = "") => lines.push(l);
+  await C.doctorRows("0.0.0", out, "win32");
+  assert.match(lines.join("\n"), /Controls\s+off: hiring and driving agents from the page needs macOS or Linux/);
+  assert.ok(!/Terminals|Service|Keys/.test(lines.join("\n")), lines.join("\n"));
+  lines.length = 0;
+  assert.equal(await C.runOpen(["--print"], "0.0.0", out, "win32"), 1);
+  assert.match(lines.join("\n"), /no controls to unlock here/);
+  if (process.platform !== "win32") return;
+  // And on Windows itself, through the CLI.
+  const { env } = homes();
+  assert.match(run(["doctor"], env).stdout, /Controls\s+off: hiring and driving agents/);
+  const o = run(["open"], env);
+  assert.equal(o.status, 1);
+  assert.match(o.stdout, /no controls to unlock here/);
 });
