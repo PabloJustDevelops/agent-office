@@ -13,6 +13,7 @@ import { glyph, icon } from "../icons.ts";
 import { agentName, hostLogo, logo } from "../logos.ts";
 import { api, ControlError } from "./api.ts";
 import { PLACE_NAME, until } from "./format.ts";
+import { railwayWhere } from "./railway.ts";
 import type { ControlStore } from "./store.ts";
 
 export type SettingsTab = "logins" | "keys" | "cloud" | "agents" | "service";
@@ -293,6 +294,7 @@ export function createSettings(store: ControlStore, opts: { onClose(): void; toa
           h("span", { class: `set-ready${p.ready ? " is-ready" : ""}` }, h("span", { class: "ready-dot" + (p.ready ? " is-ready" : "") }), h("span", { text: p.ready ? `Ready${p.via ? ` · ${p.via}` : ""}` : "Not logged in" })),
         ),
         p.sandboxes.length ? h("ul", { class: "set-list" }, ...p.sandboxes.map((s) => sandboxRow(p, s))) : h("p", { class: "set-empty", text: p.ready ? "No sandboxes running." : `Add a ${p.kind.toUpperCase()} key under Keys, or log in with the ${p.kind} CLI.` }),
+        p.kind === "railway" && p.ready && railwayWhere(p) ? h("p", { class: "set-hint", text: railwayWhere(p) }) : null,
       ),
     );
     return [

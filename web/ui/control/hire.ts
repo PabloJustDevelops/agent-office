@@ -13,6 +13,7 @@ import { glyph, icon } from "../icons.ts";
 import { agentColor, agentName, hostLogo, logo } from "../logos.ts";
 import { api, ControlError } from "./api.ts";
 import { PERMISSIONS, PLACE_NAME, until } from "./format.ts";
+import { railwayChoice, railwayLabel, railwayPicker, type RailwayPick } from "./railway.ts";
 import { createSetupSection } from "./setup.ts";
 import type { ControlStore } from "./store.ts";
 
@@ -42,6 +43,8 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
   let provider: Provider = "daytona";
   let sandbox = "new";
   let timeoutMin = 30;
+  /** The Railway project · environment picked in this form (else the server's default). */
+  let railwayPick: RailwayPick | undefined;
   let sshHost = "";
   let mode: ControlMode = "terminal";
   let permission: PermissionMode = "default";
@@ -300,9 +303,16 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
       if (ps.canCreate) {
         const row = opt("new", [icon("plus", 1), h("span", { text: "New sandbox" })], [h("span", { text: "Stops on its own after" }), timeoutSel]);
         sbxList.append(row);
+        if (provider === "railway" && sandbox === "new") {
+          const pickRow = railwayPicker(ps, railwayChoice(ps, railwayPick), (p) => {
+            railwayPick = p;
+            renderSummary();
+          });
+          if (pickRow) sbxList.append(pickRow);
+        }
         sbxList.append(h("p", { class: "hire-hint hire-cost", text: `${PLACE_NAME[provider]} bills for the sandbox while it runs, on your account. It stops after the timeout, or when you delete it in Settings.` }));
       } else if (!running(ps).length) {
-        sbxList.append(h("p", { class: "hire-empty", text: `No running ${PLACE_NAME[provider]} sandboxes, and this login can't create one.` }));
+        sbxList.append(h("p", { class: "hire-empty", text: provider === "railway" && ps.note ? `${ps.note}.` : `No running ${PLACE_NAME[provider]} sandboxes, and this login can't create one.` }));
       }
     }
     timeoutSel.value = String(timeoutMin);
@@ -405,13 +415,15 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
     if (where === "local" && !folder) return "Pick a folder for it to work in.";
     if (where === "sandbox" && !prov(provider)?.ready) return `Log in to ${PLACE_NAME[provider]} first.`;
     if (where === "sandbox" && sandbox === "new" && !prov(provider)?.canCreate) return "Pick a running sandbox.";
+    if (where === "sandbox" && sandbox === "new" && provider === "railway" && !railwayChoice(prov("railway"), railwayPick)) return "Pick the Railway project for the new sandbox.";
     if (where === "ssh" && !(hostInput.value.trim() || sshHost)) return "Pick an ssh host.";
     return setupSec.problem();
   }
 
   function renderSummary(): void {
     const p = place();
-    const whereText = !p ? "" : p.kind === "local" ? tidyPath(p.target) : p.kind === "ssh" ? `ssh ${p.target}` : `${PLACE_NAME[p.kind]} · ${p.target === "new" ? "new sandbox" : sbxName(p.target)}`;
+    const inRailway = p?.kind === "railway" && p.target === "new" ? railwayLabel(prov("railway"), railwayChoice(prov("railway"), railwayPick)) : "";
+    const whereText = !p ? "" : p.kind === "local" ? tidyPath(p.target) : p.kind === "ssh" ? `ssh ${p.target}` : `${PLACE_NAME[p.kind]} · ${p.target === "new" ? `new sandbox${inRailway ? ` in ${inRailway}` : ""}` : sbxName(p.target)}`;
     setText(summary, [agentName(agent), mode === "chat" ? "chat" : "terminal", whereText, setupSec.on ? "your setup" : ""].filter(Boolean).join(" · "));
     const why = problem();
     hireBtn.disabled = busy || !!why;
@@ -530,7 +542,7 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
       if (setupSec.on) setupSec.apply(req);
       else req.keys = [...keys];
     }
-    if (p.kind !== "local" && p.kind !== "ssh" && p.target === "new") req.sandbox = { timeoutMin };
+    if (p.kind !== "local" && p.kind !== "ssh" && p.target === "new") req.sandbox = { timeoutMin, ...(p.kind === "railway" ? railwayChoice(prov("railway"), railwayPick) : {}) };
     busy = true;
     err.hidden = true;
     renderSummary();
