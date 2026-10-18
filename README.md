@@ -10,7 +10,7 @@
 <br>
 <br>
 
-<img src="docs/demo.gif" alt="The demo office in stream mode: workers walk out of the lift one by one, sandboxed agents beam into the cloud wing, then a Claude Code worker fails pnpm test, the camera punches in and the desk flips over" width="100%">
+<img src="docs/demo.gif" alt="Hiring from the office: press Hire, a Claude Code worker walks out of the lift, its chat panel works through a diff, a request to run npm test is approved with 1, an intern walks in for a subagent, then a failing test flips the table" width="100%">
 
 <br>
 
@@ -33,7 +33,7 @@ On this machine, in Daytona, Vercel and Railway sandboxes, or over ssh. A failin
 Written in TypeScript by [@bas3line](https://github.com/bas3line). `npx theagentoffice` reads the transcripts your agents already write and turns them into an office you can watch: every session is a worker at a desk, subagents are interns who walk in from the lift, a raised hand means an agent is waiting on you, and a failing `npm test` gets the table flipped. You can also hire agents from the page, here or in a sandbox, and drive them in a real terminal right in the office. One command, no required dependencies, nothing to configure, nothing leaves your machine that you didn't send.
 
 <p align="center">
-  <img src="docs/hero.png" width="49%" alt="The office at full size: one desk per agent on the left, a glass cloud wing of Daytona, boat, Railway and Vercel sandboxes on the right, a Claude Code worker who just flipped a table">
+  <img src="docs/hero.png" width="49%" alt="The office at full size: a desk per project on the left, the glass cloud wing with Daytona, Vercel and Railway pods on the right, and Hire in the toolbar">
   <img src="docs/ascii.png" width="49%" alt="The same office in ASCII mode">
 </p>
 
@@ -114,6 +114,8 @@ One pod per project: two agents on the same repo share it, each desk in its own 
 
 Agents in cloud sandboxes or on another machine sit in a glass-walled **cloud wing** next to the office, one pod per sandbox, its sign naming the platform. Nothing is installed on the remote: the office runs plain POSIX `sh` (`find`, `stat`, `tail`, `base64`) through the platform's own exec and reads the transcripts there, exactly as it does locally.
 
+<img src="docs/cloud.png" width="100%" alt="The cloud wing: Daytona, Vercel and Railway pods side by side, a Gemini worker in the Vercel pod and a perf pass running on Railway">
+
 | | where | how it connects | status |
 | --- | --- | --- | --- |
 | <img src="docs/logos/vercel.svg" width="18"> | **Vercel Sandbox** | `VERCEL_TOKEN` / `VERCEL_OIDC_TOKEN`, or the `npx sandbox` CLI's login | tested |
@@ -155,12 +157,18 @@ Claude Code signs in separately inside the sandbox. On your machine, `npx theage
 
 Press **Hire**, pick an agent, a folder (or a sandbox, or an ssh box) and a first prompt, and a worker walks in. Its desk opens a panel with the agent's own TUI in a real terminal, so everything the agent can do in a terminal works there, plus buttons for what the office can do natively:
 
+<p align="center">
+  <img src="docs/hire.png" width="49%" alt="The Hire dialog: pick Claude Code, Codex, Command Code or another agent, a folder on this Mac or a Daytona, Vercel or Railway sandbox, terminal or chat, and a permission mode">
+  <img src="docs/chat.png" width="49%" alt="A hired Claude Code in chat mode: its work log with a diff of src/args.ts, and an inline card asking to run npm test, with Allow 1, Always allow 2 and Deny 3">
+</p>
+
 | | terminal | prompt box, Interrupt, Stop | Approve / Deny on the page | chat mode |
 | --- | --- | --- | --- | --- |
 | **Claude Code** | yes | yes | yes (a permission hook passed for that run only) | yes (`claude -p` stream-json) |
 | **Codex** | yes | yes | in chat mode | yes (`codex app-server`) |
 | **opencode** | yes (this machine only, for now) | yes (its own HTTP API) | yes | yes (`opencode serve`) |
-| **Command Code, Droid, Gemini CLI, Qwen Code, Cursor** | yes | yes | in the terminal | no |
+| **Command Code** | yes | yes | in chat mode | yes (`command-code acp`, the Agent Client Protocol) |
+| **Droid, Gemini CLI, Qwen Code, Cursor** | yes | yes | in the terminal | no |
 
 The prompt box pastes your text into the agent and presses Enter, **Interrupt** sends one Esc (opencode: its abort call), and **Stop** sends SIGHUP, then SIGKILL four seconds later if the agent is still there. Close the tab and come back later: the office keeps the current screen and the last 3,000 lines, and redraws them when you reconnect, in as many browsers as you like.
 
