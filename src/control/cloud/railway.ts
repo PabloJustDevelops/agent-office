@@ -36,6 +36,7 @@
  * ssh` reading the lines on stdin (UNVERIFIED that it forwards stdin). Railway's relay keeps
  * about 8 MiB of a terminal's scrollback for its durable sessions.
  */
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ProviderStatus, SandboxInfo } from "../../shared/control.ts";
 import {
@@ -82,7 +83,11 @@ export function railwayCloud(d: CloudDeps): Cloud {
   const cli = () => d.bins?.railway ?? which("railway", env());
   /** id -> where, from the last auto listing. */
   const seen = new Map<string, RailwayBox>();
-  /** One provider per login, so its project list (5 min) and the watcher's budget are shared across calls. */
+  /**
+   * One provider per login, so its project list (5 min) and the watcher's budget are shared across
+   * calls. The provider keeps the environment it was made with, so a token replaced in Settings
+   * (same name, new value) makes a new one: the key carries a fingerprint of the value, never the value.
+   */
   let prov: { key: string; p: RailwayProvider } | undefined;
 
   const gqlOf = (t: Token) => async (query: string, variables: Record<string, unknown>): Promise<any> => {
@@ -106,7 +111,8 @@ export function railwayCloud(d: CloudDeps): Cloud {
   function provider(): RailwayProvider {
     const e = env();
     const t = railwayToken({ env: e });
-    const key = `${"why" in t ? "cli" : `${t.via}:${t.project}`}\0${str(e.RAILWAY_GRAPHQL_ENDPOINT) ?? ""}`;
+    const login = "why" in t ? "cli" : `${t.via}:${t.project}:${createHash("sha256").update(t.token).digest("hex").slice(0, 16)}`;
+    const key = `${login}\0${str(e.RAILWAY_GRAPHQL_ENDPOINT) ?? ""}`;
     if (!prov || prov.key !== key) prov = { key, p: createRailwayProvider({ env: e, fetch: d.fetch, budget, timeoutMs: API_TIMEOUT_MS, bin: d.bins?.railway }) };
     return prov.p;
   }

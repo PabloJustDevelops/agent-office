@@ -144,7 +144,7 @@ function places(r, { config = true, token = true, home = tmp(), env: extra = {} 
     ...extra,
   };
   const ctx = fakeContext({ home, pty, env });
-  return { ctx, pty, home, places: M.createPlaces(ctx, { pollMs: 10, bins: { railway: r.cli } }) };
+  return { ctx, pty, home, env, places: M.createPlaces(ctx, { pollMs: 10, bins: { railway: r.cli } }) };
 }
 
 const WEB = { id: "p2", name: "web", envs: [["e3", "production"]] };
@@ -352,4 +352,20 @@ test("status drops a recorded sandbox Railway no longer has; delete destroys onl
   assert.deepEqual(r.seen.destroys, [{ id: b.host.id.slice(8), e: "e1" }]);
   await assert.rejects(p.deleteSandbox("railway", "someone-elses"), (e) => e.status === 409);
   assert.ok(a);
+});
+
+test("a RAILWAY_API_TOKEN replaced while the office runs is the one used from then on", async () => {
+  const r = await fakeRailway({ projects: [APP] });
+  const { places: p, env } = places(r, { env: { RAILWAY_API_TOKEN: "revoked" } });
+  const before = await railwayRow(p);
+  assert.equal(before.ready, false, "the revoked token is refused");
+  assert.match(before.note, /Not Authorized/);
+  // Settings, Keys: the new token replaces the old one (keys.platformEnv() is part of providerEnv())
+  env.RAILWAY_API_TOKEN = "rtok";
+  const after = await railwayRow(p);
+  assert.equal(after.ready, true, after.note);
+  assert.equal(after.canCreate, true);
+  assert.deepEqual(after.projects.map((x) => x.id), ["p1"]);
+  await hire(p);
+  assert.deepEqual(r.seen.creates.map((c) => c.environmentId), ["e1"]);
 });
