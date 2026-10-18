@@ -1,7 +1,9 @@
 /*
  * The SSE link to the CLI: GET /events, "snapshot" once per connect, then
- * "office" per live event. EventSource's own retry gives up on HTTP errors,
- * so we close and reconnect ourselves with capped, jittered backoff.
+ * "office" per live event, plus the control plane's "control",
+ * "control_gone" and "control_info" (src/shared/control.ts). EventSource's own
+ * retry gives up on HTTP errors, so we close and reconnect ourselves with
+ * capped, jittered backoff.
  */
 import type { OfficeEvent, Snapshot } from "../../src/shared/events.ts";
 
@@ -11,12 +13,15 @@ export interface ConnHandlers {
   snapshot(s: Snapshot): void;
   event(e: OfficeEvent): void;
   state(s: ConnState, retryInMs?: number): void;
+  /** `control` (a ControlSession), `control_gone` ({id}), `control_info` (Partial<ControlInfo>). */
+  control?(name: "control" | "control_gone" | "control_info", data: unknown): void;
 }
 
 const BASE_MS = 1000;
 const MAX_MS = 15_000;
 
-export function connect(url: string, on: ConnHandlers): { close(): void } {
+/** `url` may be a function: read on every (re)connect (the page token can arrive after the first). */
+export function connect(url: string | (() => string), on: ConnHandlers): { close(): void } {
   let es: EventSource | null = null;
   let attempt = 0;
   let everLive = false;
@@ -41,7 +46,7 @@ export function connect(url: string, on: ConnHandlers): { close(): void } {
       return;
     }
     on.state(everLive ? "retrying" : "connecting");
-    es = new EventSource(url);
+    es = new EventSource(typeof url === "function" ? url() : url);
     es.addEventListener("snapshot", (ev) => {
       const s = parse<Snapshot>((ev as MessageEvent<string>).data);
       if (!s || !Array.isArray(s.workers)) return;
@@ -54,6 +59,12 @@ export function connect(url: string, on: ConnHandlers): { close(): void } {
       const e = parse<OfficeEvent>((ev as MessageEvent<string>).data);
       if (e && typeof e.workerId === "string" && typeof e.kind === "string") on.event(e);
     });
+    for (const name of ["control", "control_gone", "control_info"] as const) {
+      es.addEventListener(name, (ev) => {
+        const data = parse<unknown>((ev as MessageEvent<string>).data);
+        if (data && typeof data === "object") on.control?.(name, data);
+      });
+    }
     es.onerror = () => {
       es?.close();
       es = null;

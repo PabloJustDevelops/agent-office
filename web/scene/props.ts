@@ -103,18 +103,23 @@ export function deskUnderside(key: ArtKey): Bitmap {
   return b;
 }
 
-/** Intern bench for `seats` laptops, SEAT_W each. */
-export function benchBody(key: ArtKey, seats: number): Bitmap {
-  const k = "bench" + key + seats;
+/**
+ * Intern bench for `seats` laptops, SEAT_W each. `hot`: a pod's shared hot
+ * desk, the same table in a lighter, communal finish with a centre leg.
+ */
+export function benchBody(key: ArtKey, seats: number, hot = false): Bitmap {
+  const k = "bench" + key + seats + (hot ? "h" : "");
   let b = deskCache.get(k);
   if (b) return b;
   const BW = Math.max(1, seats) * SEAT_W;
   b = bitmap(BW, DESK_BM_H);
   const g = b.g;
   const A = art(key);
-  const [top, edge, front] = A.desk;
+  let [top, edge, front] = A.desk;
+  if (hot) { top = lt(top, 0.22); edge = lt(edge, 0.18); front = mix(front, top, 0.25); }
   const leg = A.leg;
   r(g, 1, 15, 2, 6, leg); r(g, BW - 3, 15, 2, 6, leg);
+  if (hot && BW >= 48) r(g, (BW >> 1) - 1, 15, 2, 6, leg);
   r(g, 0, 3, BW, 8, top);
   r(g, 0, 3, BW, 1, edge);
   r(g, 0, 10, BW, 1, lt(top, 0.45));
@@ -122,6 +127,10 @@ export function benchBody(key: ArtKey, seats: number): Bitmap {
   r(g, 0, 14, BW, 1, dk(front, 0.3));
   if (A.trim) r(g, 0, 11, BW, 1, A.trim);
   r(g, 0, 3, 1, 12, dk(edge, 0.25)); r(g, BW - 1, 3, 1, 12, dk(edge, 0.25));
+  if (hot) {
+    // a stripe of tape down the middle: anyone can sit here
+    for (let x = 2; x < BW - 2; x += 4) r(g, x, 7, 2, 1, rgba(C.white, 0.22));
+  }
   deskCache.set(k, b);
   return b;
 }

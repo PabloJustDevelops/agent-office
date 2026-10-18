@@ -1,7 +1,8 @@
 /*
  * Mounts the chrome around a scene and wires it together: the model, HUD,
- * feed, inspector, toolbar, toasts, sound and keyboard. main.ts owns the
- * connection and calls load / apply / connection on what this returns.
+ * feed, inspector, toolbar, toasts, sound and keyboard, and the control plane
+ * (Hire, the session panel, settings). main.ts owns the connection and calls
+ * load / apply / connection / control on what this returns.
  */
 import type { OfficeScene, RenderMode } from "../contract.ts";
 import { BRAND, type OfficeEvent, type Snapshot } from "../../src/shared/events.ts";
@@ -17,12 +18,22 @@ import { OfficeModel } from "./state.ts";
 import { Toasts } from "./toasts.ts";
 import { createToolbar } from "./toolbar.ts";
 import { createTopbar } from "./topbar.ts";
+import { createHire } from "./control/hire.ts";
+import { createSessionPanel } from "./control/session.ts";
+import { createSessionList } from "./control/sessions.ts";
+import { createSettings, type SettingsTab } from "./control/settings.ts";
+import { ControlStore } from "./control/store.ts";
+import type { ControlSession } from "../../src/shared/control.ts";
 
 export interface Chrome {
   load(s: Snapshot): void;
   apply(e: OfficeEvent): void;
   connection(state: ConnState, retryInMs?: number): void;
+  /** `control`, `control_gone` or `control_info` from /events. */
+  control(name: string, data: unknown): void;
 }
+
+const LOCKED_TIP = "Controls unlock when the office is opened from this computer's link";
 
 const REC_MS = 10_000;
 /** Height kept clear for the toast row under the top bar (desktop). */
@@ -81,7 +92,42 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
 
   const inspector = createInspector({ onClose: () => select(null), onFocus: (id) => safe(() => scene.focus(id)) });
   const feed = createFeed({ onPick: (id) => select(id, true), onToggle: () => setFeed(!feed.isOpen()) });
+
+  /* ---- the control plane ---- */
+  const store = new ControlStore();
+  const say = (text: string, tone: "plain" | "error" | "pass" = "plain") =>
+    toasts.show({ text, tone, glyph: tone === "error" ? "error" : tone === "pass" ? "pass" : undefined, key: `ctl:${text}`, every: 1500 });
+  const panel = createSessionPanel(store, {
+    onClose: closePanel,
+    onLayout: () => syncInsets(),
+    onFocusWorker: (wid) => {
+      if (!model.get(wid)) return;
+      selected = wid;
+      safe(() => scene.select(wid));
+      safe(() => scene.focus(wid));
+      feed.highlight(wid);
+    },
+    toast: say,
+    worker: (wid) => model.get(wid),
+  });
+  const hire = createHire(store, {
+    onHired: (s) => {
+      store.upsert(s);
+      openSession(s);
+      say(`Hiring ${agentName(s.agent)}…`);
+    },
+    openSettings: (tab) => {
+      hire.close();
+      openSettings(tab);
+    },
+  });
+  const settings = createSettings(store, { onClose: closeSettings, toast: say });
+  const sessionList = createSessionList(store, { onPick: (s) => openSession(s, true), onHire: openHire });
+
   const toolbar = createToolbar({
+    hire: openHire,
+    sessions: (anchor) => sessionList.toggle(anchor),
+    settings: () => (settings.isOpen() ? closeSettings() : openSettings()),
     mode: setMode,
     crt: () => setCrt(!crt),
     shot,
@@ -92,13 +138,13 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
     feed: () => setFeed(!feed.isOpen()),
     help: () => help.toggle(),
   });
-  const empty = createEmpty();
+  const empty = createEmpty({ onHire: openHire });
   const conn = createConnPill();
   const help = createHelp();
   const hint = createStreamHint(() => setStream(false));
   const flashRoot = h("div", { class: "flash-root" });
 
-  root.append(topbar.el, feed.el, feed.tab, inspector.el, toolbar.el, toasts.el, conn.el, empty.el, hint.el, hint.corner, toolbar.tip, help.el, flashRoot);
+  root.append(topbar.el, feed.el, feed.tab, inspector.el, panel.el, settings.el, toolbar.el, toasts.el, conn.el, empty.el, hint.el, hint.corner, sessionList.el, toolbar.tip, help.el, hire.el, flashRoot);
 
   scene.onSelect((id) => select(id));
   setMode(prefs.mode === "ascii" ? "ascii" : "pixel", false);
@@ -122,13 +168,29 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
       top = topbar.el.offsetTop + topbar.el.offsetHeight + gap + (isPhone() ? 0 : TOAST_ROW);
       bottom = Math.max(0, vh - toolbar.el.offsetTop + gap);
       if (!isPhone() && feed.isOpen()) right = Math.max(0, vw - feed.el.offsetLeft + gap);
-      if (selected && model.get(selected)) {
+      if (selected && model.get(selected) && !inspector.el.hidden) {
         if (!isPhone()) overlay.left = inspector.el.offsetLeft + inspector.el.offsetWidth + gap;
         else overlay.bottom = Math.max(0, vh - inspector.el.offsetTop + gap);
+      }
+      // the session panel and the settings drawer sit on the right, over the feed
+      for (const side of [panel.isOpen() && !panel.isMax() ? panel.el : null, settings.isOpen() ? settings.el : null]) {
+        if (side && !isPhone()) overlay.right = Math.max(overlay.right, vw - side.offsetLeft + gap);
       }
       // On a phone the empty card sits low over the floor: frame the empty office above it.
       const card = empty.el.querySelector<HTMLElement>(".empty");
       if (isPhone() && !empty.el.hidden && card) overlay.bottom = Math.max(overlay.bottom, vh - card.getBoundingClientRect().top + gap);
+    }
+    // a right-hand panel is open: the toolbar centres in the room left of it
+    const sideEl = !isPhone() && !streamMode ? (settings.isOpen() ? settings.el : panel.isOpen() && !panel.isMax() ? panel.el : null) : null;
+    if (sideEl) {
+      const tbw = toolbar.el.offsetWidth;
+      const freeRight = sideEl.offsetLeft - gap;
+      const gutter = topbar.el.offsetLeft;
+      toolbar.el.style.left = `${Math.round(Math.max(gutter + tbw / 2, Math.min(freeRight - tbw / 2, freeRight / 2)))}px`;
+      document.body.classList.toggle("toolbar-cramped", freeRight < tbw + gutter);
+    } else {
+      toolbar.el.style.left = "";
+      document.body.classList.remove("toolbar-cramped");
     }
     const insets = { top, right, bottom, left };
     const style = document.documentElement.style;
@@ -136,7 +198,7 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
     safe(() => scene.setInsets?.(insets, overlay));
   }
   const ro = new ResizeObserver(() => syncInsets());
-  for (const el of [topbar.el, toolbar.el, feed.el, inspector.el]) ro.observe(el);
+  for (const el of [topbar.el, toolbar.el, feed.el, inspector.el, panel.el, settings.el]) ro.observe(el);
   window.addEventListener("resize", syncInsets);
   requestAnimationFrame(syncInsets);
 
@@ -164,7 +226,7 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
   /* Panels hidden by CSS stay out of the tab order and the a11y tree. */
   function syncInert(): void {
     const phone = isPhone();
-    for (const el of [topbar.el, toolbar.el, inspector.el, empty.el]) el.inert = streamMode;
+    for (const el of [topbar.el, toolbar.el, inspector.el, empty.el, panel.el, settings.el]) el.inert = streamMode;
     feed.el.inert = streamMode || (!feed.isOpen() && !phone);
     feed.tab.inert = streamMode || feed.isOpen() || phone;
   }
@@ -277,10 +339,107 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
     if (id && focus) safe(() => scene.focus(id));
     feed.highlight(id);
     const w = model.get(id);
-    if (w) inspector.open(w);
-    else inspector.close();
+    const s = store.forWorker(id);
+    if (w && s) {
+      // an agent the office started: its session panel, not the inspector
+      inspector.close();
+      panel.open(s.id);
+    } else if (w) {
+      if (panel.isOpen()) panel.close();
+      inspector.open(w);
+      syncOrigin();
+    } else {
+      inspector.close();
+      if (panel.isOpen() && !id) panel.close();
+    }
     syncInsets();
   }
+
+  /** The inspector says when a worker can't be driven from here. */
+  function syncOrigin(): void {
+    const id = inspector.current();
+    const known = store.state === "enabled" || store.state === "locked";
+    inspector.setOrigin(id && known && !store.forWorker(id) ? "Started outside the office · watch only" : null);
+  }
+
+  function openSession(s: ControlSession, focus = false): void {
+    inspector.close();
+    panel.open(s.id);
+    if (model.get(s.workerId)) {
+      selected = s.workerId;
+      safe(() => scene.select(s.workerId));
+      if (focus) safe(() => scene.focus(s.workerId));
+      feed.highlight(s.workerId);
+    }
+    syncInsets();
+  }
+
+  function closePanel(): void {
+    panel.close();
+    if (selected && store.forWorker(selected)) {
+      selected = null;
+      safe(() => scene.select(null));
+      feed.highlight(null);
+    }
+    syncInsets();
+  }
+
+  /** Controls the snapshot promised but whose info is still loading: open `fn` when it arrives. */
+  function whenLoaded(fn: () => void): boolean {
+    if (store.state !== "unknown" || store.likely !== "enabled") return false;
+    say("Loading…");
+    void store.refresh().then(() => store.state !== "unknown" && fn());
+    return true;
+  }
+
+  function openHire(): void {
+    if (whenLoaded(openHire)) return;
+    if (store.state !== "enabled") {
+      say(store.state === "locked" ? `${LOCKED_TIP}.` : "This office server can't start agents.");
+      return;
+    }
+    sessionList.close();
+    hire.open();
+  }
+
+  function openSettings(tab?: SettingsTab): void {
+    if (whenLoaded(() => openSettings(tab))) return;
+    if (store.state !== "enabled") {
+      say(store.state === "locked" ? `${LOCKED_TIP}.` : "This office server has no settings to change.");
+      return;
+    }
+    settings.open(tab);
+    toolbar.setSettings(true);
+    syncInsets();
+  }
+
+  function closeSettings(): void {
+    settings.close();
+    toolbar.setSettings(false);
+    syncInsets();
+  }
+
+  /** Something in the control store changed: every piece that shows it catches up. */
+  function syncControl(): void {
+    const state = store.likely;
+    toolbar.setControl(state, LOCKED_TIP);
+    empty.setControl(state, LOCKED_TIP);
+    const list = store.list();
+    const live = list.filter((x) => x.status !== "exited" && x.status !== "failed");
+    toolbar.setSessions(list.length, live.filter((x) => x.pendingApproval).length);
+    panel.sync();
+    hire.sync();
+    settings.sync();
+    sessionList.sync();
+    syncOrigin();
+    if (store.state !== "enabled") {
+      if (hire.isOpen()) hire.close();
+      if (settings.isOpen()) closeSettings();
+    }
+    // a selected worker the office just took over (or let go of) switches panels
+    if (selected && !panel.isOpen() && store.forWorker(selected) && model.get(selected)) select(selected);
+  }
+  store.subscribe(syncControl);
 
   function refreshEmpty(): void {
     if (model.loaded) {
@@ -386,13 +545,17 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
     const t = ev.target;
     if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (help.isOpen() && ev.key !== "?") return;
+    if (hire.isOpen()) return;
     if (ev.key === "Escape") {
-      if (streamMode) setStream(false);
+      if (settings.isOpen()) closeSettings();
+      else if (panel.isOpen()) closePanel();
+      else if (streamMode) setStream(false);
       else if (selected) select(null);
       return;
     }
     if (ev.repeat) return;
     const actions: Record<string, () => void> = {
+      n: openHire,
       a: () => setMode(mode === "pixel" ? "ascii" : "pixel"),
       c: () => setCrt(!crt),
       s: shot,
@@ -418,6 +581,8 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
 
   return {
     load(s) {
+      // a (re)connect: the control plane may have changed while we were away
+      void store.fromSnapshot(s.control);
       model.load(s);
       safe(() => scene.load(s));
       topbar.setDemo(!!s.demo);
@@ -427,16 +592,36 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
       refreshEmpty();
       if (selected) {
         const w = model.get(selected);
-        if (w) inspector.open(w);
-        else select(null);
+        if (w && !store.forWorker(selected)) inspector.open(w);
+        else if (!w) select(null);
       }
     },
     apply(e) {
       const change = model.apply(e);
       safe(() => scene.apply(e));
+      if (panel.isOpen()) panel.workerEvent(e);
+      if (change.renamed) {
+        // the replacing worker takes over in place: selection, feed rows and panel follow it
+        const { from, to } = change.renamed;
+        feed.rename(from, to);
+        if (selected === from) {
+          selected = to;
+          feed.highlight(to);
+        }
+        if (inspector.current() === from) {
+          const w = model.get(to);
+          if (w) inspector.open(w);
+        }
+      }
+      // the worker of a session whose panel is open just walked in: select it
+      if (change.joined && panel.isOpen() && store.forWorker(change.joined.workerId)?.id === panel.current()) {
+        selected = change.joined.workerId;
+        safe(() => scene.select(selected));
+        feed.highlight(selected);
+      }
       topbar.update(model, true);
       feed.push(e, model);
-      if (selected && selected === e.workerId) {
+      if (selected && selected === e.workerId && !panel.isOpen()) {
         if (change.left) {
           inspector.gone();
           goneTimer = window.setTimeout(() => select(null), 2400);
@@ -444,6 +629,9 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
       }
       moments(e);
       if (change.joined || change.left) refreshEmpty();
+    },
+    control(name, data) {
+      store.onEvent(name, data);
     },
     connection(state, retryInMs) {
       connState = state;

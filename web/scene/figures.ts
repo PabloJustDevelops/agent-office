@@ -14,7 +14,7 @@ import type { Camera } from "./camera.ts";
 import { C, HAIRS, SKINS, mix } from "./palette.ts";
 import { brandInk, TP_MS, type Crew, type Worker } from "./workers.ts";
 import { clamp } from "./util.ts";
-import { BENCH_GAP, DESK_DY, DESK_W, SEAT_W } from "./layout.ts";
+import { DESK_DY, DESK_W, LAPTOP_DX, SEAT_W, benchDX } from "./layout.ts";
 import { podInk } from "./room.ts";
 import type { Screen } from "./props.ts";
 
@@ -201,6 +201,7 @@ export function furnitureFigures(crew: Crew, cam: Camera, cell: { w: number; h: 
       const dx = Math.round(b.x + st.x), dy = Math.round(b.y) + DESK_DY;
       const occ = st.main ? crew.workers.get(st.main) : undefined;
       const flip = occ?.show?.kind === "flip" ? now - occ.show.t0 : -1;
+      if (st.hot) { bench(dx, dy, st); continue; }
       // the desk: on its legs, or upside down in front of a worker who just flipped it
       const [c0, r0] = at(dx, dy + 1), [c1, r1] = at(dx + DESK_W, dy + 15);
       const n = Math.max(3, c1 - c0);
@@ -227,20 +228,21 @@ export function furnitureFigures(crew: Crew, cam: Camera, cell: { w: number; h: 
           return busy && ((i + j + Math.floor(now / 160)) % 4 === 0) ? mix(col, C.ink, 0.45) : col;
         });
       }
-      // the intern bench: a laptop per seat on one long table
-      if (st.seats > 0) {
-        const bx = dx + DESK_W + BENCH_GAP;
-        const [b0, s0] = at(bx, dy + 1), [b1, s1] = at(bx + st.seats * SEAT_W, dy + 15);
-        fig(b0, s0, box(Math.max(3, b1 - b0), Math.max(1, Math.min(2, s1 - s0)), true), () => wood);
-        for (let k = 0; k < st.seats; k++) {
-          const id = st.interns[k];
-          const o = id ? crew.workers.get(id) : undefined;
-          const [l0, lr] = at(bx + 2 + k * SEAT_W, dy - 5), [l1] = at(bx + 12 + k * SEAT_W, dy - 5);
-          const scr = o && !o.leaving ? crew.screenOf(o, now) : "off";
-          const col = screenColor(scr, o ? brandInk(o.agent) : C.slate3);
-          const lw = Math.max(2, l1 - l0);
-          fig(l0, lr, ["[" + (scr === "off" ? "░" : "▓").repeat(Math.max(0, lw - 2)) + "]"], (ch) => (ch === "[" || ch === "]" ? C.slate4 : col));
-        }
+      if (st.seats > 0) bench(dx, dy, st);
+    }
+    // the intern bench (or a shared hot desk): a laptop per seat on one long table
+    function bench(dx: number, dy: number, st: (typeof b.stations)[number]) {
+      const bx = dx + benchDX(st), seats = Math.max(1, st.seats);
+      const [b0, s0] = at(bx, dy + 1), [b1, s1] = at(bx + seats * SEAT_W, dy + 15);
+      fig(b0, s0, box(Math.max(3, b1 - b0), Math.max(1, Math.min(2, s1 - s0)), true), () => wood);
+      for (let k = 0; k < seats; k++) {
+        const id = st.interns[k];
+        const o = id ? crew.workers.get(id) : undefined;
+        const [l0, lr] = at(bx + LAPTOP_DX + k * SEAT_W, dy - 5), [l1] = at(bx + LAPTOP_DX + 10 + k * SEAT_W, dy - 5);
+        const scr = o && !o.leaving ? crew.screenOf(o, now) : "off";
+        const col = screenColor(scr, o ? brandInk(o.agent) : C.slate3);
+        const lw = Math.max(2, l1 - l0);
+        fig(l0, lr, ["[" + (scr === "off" ? "░" : "▓").repeat(Math.max(0, lw - 2)) + "]"], (ch) => (ch === "[" || ch === "]" ? C.slate4 : col));
       }
     }
   }

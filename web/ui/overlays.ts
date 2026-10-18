@@ -10,11 +10,13 @@ export interface EmptyCard {
   el: HTMLElement;
   show(kind: "empty" | "offline"): void;
   hide(): void;
+  /** Whether "Hire your first agent" can be used here (locked: shown with the reason). */
+  setControl(state: "enabled" | "locked" | "off" | "unknown", lockedTip: string): void;
 }
 
 const DEMO_CMD = "npx theagentoffice --demo";
 
-export function createEmpty(): EmptyCard {
+export function createEmpty(opts: { onHire(): void } = { onHire: () => undefined }): EmptyCard {
   const title = h("h1", { class: "empty-title" });
   const body = h("p", { class: "empty-body" });
   const cmd = h("code", { class: "cmd-text", text: DEMO_CMD });
@@ -26,6 +28,9 @@ export function createEmpty(): EmptyCard {
     copyLabel,
   );
   const hint = h("p", { class: "empty-hint", text: "or watch a demo office" });
+  const hireBtn = h("button", { class: "btn btn-primary empty-hire", attrs: { type: "button" }, on: { click: () => opts.onHire() } }, icon("hire", 1), h("span", { text: "Hire your first agent" }), h("kbd", { text: "N" }));
+  const lockNote = h("p", { class: "empty-lock", attrs: { hidden: true } }, icon("lock", 1), h("span"));
+  const hireBox = h("div", { class: "empty-cta", attrs: { hidden: true } }, hireBtn, lockNote);
   const el = h(
     "div",
     { class: "empty-wrap", attrs: { hidden: true } },
@@ -36,6 +41,7 @@ export function createEmpty(): EmptyCard {
       title,
       body,
       h("div", { class: "empty-agents", attrs: { "aria-hidden": "true" } }, ...(["claude", "codex", "commandcode", "opencode", "gemini", "qwen", "droid", "cursor"] as const).map((a) => logo(a))),
+      hireBox,
       hint,
       h("div", { class: "cmd" }, h("span", { class: "cmd-prompt", text: "$" }), cmd, copy),
     ),
@@ -78,6 +84,14 @@ export function createEmpty(): EmptyCard {
     },
     hide() {
       el.hidden = true;
+    },
+    setControl(state, lockedTip) {
+      hireBox.hidden = state === "unknown" || state === "off";
+      hireBtn.disabled = state !== "enabled";
+      lockNote.hidden = state !== "locked";
+      setText(lockNote.lastElementChild!, lockedTip);
+      el.classList.toggle("can-hire", state === "enabled");
+      setText(hint, state === "enabled" ? "or start one in any terminal, or watch a demo office" : "or watch a demo office");
     },
   };
 }
@@ -129,6 +143,8 @@ export interface HelpSheet {
 }
 
 const KEYS: [string, string][] = [
+  ["N", "Hire an agent"],
+  ["1 2 3", "Allow · always allow · deny, when an agent asks"],
   ["A", "Switch pixel / ASCII"],
   ["C", "CRT scanlines"],
   ["S", "Save a PNG screenshot"],
@@ -138,7 +154,7 @@ const KEYS: [string, string][] = [
   ["H", "Stream mode: hide all controls"],
   ["M", "Sound on / off"],
   ["\\", "Show / hide the activity feed"],
-  ["Esc", "Close the inspector"],
+  ["Esc", "Close the panel or the inspector"],
   ["?", "This sheet"],
 ];
 
@@ -151,7 +167,7 @@ export function createHelp(): HelpSheet {
     { class: "help glass", attrs: { "aria-labelledby": "ao-help-title", autofocus: true, tabindex: -1 } },
     h("header", { class: "help-head" }, h("h2", { class: "help-title", text: "Keyboard", attrs: { id: "ao-help-title" } }), close),
     list,
-    h("p", { class: "help-foot", text: "Click a worker or a feed row to inspect it." }),
+    h("p", { class: "help-foot", text: "Click a worker or a feed row to inspect it; an agent the office started opens its session." }),
   );
   close.addEventListener("click", () => el.close());
   el.addEventListener("click", (ev) => {

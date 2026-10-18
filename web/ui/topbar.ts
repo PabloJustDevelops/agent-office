@@ -105,8 +105,7 @@ export function createTopbar(opts: { onNeedsYou?: () => void } = {}): Topbar {
   }
   const hostsEl = h("div", { class: "legend-hosts", attrs: { role: "group", "aria-label": "Remote hosts", hidden: true } });
   const more = h("span", { class: "agent-chip legend-more", attrs: { hidden: true, "aria-label": "more agents and hosts" } });
-  agentsEl.append(more);
-  const legend = h("div", { class: "island legend glass", attrs: { hidden: true } }, agentsEl, hostsEl);
+  const legend = h("div", { class: "island legend glass", attrs: { hidden: true } }, agentsEl, hostsEl, more);
   let hostKey = "";
 
   function renderHosts(list: HostSummary[]): void {
@@ -134,6 +133,38 @@ export function createTopbar(opts: { onNeedsYou?: () => void } = {}): Topbar {
         ),
       );
     }
+  }
+
+  /* Too many agents and hosts for the space beside the totals: drop the names,
+   * then fold chips from the end (hosts first) into "+N", never off-screen. */
+  let lastFold = "";
+  let foldedEls: HTMLElement[] = [];
+  let foldCompact = false;
+  function fold(present: AgentKind[]): void {
+    foldedEls = [];
+    foldCompact = false;
+    for (const c of hostsEl.children) (c as HTMLElement).hidden = false;
+    hostsEl.hidden = hostsEl.childElementCount === 0;
+    const fits = () => legend.scrollWidth <= legend.clientWidth + 1;
+    if (fits()) return;
+    legend.classList.add("is-compact");
+    foldCompact = true;
+    if (fits()) return;
+    const queue: [HTMLElement, string][] = [
+      ...[...hostsEl.children].reverse().map((c) => [c as HTMLElement, (c as HTMLElement).getAttribute("aria-label") ?? ""] as [HTMLElement, string]),
+      ...present.slice(1).reverse().map((a) => [chips.get(a)!.el, agentName(a)] as [HTMLElement, string]),
+    ];
+    const folded: string[] = [];
+    more.hidden = false;
+    for (const [chip, name] of queue) {
+      chip.hidden = true;
+      foldedEls.push(chip);
+      folded.push(name);
+      setText(more, `+${folded.length}`);
+      if (fits()) break;
+    }
+    hostsEl.hidden = ![...hostsEl.children].some((c) => !(c as HTMLElement).hidden);
+    more.title = folded.reverse().join("\n");
   }
 
   const el = h("header", { class: "topbar" }, brand, statsEl, legend);
@@ -196,6 +227,22 @@ export function createTopbar(opts: { onNeedsYou?: () => void } = {}): Topbar {
       legend.hidden = !present.length && !hosts.length;
       // a crowded legend drops the names and keeps the logos
       legend.classList.toggle("is-compact", shown.size + hosts.length > 4);
+      const foldKey = `${present.join()}|${hostKey}|${window.innerWidth}|${waiting > 0}|${String(model.workers.size).length}${String(model.toolCalls).length}${String(model.flips).length}`;
+      if (room === Infinity && !legend.hidden) {
+        if (foldKey !== lastFold) {
+          lastFold = foldKey;
+          fold(present);
+        } else {
+          // same crowd, same width: re-apply the last fold without measuring again
+          if (foldCompact) legend.classList.add("is-compact");
+          if (foldedEls.length) {
+            for (const c of foldedEls) c.hidden = true;
+            more.hidden = false;
+            setText(more, `+${foldedEls.length}`);
+            hostsEl.hidden = ![...hostsEl.children].some((c) => !(c as HTMLElement).hidden);
+          }
+        }
+      }
     },
   };
 }

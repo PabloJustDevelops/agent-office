@@ -18,6 +18,8 @@ export interface Inspector {
   close(): void;
   current(): string | null;
   tick(now: number): void;
+  /** "Started outside the office · watch only", or null to hide the line. */
+  setOrigin(text: string | null): void;
 }
 
 export function createInspector(opts: { onClose(): void; onFocus(workerId: string): void }): Inspector {
@@ -35,6 +37,7 @@ export function createInspector(opts: { onClose(): void; onFocus(workerId: strin
   const tokens = h("b", { text: "0" });
   const files = h("b", { text: "0" });
   const timeline = h("ol", { class: "ins-timeline" });
+  const origin = h("p", { class: "ins-origin", attrs: { hidden: true } });
 
   const focusBtn = h(
     "button",
@@ -63,6 +66,7 @@ export function createInspector(opts: { onClose(): void; onFocus(workerId: strin
     ),
     moodEl,
     h("div", { class: "ins-status" }, dot, statusWord, statusWhat),
+    origin,
     metaList,
     h(
       "div",
@@ -181,6 +185,10 @@ export function createInspector(opts: { onClose(): void; onFocus(workerId: strin
       document.body.classList.remove("inspecting");
     },
     current: () => id,
+    setOrigin(text) {
+      origin.hidden = !text;
+      setText(origin, text ?? "");
+    },
     tick(now) {
       if (el.hidden) return;
       for (const li of timeline.querySelectorAll<HTMLElement>(".tl-item")) {
