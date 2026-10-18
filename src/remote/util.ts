@@ -198,7 +198,8 @@ export async function http(url: string, o: HttpOptions): Promise<HttpResult> {
     const res = await f(url, {
       method: o.method ?? (o.body === undefined ? "GET" : "POST"),
       headers: { accept: "application/json", ...(o.body === undefined ? {} : { "content-type": "application/json" }), ...o.headers },
-      body: o.body === undefined ? undefined : typeof o.body === "string" ? o.body : JSON.stringify(o.body),
+      // Bytes (an archive upload) go as they are; set their content-type in headers.
+      body: o.body === undefined ? undefined : typeof o.body === "string" ? o.body : o.body instanceof Uint8Array ? (o.body as BodyInit) : JSON.stringify(o.body),
       signal: ctl.signal,
     });
     const text = await readCapped(res, o.maxBytes ?? HTTP_MAX_BYTES, url);

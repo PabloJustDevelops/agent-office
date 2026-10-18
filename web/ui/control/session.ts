@@ -112,6 +112,21 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
     h("div", { class: "ses-ap-btns" }, allowBtn, alwaysBtn, denyBtn),
   );
 
+  /* something only the user can do now: Codex's device sign-in */
+  const needsLink = h("a", { class: "ses-needs-link", attrs: { target: "_blank", rel: "noopener noreferrer" } });
+  const needsCode = h("code", { class: "ses-needs-code" });
+  const needsCopy = h("button", { class: "ap-btn", attrs: { type: "button" }, text: "Copy code" });
+  const needs = h(
+    "div",
+    { class: "ses-approval ses-needs", attrs: { hidden: true, role: "status", "aria-label": "Sign in to Codex" } },
+    h("div", { class: "ses-ap-what" }, icon("lock", 2), h("div", { class: "ses-ap-text" }, h("span", { class: "ses-ap-ask", text: "Sign in to Codex" }), h("div", { class: "ses-ap-line" }, h("span", { text: "Open " }), needsLink, h("span", { text: " and enter " }), needsCode))),
+    h("div", { class: "ses-ap-btns" }, needsCopy),
+  );
+  needsCopy.addEventListener("click", () => {
+    const code = needsCode.textContent ?? "";
+    navigator.clipboard?.writeText(code).then(() => opts.toast("Copied the code"), () => opts.toast(code));
+  });
+
   const body = h("div", { class: "ses-body" });
   const notice = h("div", { class: "ses-notice", attrs: { hidden: true, role: "status" } });
 
@@ -145,6 +160,7 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
     head,
     bar,
     approval,
+    needs,
     body,
     notice,
     form,
@@ -186,8 +202,11 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
     const steps: { key: string; label: string }[] = [];
     if (cloud && (s.status === "creating" || s.place.target === "new")) steps.push({ key: "creating", label: "Sandbox" });
     if (remote) steps.push({ key: "installing", label: "Install" });
+    if (s.setup) steps.push({ key: "setup", label: "Your setup" });
     steps.push({ key: "starting", label: "Start" });
-    const now = steps.findIndex((x) => x.key === s.status);
+    const at = s.status === "installing" && s.setup?.state === "running" ? "setup" : s.status;
+    const now = steps.findIndex((x) => x.key === at);
+    const su = s.setup;
     body.replaceChildren(
       h(
         "div",
@@ -201,9 +220,17 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
               ...steps.map((x, i) => h("li", { class: i < now ? "is-done" : i === now ? "is-now" : "", attrs: { "aria-current": i === now ? "step" : undefined } }, h("span", { class: "sw-dot" }), h("span", { text: x.label }))),
             )
           : null,
+        su && su.state !== "running"
+          ? h(
+              "div",
+              { class: `sw-setup is-${su.state}` },
+              h("p", { class: "sw-setup-line", text: `${su.state === "failed" ? "Your setup didn't all make it" : "Your setup"}: ${su.summary}` }),
+              su.skipped?.length ? h("details", { class: "sw-setup-skipped" }, h("summary", { text: `${su.skipped.length} left out` }), h("ul", null, ...su.skipped.map((x) => h("li", { text: x })))) : null,
+            )
+          : null,
       ),
     );
-    body.dataset.wait = `${s.status}|${s.detail ?? ""}`;
+    body.dataset.wait = `${s.status}|${s.detail ?? ""}|${s.setup?.state ?? ""}`;
   }
 
   function mount(s: ControlSession): void {
@@ -291,7 +318,7 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
     }
     // the stream comes up with the agent; a stream that wasn't there yet is retried
     if (streamable(s) && (!view || (view.deadAt && Date.now() - view.deadAt > 1500 && s.status === "running"))) mount(s);
-    else if (!streamable(s) && (!view || body.dataset.wait !== `${s.status}|${s.detail ?? ""}`)) placeholder(s);
+    else if (!streamable(s) && (!view || body.dataset.wait !== `${s.status}|${s.detail ?? ""}|${s.setup?.state ?? ""}`)) placeholder(s);
     if (lastAgent !== s.agent) {
       lastAgent = s.agent;
       logoSlot.replaceChildren(logo(s.agent));
@@ -349,6 +376,13 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
       alwaysBtn.hidden = !!ap.noAlways;
       for (const b of [allowBtn, alwaysBtn, denyBtn]) b.disabled = false;
     } else approval.hidden = true;
+    const nd = !over && s.needs?.kind === "device-login" ? s.needs : undefined;
+    needs.hidden = !nd;
+    if (nd) {
+      needsLink.href = /^https:\/\//.test(nd.url) ? nd.url : "#";
+      setText(needsLink, nd.url.replace(/^https:\/\//, ""));
+      setText(needsCode, nd.code);
+    }
     focusBtn.hidden = !s.workerId;
     view?.chat?.sync();
   }

@@ -71,7 +71,8 @@ export async function wsServe({ http, ws, reject, protocol, accept } = {}) {
   const server = createServer(async (req, res) => {
     const chunks = [];
     for await (const c of req) chunks.push(c);
-    const raw = Buffer.concat(chunks).toString("utf8");
+    const bytes = Buffer.concat(chunks);
+    const raw = bytes.toString("utf8");
     let body;
     try {
       body = raw ? JSON.parse(raw) : undefined;
@@ -81,7 +82,8 @@ export async function wsServe({ http, ws, reject, protocol, accept } = {}) {
     const url = new URL(req.url, "http://x");
     requests.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), headers: req.headers, body });
     try {
-      const r = (await http?.(req, body, url)) ?? { status: 404, json: { message: "no route" } };
+      // The raw bytes too, for uploads (an archive isn't text).
+      const r = (await http?.(req, body, url, bytes)) ?? { status: 404, json: { message: "no route" } };
       res.writeHead(r.status ?? 200, { "content-type": r.type ?? "application/json" });
       res.end(r.text ?? JSON.stringify(r.json ?? {}));
     } catch (err) {

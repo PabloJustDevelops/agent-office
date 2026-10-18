@@ -167,6 +167,48 @@ test("interns showing up after the turn ended turn waiting into supervising", ()
   assert.equal(state.sessions()[0].status, "prompt", "new activity clears the held wait");
 });
 
+test("a turn with no prompt (a background task's notification) takes the worker out of waiting", () => {
+  const { state, seen, ev, advance } = office();
+  state.ingest(ev({ kind: "session_start" }));
+  state.ingest(ev({ kind: "reply", summary: "Replied" }));
+  state.ingest(ev({ kind: "waiting", summary: "Waiting" }));
+  advance(3.5 * 60_000);
+  assert.equal(state.sessions()[0].status, "waiting");
+  // the next turn opens on a tool call, not a prompt
+  state.ingest(ev({ kind: "thinking", summary: "Thinking" }));
+  state.ingest(ev({ kind: "tool_start", tool: "Bash", category: "bash", summary: "$ git status" }));
+  let w = state.sessions()[0];
+  assert.equal(w.status, "tool_start");
+  assert.equal(w.toolCalls, 1);
+  state.ingest(ev({ kind: "tool_end", tool: "Bash", category: "bash" }));
+  for (let i = 0; i < 12; i++) {
+    advance(5_000);
+    state.ingest(ev({ kind: "tool_start", tool: "Bash", category: "bash", summary: "$ git status" }));
+    state.ingest(ev({ kind: "tool_end", tool: "Bash", category: "bash" }));
+  }
+  w = state.sessions()[0];
+  assert.equal(w.status, "tool_end");
+  assert.equal(w.toolCalls, 13);
+  assert.ok(!seen.slice(-26).some((e) => e.kind === "waiting"), "nothing put it back to waiting mid-turn");
+});
+
+test("a held wait (supervising) doesn't come back when a no-prompt turn starts", () => {
+  const { state, seen, ev, advance } = office();
+  state.ingest(ev({ kind: "session_start" }));
+  state.ingest(ev({ workerId: "a1", parentId: "s1", kind: "subagent_start", role: "general-purpose" }));
+  state.ingest(ev({ kind: "waiting" }));
+  assert.equal(seen.at(-1).summary, "supervising 1 intern");
+  // the boss starts a turn of its own (a notification) while the intern still works
+  advance(30_000);
+  state.ingest(ev({ kind: "tool_start", tool: "Bash", category: "bash", summary: "$ git status" }));
+  state.ingest(ev({ workerId: "a1", parentId: "s1", kind: "subagent_end" }));
+  advance(1_000);
+  advance(1_000);
+  const mine = seen.filter((e) => e.workerId === "s1");
+  assert.equal(mine.at(-1).kind, "tool_start", "the intern leaving doesn't release a wait the new turn already cleared");
+  assert.equal(state.sessions()[0].status, "tool_start");
+});
+
 test("command lines map to agents; look-alikes don't", () => {
   const cases = {
     "claude": "claude",

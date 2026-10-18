@@ -449,13 +449,27 @@ test("npmHasVersion: published, missing, unreachable", async () => {
 
 /* ------------------------------------------------------------- remote */
 
+/**
+ * node and npx alone in a folder, for the fake remote's PATH. Not node's own bin folder: with nvm
+ * or a global npm install, the real claude and codex sit there too, and the installer would run them.
+ */
+function nodeOnlyBin() {
+  const dir = join(TMP, "node-bin");
+  if (!existsSync(dir)) {
+    mkdirSync(dir);
+    symlinkSync(process.execPath, join(dir, "node"));
+    symlinkSync(join(dirname(process.execPath), "npx"), join(dir, "npx"));
+  }
+  return dir;
+}
+
 /** A RemoteTarget that runs `sh -c` here, with HOME pointed at a fake remote home. */
 function fakeRemote(home) {
   return {
     host: { kind: "vercel", id: "vercel:sbx_test", name: "sbx-test" },
     exec(script) {
       return new Promise((resolve, reject) => {
-        const child = spawn("/bin/sh", ["-c", script], { env: { HOME: home, PATH: "/usr/bin:/bin:" + dirname(process.execPath) } });
+        const child = spawn("/bin/sh", ["-c", script], { env: { HOME: home, PATH: "/usr/bin:/bin:" + nodeOnlyBin() } });
         let out = "";
         let err = "";
         child.stdout.on("data", (c) => (out += c));
@@ -506,7 +520,7 @@ test("--ssh: the built-in ssh target survives a real shell's quoting (fake ssh, 
   // Stands in for ssh: drops the options and host, then hands the command string to a shell in a
   // fresh environment, as sshd does (the runner's own XDG_CONFIG_HOME must not leak into the "remote").
   const fakeSsh = join(bin, "fake-ssh");
-  writeFileSync(fakeSsh, `#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done; shift\nexec env -i HOME=${JSON.stringify(home)} PATH=/usr/bin:/bin:${JSON.stringify(dirname(process.execPath))} /bin/sh -c "$*"\n`);
+  writeFileSync(fakeSsh, `#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done; shift\nexec env -i HOME=${JSON.stringify(home)} PATH=/usr/bin:/bin:${JSON.stringify(nodeOnlyBin())} /bin/sh -c "$*"\n`);
   chmodSync(fakeSsh, 0o755);
   const original = snapshot(home);
   const target = M.sshTarget("dev@box", { sshBin: fakeSsh });

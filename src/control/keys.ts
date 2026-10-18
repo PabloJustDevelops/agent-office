@@ -22,6 +22,8 @@ import { privateDir, writePrivate } from "./auth.ts";
 import { loginShellVars, type ShellOptions } from "./env.ts";
 
 export const MAX_KEYS = 64;
+/** What Connect Claude stores (claude setup-token's token). */
+export const OAUTH_TOKEN_KEY = "CLAUDE_CODE_OAUTH_TOKEN";
 export const MAX_KEY_BYTES = 16 * 1024;
 const AGENT_KINDS = Object.keys(AGENT_FACTS) as AgentKind[];
 
@@ -30,6 +32,7 @@ interface Stored {
   value: string;
   agents: AgentKind[];
   addedAt: string;
+  expiresAt?: string;
 }
 
 /** Every name import looks for: each agent's keys and the platform tokens. */
@@ -92,6 +95,7 @@ export function createKeyStore(home: string, o: KeyStoreOptions = {}): KeyStore 
           value: k.value,
           agents: Array.isArray(k.agents) ? k.agents.filter((a: unknown) => AGENT_KINDS.includes(a as AgentKind)) : defaultAgents(k.name),
           addedAt: typeof k.addedAt === "string" ? k.addedAt : new Date(0).toISOString(),
+          ...(typeof k.expiresAt === "string" ? { expiresAt: k.expiresAt } : {}),
         }))
         .slice(0, MAX_KEYS);
     } catch {
@@ -121,7 +125,8 @@ export function createKeyStore(home: string, o: KeyStoreOptions = {}): KeyStore 
     }
   }
 
-  const info = (k: Stored): KeyInfo => ({ name: k.name, agents: [...k.agents], preview: preview(k.value), addedAt: k.addedAt });
+  // A subscription token is never shown, not even its ends: Settings says "never shown".
+  const info = (k: Stored): KeyInfo => ({ name: k.name, agents: [...k.agents], preview: k.name === OAUTH_TOKEN_KEY ? "•••" : preview(k.value), addedAt: k.addedAt, ...(k.expiresAt ? { expiresAt: k.expiresAt } : {}) });
 
   function validName(name: unknown): string {
     if (typeof name !== "string" || !KEY_NAME.test(name)) {
@@ -130,7 +135,7 @@ export function createKeyStore(home: string, o: KeyStoreOptions = {}): KeyStore 
     return name;
   }
 
-  function put(k: KeyInput): KeyInfo {
+  function put(k: KeyInput, meta: { expiresAt?: string } = {}): KeyInfo {
     const name = validName(k?.name);
     if (typeof k.value !== "string") throw new ControlError(400, "A key needs a value.");
     const value = k.value.trim();
@@ -144,7 +149,9 @@ export function createKeyStore(home: string, o: KeyStoreOptions = {}): KeyStore 
     const list = load().filter((x) => x.name !== name);
     if (list.length >= MAX_KEYS) throw new ControlError(400, `The office keeps at most ${MAX_KEYS} keys.`);
     const prev = load().find((x) => x.name === name);
-    const stored: Stored = { name, value, agents, addedAt: prev && prev.value === value ? prev.addedAt : new Date(now()).toISOString() };
+    const same = prev && prev.value === value;
+    const expiresAt = meta.expiresAt ?? (same ? prev.expiresAt : undefined);
+    const stored: Stored = { name, value, agents, addedAt: same ? prev.addedAt : new Date(now()).toISOString(), ...(expiresAt ? { expiresAt } : {}) };
     const at = load().findIndex((x) => x.name === name);
     const next = [...load()];
     if (at >= 0) next[at] = stored;

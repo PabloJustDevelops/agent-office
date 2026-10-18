@@ -32,6 +32,7 @@ import { VERCEL_API, VERCEL_DEFAULT_PROJECT, vercelLogin } from "../../remote/ve
 import { RemoteError, displayName, http, jsonOf, scrubMessage, str, which } from "../../remote/util.ts";
 import { ControlError, type Launch, type OpenOptions, type PlacesContext, type Term } from "../types.ts";
 import { connectWs, type Ws } from "../ws.ts";
+import { tgzOf, type TarEntry } from "../tar.ts";
 import { cleanupScript, cwdScript, envFromVarScript, envLines, launchLine, parseCwd, stopScript } from "./launch.ts";
 import {
   BasePlace, StreamTerm, afterExit, failed, helperEnv, sandboxRow, sleep,
@@ -120,7 +121,7 @@ export function vercelCloud(d: CloudDeps): Cloud {
   async function ready(s: Scope, sb: any, where: { team: string; project: string }, asked: string | undefined, ours: boolean, o: OpenOptions): Promise<VercelPlace> {
     const box: Box = { name: String(sb.name), session: String(sb.currentSessionId), team: where.team, project: where.project };
     const probe = new VercelPlace(ctx, d, s.token, base(), box, "/", ours, o.agent);
-    const cwd = parseCwd(await probe.run(cwdScript(asked, ours), { timeoutMs: 30_000 }), asked, `Vercel ${box.name}`);
+    const cwd = parseCwd(await probe.run(cwdScript(asked, ours || !!o.createCwd), { timeoutMs: 30_000 }), asked, `Vercel ${box.name}`);
     return new VercelPlace(ctx, d, s.token, base(), box, cwd, ours, o.agent);
   }
 
@@ -316,6 +317,25 @@ export class VercelPlace extends BasePlace {
 
   run(script: string, o: { timeoutMs: number }): Promise<string> {
     return this.cmd(["-c", script], o.timeoutMs).then((r) => r.stdout);
+  }
+
+  /** The values are this one command's environment; Vercel keeps a command's args, so they are never there. */
+  protected runSecret(script: string, env: Record<string, string>, o: { timeoutMs: number }): Promise<string> {
+    return this.cmd(["-c", script], o.timeoutMs, env).then((r) => r.stdout);
+  }
+
+  /** Vercel's own file upload (what the SDK's writeFiles sends): a tar.gz extracted at "/" as the sandbox's user. */
+  protected async upload(entries: TarEntry[], dir: string, o: { home: string; timeoutMs: number }): Promise<void> {
+    const tgz = await tgzOf(entries, dir);
+    const r = await http(`${this.api}/v2/sandboxes/sessions/${encodeURIComponent(this.box.session)}/fs/write?${this.q()}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${this.token}`, "content-type": "application/gzip", "x-cwd": "/" },
+      body: tgz,
+      timeoutMs: o.timeoutMs,
+      fetch: this.deps.fetch,
+    });
+    if (r.status >= 400) jsonOf(r, `Vercel ${this.box.name} upload`);
+    void o.home;
   }
 
   private bg(script: string): void {

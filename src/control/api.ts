@@ -11,13 +11,17 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentKind } from "../shared/events.ts";
 import type {
-  ApprovalAnswer, ControlInfo, ControlMode, HireRequest, PermissionMode, Place, PlaceKind, ServiceStatus,
+  ApprovalAnswer, ControlInfo, ControlMode, HireRequest, PermissionMode, Place, PlaceKind, ServiceStatus, SetupChoice, SetupLoginKind,
 } from "../shared/control.ts";
 import { SECURITY_HEADERS } from "../server/http.ts";
 import { scrubMessage } from "../remote/util.ts";
 import { AGENT_FACTS, ControlError, KEY_NAME, type ControlContext, type Disposable, type KeyStore, type Places, type SessionManager } from "./types.ts";
 import { COOKIE_REFRESH_S, type ControlAuth } from "./auth.ts";
 import { expandPath, folderUnderHome, listFolders, type HiredFolders } from "./fs.ts";
+import { importableNames } from "./keys.ts";
+import { loginShellVars } from "./env.ts";
+import type { Logins } from "./logins.ts";
+import { inventory, shellKeyNames } from "./setup.ts";
 
 export const BIG_BODY = 1 << 20;
 export const SMALL_BODY = 64 << 10;
@@ -54,6 +58,10 @@ export interface ApiDeps {
   /** control_info frames for the page. */
   info(patch: Partial<ControlInfo>): void;
   pingMs?: number;
+  /** Settings, Logins (Connect Claude). */
+  logins?: Logins | null;
+  /** Known key names set in the login shell (names only); default: a fresh login shell, cached a minute. */
+  shellNames?: () => Promise<string[]>;
 }
 
 /* ------------------------------------------------------------- helpers */
@@ -208,7 +216,40 @@ function parseHire(body: unknown, home: string): HireRequest {
     }
     req.sandbox = sandbox;
   }
+  if (b.setup !== undefined && b.setup !== null) {
+    if (kind === "local") throw bad("Your setup is already here: it is only copied into a sandbox or an ssh box.");
+    req.setup = parseSetup(b.setup, home);
+  }
   return req;
+}
+
+const LOGINS: SetupLoginKind[] = ["subscription", "key", "device", "copy", "none"];
+const names = (v: unknown, max: number, re: RegExp, what: string): string[] | undefined => {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.length > max || !v.every((x) => typeof x === "string" && re.test(x))) throw bad(`Bad ${what} list.`);
+  return [...new Set(v as string[])];
+};
+
+/** HireRequest.setup: names and a folder only. */
+function parseSetup(v: unknown, home: string): SetupChoice {
+  const b = obj(v);
+  const out: SetupChoice = {};
+  if (b.login !== undefined) {
+    if (!LOGINS.includes(b.login as SetupLoginKind)) throw bad("Unknown sign-in choice.");
+    out.login = b.login as SetupLoginKind;
+  }
+  const shell = names(b.shellKeys, 32, KEY_NAME, "shell key");
+  if (shell) out.shellKeys = shell;
+  const mcp = names(b.mcp, 200, /^[^\0\n]{1,200}$/, "MCP server");
+  if (mcp) out.mcp = mcp;
+  const ins = names(b.instructions, 32, /^[\w.-]{1,40}$/, "instructions");
+  if (ins) out.instructions = ins;
+  if (b.project !== undefined) {
+    const p = obj(b.project);
+    if (typeof p.folder !== "string" || !p.folder.trim() || p.folder.length > 4096 || p.folder.includes("\0")) throw bad("Pick the project folder.");
+    out.project = { folder: expandPath(p.folder.trim(), home), git: p.git !== false, env: p.env === true };
+  }
+  return out;
 }
 
 function parseAnswer(body: unknown): ApprovalAnswer {
@@ -233,6 +274,27 @@ export function createApi(d: ApiDeps): (req: IncomingMessage, res: ServerRespons
   };
   const sessions = () => need(d.sessions, "Hiring agents");
   const places = () => need(d.places, "Sandboxes");
+  const logins = () => need(d.logins ?? null, "Signing in");
+  let shellCache: { at: number; names: Promise<string[]> } | undefined;
+  /** Names only: the values a login shell prints are dropped right here. */
+  const shellNames = () => {
+    if (d.shellNames) return d.shellNames();
+    if (!shellCache || d.ctx.now() - shellCache.at > 60_000) {
+      const p: Promise<string[]> = loginShellVars(shellKeyNames(importableNames())).then(
+        (env) => {
+          // A shell that didn't answer in time is asked again next time, not remembered as "none".
+          if (!env) shellCache = undefined;
+          return Object.keys(env ?? {}).filter((k) => env![k]?.trim());
+        },
+        () => {
+          shellCache = undefined;
+          return [];
+        },
+      );
+      shellCache = { at: d.ctx.now(), names: p };
+    }
+    return shellCache.names;
+  };
 
   function session(id: string) {
     const s = sessions().get(id);
@@ -255,6 +317,7 @@ export function createApi(d: ApiDeps): (req: IncomingMessage, res: ServerRespons
       service: d.service.status(),
       sessions: d.sessions?.list() ?? [],
       recentFolders: d.ctx.office.recentFolders(),
+      ...(d.logins ? { logins: d.logins.status() } : {}),
     };
   }
 
@@ -296,6 +359,43 @@ export function createApi(d: ApiDeps): (req: IncomingMessage, res: ServerRespons
       // The session manager logs the hire itself.
       if (hire.place.kind === "local") d.hired.add(hire.place.target);
       return sendJson(res, 200, s);
+    }
+
+    if (rest === "/setup") {
+      only("GET");
+      const q = new URL(req.url ?? "/", "http://office").searchParams;
+      const agent = q.get("agent") as AgentKind;
+      if (!AGENTS.includes(agent)) throw bad("Which agent?");
+      const f = q.get("folder");
+      let folder: string | undefined;
+      if (f) {
+        try {
+          folder = folderUnderHome(f, home);
+        } catch (err) {
+          const recent = d.ctx.office.recentFolders();
+          if (!(err instanceof ControlError && err.status === 403 && recent.includes(f))) throw err;
+          folder = f;
+        }
+      }
+      const inv = await inventory(agent, { home, env: d.ctx.agentEnv(), keys: d.keys.list(), shellKeys: await shellNames() }, folder);
+      return sendJson(res, 200, inv);
+    }
+
+    if (rest === "/logins/claude" || rest === "/logins/claude/input") {
+      if (rest.endsWith("/input")) {
+        only("POST");
+        const b = obj(await readJson(req, SMALL_BODY));
+        if (typeof b.data !== "string") throw bad("No keystrokes.");
+        logins().input("claude", b.data);
+        return sendJson(res, 204);
+      }
+      if (method === "DELETE") {
+        logins().cancel("claude");
+        return sendJson(res, 204);
+      }
+      only("POST");
+      await readJson(req, SMALL_BODY);
+      return sendJson(res, 200, await logins().start("claude"));
     }
 
     if (rest === "/fs") {

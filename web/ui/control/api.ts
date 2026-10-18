@@ -17,7 +17,9 @@ import {
   type InstallPlan,
   type KeyInfo,
   type KeyInput,
+  type LoginFlow,
   type ServiceStatus,
+  type SetupInventory,
 } from "../../../src/shared/control.ts";
 import type { AgentKind } from "../../../src/shared/events.ts";
 import { controlToken } from "./token.ts";
@@ -85,6 +87,10 @@ export const api = {
   service: (startAtLogin: boolean) => call<ServiceStatus>("POST", "/service", { startAtLogin }),
   installPlan: () => call<InstallPlan>("GET", "/install"),
   install: (agents?: AgentKind[]) => call<InstallPlan>("POST", "/install", agents ? { agents } : {}),
+  setup: (agent: AgentKind, folder?: string) => call<SetupInventory>("GET", `/setup?agent=${enc(agent)}${folder ? `&folder=${enc(folder)}` : ""}`),
+  loginStart: () => call<LoginFlow>("POST", "/logins/claude"),
+  loginInput: (data: string) => call<void>("POST", "/logins/claude/input", { data }),
+  loginCancel: () => call<void>("DELETE", "/logins/claude"),
 };
 
 export type StreamState = "open" | "retrying" | "ended";

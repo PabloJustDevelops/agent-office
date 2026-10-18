@@ -10,7 +10,7 @@
 <br>
 <br>
 
-<img src="docs/demo.gif" alt="The demo office in stream mode: workers walk out of the lift one by one, sandboxed agents beam into the cloud wing, then a Claude Code worker fails pnpm test, the camera punches in and the desk flips over" width="100%">
+<img src="docs/demo.gif" alt="Hiring from the office: press Hire, a Claude Code worker walks out of the lift, its chat panel works through a diff, a request to run npm test is approved with 1, an intern walks in for a subagent, then a failing test flips the table" width="100%">
 
 <br>
 
@@ -26,6 +26,12 @@ On this machine, in Daytona, Vercel and Railway sandboxes, or over ssh. A failin
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-181717?logo=typescript&logoColor=white)](tsconfig.json)
 [![zero dependencies](https://img.shields.io/badge/dependencies-0%20%2B%201%20optional-181717)](package.json)
 
+<br>
+
+<sub>Sponsored by</sub>
+
+<a href="https://commandcode.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/sponsors/command-code.dark.svg"><img alt="Command Code" src="docs/sponsors/command-code.svg" height="28"></picture></a>
+
 </div>
 
 <br>
@@ -33,7 +39,7 @@ On this machine, in Daytona, Vercel and Railway sandboxes, or over ssh. A failin
 Written in TypeScript by [@bas3line](https://github.com/bas3line). `npx theagentoffice` reads the transcripts your agents already write and turns them into an office you can watch: every session is a worker at a desk, subagents are interns who walk in from the lift, a raised hand means an agent is waiting on you, and a failing `npm test` gets the table flipped. You can also hire agents from the page, here or in a sandbox, and drive them in a real terminal right in the office. One command, no required dependencies, nothing to configure, nothing leaves your machine that you didn't send.
 
 <p align="center">
-  <img src="docs/hero.png" width="49%" alt="The office at full size: one desk per agent on the left, a glass cloud wing of Daytona, boat, Railway and Vercel sandboxes on the right, a Claude Code worker who just flipped a table">
+  <img src="docs/hero.png" width="49%" alt="The office at full size: a desk per project on the left, the glass cloud wing with Daytona, Vercel and Railway pods on the right, and Hire in the toolbar">
   <img src="docs/ascii.png" width="49%" alt="The same office in ASCII mode">
 </p>
 
@@ -114,6 +120,8 @@ One pod per project: two agents on the same repo share it, each desk in its own 
 
 Agents in cloud sandboxes or on another machine sit in a glass-walled **cloud wing** next to the office, one pod per sandbox, its sign naming the platform. Nothing is installed on the remote: the office runs plain POSIX `sh` (`find`, `stat`, `tail`, `base64`) through the platform's own exec and reads the transcripts there, exactly as it does locally.
 
+<img src="docs/cloud.png" width="100%" alt="The cloud wing: Daytona, Vercel and Railway pods side by side, a Gemini worker in the Vercel pod and a perf pass running on Railway">
+
 | | where | how it connects | status |
 | --- | --- | --- | --- |
 | <img src="docs/logos/vercel.svg" width="18"> | **Vercel Sandbox** | `VERCEL_TOKEN` / `VERCEL_OIDC_TOKEN`, or the `npx sandbox` CLI's login | tested |
@@ -155,12 +163,18 @@ Claude Code signs in separately inside the sandbox. On your machine, `npx theage
 
 Press **Hire**, pick an agent, a folder (or a sandbox, or an ssh box) and a first prompt, and a worker walks in. Its desk opens a panel with the agent's own TUI in a real terminal, so everything the agent can do in a terminal works there, plus buttons for what the office can do natively:
 
+<p align="center">
+  <img src="docs/hire.png" width="49%" alt="The Hire dialog: pick Claude Code, Codex, Command Code or another agent, a folder on this Mac or a Daytona, Vercel or Railway sandbox, terminal or chat, and a permission mode">
+  <img src="docs/chat.png" width="49%" alt="A hired Claude Code in chat mode: its work log with a diff of src/args.ts, and an inline card asking to run npm test, with Allow 1, Always allow 2 and Deny 3">
+</p>
+
 | | terminal | prompt box, Interrupt, Stop | Approve / Deny on the page | chat mode |
 | --- | --- | --- | --- | --- |
 | **Claude Code** | yes | yes | yes (a permission hook passed for that run only) | yes (`claude -p` stream-json) |
 | **Codex** | yes | yes | in chat mode | yes (`codex app-server`) |
 | **opencode** | yes (this machine only, for now) | yes (its own HTTP API) | yes | yes (`opencode serve`) |
-| **Command Code, Droid, Gemini CLI, Qwen Code, Cursor** | yes | yes | in the terminal | no |
+| **Command Code** | yes | yes | in chat mode | yes (`command-code acp`, the Agent Client Protocol) |
+| **Droid, Gemini CLI, Qwen Code, Cursor** | yes | yes | in the terminal | no |
 
 The prompt box pastes your text into the agent and presses Enter, **Interrupt** sends one Esc (opencode: its abort call), and **Stop** sends SIGHUP, then SIGKILL four seconds later if the agent is still there. Close the tab and come back later: the office keeps the current screen and the last 3,000 lines, and redraws them when you reconnect, in as many browsers as you like.
 
@@ -184,7 +198,7 @@ Every control request also has to come from the office's own page: the right `Ho
 
 ### Keys: the office passes your keys
 
-To run an agent in a sandbox or on an ssh box you can give it API keys from the page (or **Import** them from your login shell, which reads only the key names the office knows, never the rest of your environment). The office stores the keys you add in `~/.agentoffice/keys.json` (readable only by you), never sends them back to the browser, and when you pick keys for an agent in a sandbox or on an ssh box it hands them to that agent's process there. The page only ever sees a key's name and a short preview (`sk-ant…a1b2`). Values are never logged, never put on a command line, never written into the service's unit file. `keys.json` is plain JSON with the same protection the agents' own auth files get: anything running as you can read it. Platform tokens (`DAYTONA_API_KEY`, `VERCEL_TOKEN`, `RAILWAY_API_TOKEN`) stored there are what the office itself uses for those platforms when no other login is found; they are never handed to an agent. Agents hired on this machine get your own environment, as in a terminal, and no stored keys.
+To run an agent in a sandbox or on an ssh box you can give it API keys from the page (or **Import** them from your login shell, which reads only the key names the office knows, never the rest of your environment). With [Your setup](#your-setup-bring-it-along) on, the known key names your login shell exports are offered too, ticked: their values are read from a fresh login shell at hire time, handed to that one agent and never stored. The office stores the keys you add in `~/.agentoffice/keys.json` (readable only by you), never sends them back to the browser, and when you pick keys for an agent in a sandbox or on an ssh box it hands them to that agent's process there. The page only ever sees a key's name and a short preview (`sk-ant…a1b2`). Values are never logged, never put on a command line, never written into the service's unit file. `keys.json` is plain JSON with the same protection the agents' own auth files get: anything running as you can read it. Platform tokens (`DAYTONA_API_KEY`, `VERCEL_TOKEN`, `RAILWAY_API_TOKEN`) stored there are what the office itself uses for those platforms when no other login is found; they are never handed to an agent. Agents hired on this machine get your own environment, as in a terminal, and no stored keys.
 
 How a key reaches a remote agent, the least persistent way each platform has:
 
@@ -193,7 +207,7 @@ How a key reaches a remote agent, the least persistent way each platform has:
 - **Railway chat mode:** in the environment of the agent's command on Railway's exec bridge. No file.
 - Codex with `OPENAI_API_KEY` is started with a provider definition on its command line that reads the key from its environment, so it skips its login screen without writing `~/.codex/auth.json`.
 
-What stays on the remote: the agent's own files, a pid file in `~/.agentoffice/run` (so the office can stop the agent), and on Railway the relay's copy of about 8 MiB of the terminal's scrollback.
+What stays on the remote: the agent's own files, a pid file in `~/.agentoffice/run` (so the office can stop the agent), what [Your setup](#your-setup-bring-it-along) copied there, and on Railway the relay's copy of about 8 MiB of the terminal's scrollback.
 
 ### Sandboxes from the page
 
@@ -212,9 +226,22 @@ Hire an agent into a new sandbox, a running one, or an ssh box, and its terminal
 
 **What it costs.** A new sandbox lives 30 minutes unless you pick another lifetime (1 to 240; Railway caps idle time at 120, Vercel's Hobby plan at 45). The office never extends one, keeps at most three of its own at once, and stops its heartbeats when the agent quits, so the platform's own timers end the sandbox. Every sandbox it creates is recorded in `~/.agentoffice/sandboxes.json`; only those can be deleted from the page without "force".
 
-**Agents.** Claude Code, Codex and opencode are preinstalled on Vercel's image (and, per their docs, on Daytona's and Railway's). Anything missing is installed when you hire it: `npm i -g` when the sandbox's Node is new enough (retried under `~/.local` if the global folder isn't writable), otherwise the agent's own installer (Claude Code, Droid, Cursor). Daytona's lower tiers block Droid's and Command Code's download and API sites. In a sandbox the office created, it also skips first-run screens: Claude Code's onboarding and folder trust in `~/.claude.json`, Codex's folder trust in `~/.codex/config.toml`, Gemini CLI's auth choice when you hand it `GEMINI_API_KEY`. Only missing entries are written. On an ssh box or a sandbox you made, nothing is seeded.
+**Agents.** Claude Code, Codex and opencode are preinstalled on Vercel's image (and, per their docs, on Daytona's and Railway's). Anything missing is installed when you hire it: `npm i -g` when the sandbox's Node is new enough (retried under `~/.local` if the global folder isn't writable), otherwise the agent's own installer (Claude Code, Droid, Cursor). Daytona's lower tiers block Droid's and Command Code's download and API sites. In a sandbox the office created, it also skips first-run screens: Claude Code's onboarding and folder trust in `~/.claude.json`, Codex's folder trust in `~/.codex/config.toml`, Gemini CLI's auth choice when you hand it `GEMINI_API_KEY`. Only missing entries are written. On an ssh box or a sandbox you made, nothing is seeded, except what Your setup brings (and there only what's missing).
 
-**Two questions you answer once, in the panel.** Claude Code asks whether to use an `ANTHROPIC_API_KEY` it finds in its environment, the first time it sees that key; its default is **No**, so pick **1. Yes** to use the key you handed over. That dialog is Claude's own screen and shows the key's last characters, so it is on your screen (and in a recording) while it is open. On Railway, the first terminal ever asks which of your ssh keys the `railway` CLI should register on your Railway account (chat mode doesn't need one).
+**Two questions you answer once, in the panel.** Claude Code asks whether to use an `ANTHROPIC_API_KEY` it finds in its environment, the first time it sees that key; its default is **No**. With Your setup signing Claude in with an API key, the office answers it ahead of time the way Claude records a Yes (the key's last 20 characters in `customApiKeyResponses.approved` in the sandbox's `~/.claude.json`, checked on Claude Code 2.1.19 and 2.1.283), so it doesn't come up. Without that, pick **1. Yes** to use the key you handed over; that dialog is Claude's own screen and shows the key's last characters, so it is on your screen (and in a recording) while it is open. On Railway, the first terminal ever asks which of your ssh keys the `railway` CLI should register on your Railway account (chat mode doesn't need one).
+
+### Your setup: bring it along
+
+A sandbox starts empty. With **Your setup** on (the default for a sandbox or an ssh box), the agent is set up there the way it is on this machine before it starts: signed in, with your MCP servers, your instructions and skills, and your project. The hire form lists what there is by name only, in four rows you can open and untick and one line that sums them up ("Claude subscription · 4 of 6 MCP servers · instructions + 12 skills · ~/Codes/app (3.1 MB)"), and remembers your choices per agent in that browser:
+
+| row | what goes | how it gets there |
+| --- | --- | --- |
+| **Login** | Claude: your subscription (**Settings, Logins, Connect Claude** runs `claude setup-token` here, Claude's documented sign-in for a headless box; the one-year token it prints is stored as `CLAUDE_CODE_OAUTH_TOKEN`, the process ended, the token never shown), or an API key. Codex: an API key, a device code (`codex login --device-auth` runs first in the terminal, and the panel shows its link and code), or a copy of this machine's `~/.codex/auth.json` (OpenAI documents copying it as the fallback for headless boxes; it holds your ChatGPT tokens). Other agents: stored keys and the known keys your shell exports. | in the agent's own environment, the way [keys](#keys-the-office-passes-your-keys) go; `auth.json` as a 0600 file |
+| **MCP servers** | Claude: user-scope servers from `~/.claude.json` and the chosen project's local ones (its `.mcp.json` travels with the code, with your choices about it). Codex: `[mcp_servers.*]` from `~/.codex/config.toml`. http and sse servers, and stdio servers run through `npx`, `uvx`, `bunx` or `docker`, are ticked; one that runs a file on this machine or listens on its localhost is listed with the reason and left unticked. claude.ai connectors don't come along with a setup-token sign-in. | merged into the agent's own config there (`~/.claude.json`, `~/.codex/config.toml`), 0600, env and header values included |
+| **Instructions and skills** | Claude: `~/.claude/CLAUDE.md`, `rules/`, `skills/`, `agents/`, `commands/`, and `settings.json` minus hooks, `statusLine`, `apiKeyHelper` and the like that run files on this machine (and plugins, which stay here). Codex: `~/.codex/AGENTS.md`, `prompts/`, `skills/`. At most 20 MB; links that leave the folder and big binaries stay here, and the form says which. | files 0600 and folders 0700 under the agent's folder there |
+| **Project** | A folder here (your recent ones): tracked files plus untracked ones `.gitignore` doesn't exclude (`git ls-files -co --exclude-standard`), and `.git` up to 50 MB so the agent can diff and commit, without hooks and with any `user:token@` taken out of remote URLs. `.env*` files only when you tick them. At most 100 MB and 20,000 files. | into the working folder there (`~/<name>` unless you give one), 0600 files |
+
+How it travels: plain files as a tar.gz through the platform's own file upload (Vercel's `fs/write`, Daytona's `files/upload-v2` into `~/.agentoffice/run`, then `tar`), or streamed into `tar` on the exec channel's stdin (Railway's bridge, ssh). Everything that holds a secret (the merged configs, `auth.json`, `.env` files) is written by one command that carries it in its own environment (ssh: on its stdin), never on a command line or in a log. In a sandbox the office created, your setup replaces what's there; on an ssh box or a sandbox you made, only what's missing is added, and the project goes only into an empty folder. The session's starting steps show it as its own step, with what was left out.
 
 ### Background service
 
@@ -258,6 +285,7 @@ agent office is built to be screen-recorded.
 - **Watching is read-only.** Watching never writes to your agents' transcripts or configs; only `install` touches configs, and only when you ask.
 - **Hiring writes what the agent writes, plus a few office files.** Codex's chat mode records the folder as trusted in `~/.codex/config.toml` (what answering yes in its TUI does), and Command Code is started with `-t`, which trusts the folder; you picked it. Claude Code's two hooks (the permission hook, and a session-start hook so the desk follows the new transcript after `/clear`, which needs `curl` 8.3 or newer) are passed on its command line for that run, never written to a settings file. opencode runs its own server on a random loopback port with a random password, so only the office can drive it. The office's own new files in `~/.agentoffice` are `keys.json`, `control.json` (the unlock secret), `sandboxes.json`, `service.json` and `control-state.json` (recent folders), all `0600`.
 - **The office passes your keys** to the remote agents you choose them for, as described in [Keys](#keys-the-office-passes-your-keys), and to nothing else.
+- **Your setup copies what you leave ticked, into that sandbox or box only:** your sign-in (a stored key or `CLAUDE_CODE_OAUTH_TOKEN`, keys your shell exports, read at hire time and never stored, or Codex's `auth.json`), the MCP servers with their env and header values, your instructions, skills and sanitized `settings.json`, and the project with its history (and `.env` files only if you tick them). Secrets land in 0600 files in the agent's own config there and in its environment, never on a command line or in a log; the page only ever sees names. Connect Claude keeps the token it gets in `keys.json` like any other key. A sandbox provider can technically read what is inside its sandboxes, so whatever you bring is as private as that provider: delete the sandbox when you're done, and leave a key or a project behind when that matters.
 - **Nothing leaves your machine**, except the calls to the sandbox platforms and ssh boxes you're logged in to or configured, and whatever you hire an agent to do. No telemetry, no CDN; it works offline.
 - **Labels, not content.** What reaches the browser is an action and a file name, "Edit auth.ts", "$ npm test". Never prompt text, file contents, command arguments past the subcommand, or anything that looks like a key. Your home directory shows as `~`, and IPs are masked. The exceptions are yours: a hired agent's terminal panel shows its screen, chat mode shows your prompts and its replies, and an approval shows the command or change it asks you to allow, in your own unlocked browser only (anything that looks like a key is still masked).
 - **Command lines are visible to your own machine.** A hired agent's first prompt is passed as its own argument (no keystroke timing), so other users of the same machine can see it with `ps` while the agent runs. So is the unlock link, for the moment `open` or `xdg-open` hands it to your browser; it works once, within two minutes, and the browser normally uses it first. On remotes it travels in the environment instead. Vercel keeps the arguments of every command run in a sandbox (never a key or a prompt here), and Railway's relay keeps about 8 MiB of a terminal's scrollback.
@@ -322,11 +350,11 @@ New agents, sandbox platforms, fixes and ideas are welcome. [CONTRIBUTING.md](CO
 
 ## Trademarks
 
-Claude, Codex, Command Code, opencode, Cursor, Droid and Factory, Qwen, Gemini, Daytona, boat, Railway and Vercel are trademarks of their owners. Their logos appear only to name those products, mostly from [Simple Icons](https://github.com/simple-icons/simple-icons) (CC0) and the owners' own marks; agent office is not affiliated with or endorsed by any of them. Codex is shown as a neutral hexagon rather than OpenAI's logo.
+Claude, Codex, Command Code, opencode, Cursor, Droid and Factory, Qwen, Gemini, Daytona, boat, Railway and Vercel are trademarks of their owners. Their logos appear only to name those products, mostly from [Simple Icons](https://github.com/simple-icons/simple-icons) (CC0) and the owners' own marks; apart from Command Code, which sponsors agent office, it is not affiliated with or endorsed by any of them. Codex is shown as a neutral hexagon rather than OpenAI's logo.
 
 ## Author
 
-Made by [@bas3line](https://github.com/bas3line). If you use it, a link back is appreciated, and so is a star.
+Made by [@bas3line](https://github.com/bas3line), sponsored by [Command Code](https://commandcode.ai). If you use it, a link back is appreciated, and so is a star.
 
 To support it: [GitHub Sponsors](https://github.com/sponsors/bas3line), [Buy Me a Coffee](https://buymeacoffee.com/bas3line) or [PayPal](https://paypal.me/ShubhamYadav886).
 

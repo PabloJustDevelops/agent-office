@@ -12,11 +12,11 @@
  * ground, which is what the ASCII pass samples.
  */
 import type { AgentKind } from "../../src/shared/events.ts";
-import { BRAND, HOST_BRAND } from "../../src/shared/events.ts";
+import { HOST_BRAND } from "../../src/shared/events.ts";
 import { BRAND_ART, C, art, mix, rgba, type ArtKey, type BrandArt } from "./palette.ts";
 import { FONT, MICRO, drawText, fit, measure } from "./font.ts";
 import { pixelLogo, type LogoKind } from "./logos.ts";
-import { MARK_STEP, POD_H, RUG_TOP, WALL_H, PROP_W, type Block, type Rect } from "./layout.ts";
+import { MARK_STEP, RUG_TOP, WALL_H, PROP_W, type Block, type Rect } from "./layout.ts";
 import * as P from "./props.ts";
 import { bitmap, hash, rng, type Bitmap } from "./util.ts";
 
@@ -426,10 +426,10 @@ export function podArt(b: Block): ArtKey {
 
 /** A pod's rug (or server platform) and hanging sign, cached until it changes. */
 export function podBitmap(b: Block, ascii: boolean): Bitmap {
-  const key = `${b.rev}|${b.w}|${ascii}|${b.offline}|${b.label}|${b.mix.join()}`;
+  const key = `${b.rev}|${b.w}x${b.h}|${ascii}|${b.offline}|${b.label}|${b.mix.join()}`;
   const have = podCache.get(b);
   if (have && have.key === key) return have.bm;
-  const bm = bitmap(b.w + POD_BM_PAD * 2, POD_H + POD_BM_PAD * 2);
+  const bm = bitmap(b.w + POD_BM_PAD * 2, b.h + POD_BM_PAD * 2);
   const g = bm.g;
   g.translate(POD_BM_PAD, POD_BM_PAD);
   if (b.zone === "cloud") platform(g, b, ascii);
@@ -442,7 +442,7 @@ export function podBitmap(b: Block, ascii: boolean): Bitmap {
 function rug(g: CanvasRenderingContext2D, b: Block, ascii: boolean) {
   const A = BRAND_ART[b.agent] ?? BRAND_ART.claude;
   const [fill, border, pat] = A.rug;
-  const x = 0, y = RUG_TOP, w = b.w, h = POD_H - RUG_TOP - 1;
+  const x = 0, y = RUG_TOP, w = b.w, h = b.h - RUG_TOP - 1;
   if (ascii) {
     // the rug as a thin outline in its brand colour
     const c = mix(A.ink, C.ink, 0.45);
@@ -524,7 +524,7 @@ function rug(g: CanvasRenderingContext2D, b: Block, ascii: boolean) {
   // brand emblem woven into the rug, bottom-right
   const em = pixelLogo(b.agent as LogoKind, 11, b.agent === "commandcode" ? C.cc6 : mix(pat, A.light, 0.3));
   g.globalAlpha = 0.85;
-  g.drawImage(em.c, w - 18, POD_H - 15);
+  g.drawImage(em.c, w - 18, b.h - 15);
   g.globalAlpha = 1;
 }
 
@@ -532,7 +532,7 @@ function rug(g: CanvasRenderingContext2D, b: Block, ascii: boolean) {
 function platform(g: CanvasRenderingContext2D, b: Block, ascii: boolean) {
   const kind = b.host?.kind && b.host.kind !== "local" ? b.host.kind : "ssh";
   const col = HOST_BRAND[kind].color;
-  const x = 0, y = RUG_TOP - 2, w = b.w, h = POD_H - RUG_TOP;
+  const x = 0, y = RUG_TOP - 2, w = b.w, h = b.h - RUG_TOP;
   if (ascii) {
     r(g, x, y, w, 1, col); r(g, x, y + h - 1, w, 1, col);
     r(g, x, y, 1, h, col); r(g, x + w - 1, y, 1, h, col);
@@ -561,7 +561,7 @@ function platform(g: CanvasRenderingContext2D, b: Block, ascii: boolean) {
   }
   // the host mark etched into the deck
   const em = pixelLogo(kind as LogoKind, 11, mix(rim, C.sv1, 0.45));
-  g.drawImage(em.c, w - 17, POD_H - 17);
+  g.drawImage(em.c, w - 17, b.h - 17);
 }
 
 /** The platform's name as a cloud pod's sign spells it, in small caps before the sandbox name. */
@@ -622,7 +622,7 @@ export function podProps(b: Block): { kind: string; x: number; y: number }[] {
   for (const p of b.props) {
     const pw = PROP_W[p];
     x -= pw;
-    out.push({ kind: p, x: Math.round(x), y: Math.round(b.y) + 52 });
+    out.push({ kind: p, x: Math.round(x), y: Math.round(b.y) + b.propY + 52 });
     x -= 3;
   }
   return out;

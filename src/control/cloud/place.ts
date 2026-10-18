@@ -17,13 +17,17 @@ import { join } from "node:path";
 import type { ProviderStatus, SandboxInfo } from "../../shared/control.ts";
 import type { AgentKind, Host, RemoteTarget } from "../../shared/events.ts";
 import type { RailwayBudget } from "../../remote/railway.ts";
+import { shQuote } from "../../remote/source.ts";
 import { RemoteError, scrubMessage, type FetchFn } from "../../remote/util.ts";
 import {
   ControlError, FILES, NESTED_ENV, PLATFORM_KEY_NAMES,
   type Disposable, type Launch, type OpenOptions, type PipeProc, type PlacesContext, type RemotePlace, type Term, type TermExit,
 } from "../types.ts";
+import type { TarEntry } from "../tar.ts";
+import type { SetupApplied, SetupBundle } from "../types.ts";
 import { adjustLaunch, firstRunScript, geminiScript } from "./firstrun.ts";
 import { ensureAgent, type Ensured } from "./install.ts";
+import { bringSetup } from "./setup.ts";
 
 export const NOOP: Disposable = { dispose() {} };
 
@@ -238,6 +242,14 @@ export abstract class BasePlace implements RemotePlace {
 
   /** A script with a deadline; stderr folded into the output where the transport allows. */
   abstract run(script: string, o: { timeoutMs: number }): Promise<string>;
+  /**
+   * A script whose environment carries `env` (secret values, for "Bring my
+   * setup"): the platform's per-command environment, or ssh's stdin. Never a
+   * command line, never a log.
+   */
+  protected abstract runSecret(script: string, env: Record<string, string>, o: { timeoutMs: number }): Promise<string>;
+  /** Extract these entries into `dir` there (absolute, already made): the platform's file upload, or tar on the exec channel. */
+  protected abstract upload(entries: TarEntry[], dir: string, o: { home: string; timeoutMs: number }): Promise<void>;
   protected abstract openTerm(launch: Launch, size: { cols: number; rows: number }, sid: string, path: string[] | undefined): Promise<Term>;
 
   async ensureAgent(agent: AgentKind, progress: OpenOptions["progress"]): Promise<Ensured> {
@@ -256,6 +268,27 @@ export abstract class BasePlace implements RemotePlace {
     } catch (err) {
       // The user clicks through what wasn't pre-answered.
       this.log(`${this.where}: first-run setup for ${agent} skipped (${scrubMessage((err as Error).message)})`, "warn");
+    }
+  }
+
+  async bring(bundle: SetupBundle, secrets: Record<string, string>, progress: (detail: string) => void): Promise<SetupApplied> {
+    if (this.closed) throw new ControlError(409, `${this.where} is closed`);
+    try {
+      return await bringSetup(
+        {
+          where: this.where,
+          ours: this.ours,
+          cwd: this.cwd,
+          run: (s, o) => this.run(s, o),
+          runSecret: (s, env, o) => this.runSecret(s, env, o),
+          upload: (entries, dir, o) => this.upload(entries, dir, o),
+        },
+        bundle,
+        secrets,
+        progress,
+      );
+    } catch (err) {
+      throw asControlError(err, `${this.where}: copying your setup`);
     }
   }
 
@@ -299,6 +332,11 @@ export abstract class BasePlace implements RemotePlace {
       }
     }
   }
+}
+
+/** `tar xzf -` into `dir`, for transports that stream an archive on stdin (Railway's bridge, ssh). */
+export function untarScript(dir: string): string {
+  return `umask 077; mkdir -p ${shQuote(dir)} && tar xzf - -C ${shQuote(dir)}`;
 }
 
 /** A remote command failed: the error with its last line of output, which is never a secret (scrubbed anyway). */

@@ -141,6 +141,128 @@ test("claude: background test runs and denied calls produce no verdict", () => {
   assert.equal(pick(evs, "test_pass").length, 0);
 });
 
+/*
+ * Claude Code's newer transcripts: the record shapes of a real session (types, keys and order; the
+ * content here is made up). Besides user / assistant / system there are request copies
+ * (api-request, api-request-blob, whose `message` repeats the assistant's tool calls), session
+ * metadata rewritten after every request, the prompt queue, and attachments, one of which carries a
+ * message typed mid-turn.
+ */
+const NEW_SID = "22222222-3333-4444-8555-666666666666";
+const newLine = (o) => JSON.stringify(o);
+const meta = (ts) => [
+  { type: "last-prompt", lastPrompt: "made up", leafUuid: "u-leaf", sessionId: NEW_SID, explicit: false },
+  { type: "ai-title", aiTitle: "Made-up title", sessionId: NEW_SID },
+  { type: "mode", mode: "normal", sessionId: NEW_SID },
+  { type: "permission-mode", permissionMode: "default", sessionId: NEW_SID },
+  { type: "atis-latch", atis: true, sessionId: NEW_SID },
+  { type: "pr-link", sessionId: NEW_SID, prNumber: 7, prUrl: "https://example.com/pr/7", prRepository: "me/app", timestamp: ts },
+  { type: "bridge-session", sessionId: NEW_SID, bridgeSessionId: "b-1", lastSequenceNum: 3, ownerAccountUuid: "acct", ownerOrganizationUuid: "org" },
+];
+const request = (ts, blob) => [
+  ...(blob ? [{ type: "api-request-blob", sessionId: NEW_SID, hash: "h1", message: blob }] : []),
+  { type: "api-request-blob", sessionId: NEW_SID, hash: "h2", message: { role: "system", content: [{ type: "text", text: "<total_tokens>1</total_tokens>" }] } },
+  { type: "api-request", sessionId: NEW_SID, id: "req", timestamp: ts, version: "2.1.302", querySource: "repl_main_thread", shapeHash: "s", params: { model: "m", max_tokens: 1 }, base: "b", keep: 3, tail: [{ role: "user", content: "x" }], cacheControl: {}, requestDigest: "d" },
+  ...meta(ts),
+];
+const base = (ts) => ({ parentUuid: "p", isSidechain: false, uuid: `u-${ts}`, timestamp: ts, userType: "external", entrypoint: "cli", cwd: "/tmp/demo-app", sessionId: NEW_SID, version: "2.1.302", gitBranch: "main", slug: "made-up-slug" });
+const bash = (id, ts, n) => [
+  { ...base(ts), type: "assistant", requestId: `r${n}`, message: { model: "claude-opus-5-5", id: `msg_${n}`, type: "message", role: "assistant", content: [{ type: "thinking", thinking: "", signature: "x" }], stop_reason: null, usage: { input_tokens: 1, output_tokens: 1 } } },
+  { ...base(ts), type: "assistant", requestId: `r${n}`, message: { model: "claude-opus-5-5", id: `msg_${n}`, type: "message", role: "assistant", content: [{ type: "tool_use", id, name: "Bash", input: { command: "git status", description: "made up" } }], stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 9 } } },
+  { ...base(ts), type: "user", promptId: "pr1", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: "made up output", is_error: false }] }, toolUseResult: { stdout: "made up", stderr: "", interrupted: false, isImage: false }, sourceToolAssistantUUID: "a", permissionDecision: "allow" },
+  ...request(ts, { role: "assistant", content: [{ type: "thinking", thinking: "" }, { type: "tool_use", id, name: "Bash", input: { command: "git status" } }] }),
+  { ...base(ts), type: "attachment", attachment: { type: "total_tokens_reminder", text: "made up" }, rendered: true, renderedRole: "user" },
+  { ...base(ts), type: "attachment", attachment: { type: "deferred_tools_record", tools: ["X"] } },
+];
+
+/** A turn that ends, then a turn a background task's notification starts, with a message typed mid-turn. */
+function notificationTurn() {
+  return [
+    { ...base("2026-10-18T11:30:14.000Z"), type: "assistant", message: { model: "claude-opus-5-5", id: "msg_end1", role: "assistant", content: [{ type: "text", text: "made-up reply" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 3 } } },
+    { ...base("2026-10-18T11:30:14.100Z"), type: "system", subtype: "stop_hook_summary", hookCount: 0, hookInfos: [], hookErrors: [], preventedContinuation: false, stopReason: "", hasOutput: false, level: "suggestion" },
+    { ...base("2026-10-18T11:30:14.200Z"), type: "system", subtype: "turn_duration", durationMs: 20_000, messageCount: 4, pendingBackgroundAgentCount: 2, isMeta: false },
+    // 3.5 minutes later: no prompt, a background task finished
+    { type: "queue-operation", operation: "enqueue", timestamp: "2026-10-18T11:33:54.444Z", sessionId: NEW_SID, content: "<task-notification>made up</task-notification>" },
+    { type: "queue-operation", operation: "dequeue", timestamp: "2026-10-18T11:33:54.459Z", sessionId: NEW_SID },
+    {
+      ...base("2026-10-18T11:33:54.474Z"), type: "user", promptId: "pr2", permissionMode: "default",
+      message: { role: "user", content: "<task-notification>\n<task-id>made-up</task-id>\n<status>completed</status>\n</task-notification>" },
+      origin: { kind: "task-notification", producer: "session-task", runId: "run-1" }, promptSource: "system", turnOrigin: "task_notification",
+      turnPosition: { promptIndex: 39, turnIndex: 68 }, queueSkipAttachments: true,
+    },
+    ...request("2026-10-18T11:33:54.722Z", { role: "user", content: [{ type: "text", text: "<system-reminder>made up</system-reminder>" }] }),
+    ...bash("toolu_1", "2026-10-18T11:33:57.347Z", 1),
+    ...bash("toolu_2", "2026-10-18T11:34:03.751Z", 2),
+    // the human types while a command runs; it arrives as an attachment, not a prompt
+    { type: "queue-operation", operation: "enqueue", timestamp: "2026-10-18T11:35:33.139Z", sessionId: NEW_SID, content: "made-up message" },
+    ...bash("toolu_3", "2026-10-18T11:35:34.082Z", 3),
+    { type: "queue-operation", operation: "remove", timestamp: "2026-10-18T11:36:47.608Z", sessionId: NEW_SID, content: "made-up message" },
+    { ...base("2026-10-18T11:35:32.964Z"), type: "attachment", attachment: { type: "queued_command", prompt: "made-up message", commandMode: "prompt", imagePasteIds: [1] } },
+    ...request("2026-10-18T11:36:47.679Z", { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_3", content: "x" }, { type: "text", text: "made-up message" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }] }),
+    { type: "file-history-snapshot", messageId: "m", snapshot: { messageId: "m", trackedFileBackups: { "/tmp/demo-app/a.ts": { backupFileName: "x", version: 1 } }, timestamp: "2026-10-18T11:36:48.000Z" }, isSnapshotUpdate: false },
+    ...bash("toolu_4", "2026-10-18T11:37:18.000Z", 4),
+    { ...base("2026-10-18T11:37:40.000Z"), type: "assistant", message: { model: "claude-opus-5-5", id: "msg_end2", role: "assistant", content: [{ type: "text", text: "made-up reply" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 3 } } },
+  ].map(newLine);
+}
+
+test("claude: a turn a background task's notification starts moves the worker out of waiting", () => {
+  const st = P.createClaudeState({ sessionId: NEW_SID, slug: "-tmp-demo-app" });
+  const evs = notificationTurn().flatMap((l) => P.parseClaudeLine(st, l));
+  assertPrivate(evs);
+  assert.deepEqual(kinds(evs), [
+    "session_start", "reply", "waiting",
+    // no "prompt": a notification isn't the human; the first tool call is what takes it out of waiting
+    "thinking", "tool_start", "tool_end",
+    "thinking", "tool_start", "tool_end",
+    "thinking", "tool_start", "tool_end", // the message typed mid-turn (an attachment) is no prompt either
+    "thinking", "tool_start", "tool_end",
+    "reply", "waiting",
+  ]);
+  const starts = pick(evs, "tool_start");
+  assert.equal(starts.length, 4, "the request copies (api-request-blob) never count as calls");
+  assert.ok(starts.every((e) => e.tool === "Bash" && e.summary === "$ git status"));
+  assert.ok(evs.every((e) => e.workerId === NEW_SID && e.project === "demo-app"));
+  assert.equal(st.main.pending.size, 0);
+});
+
+test("claude: newer record types are ignored and leave the parser's state alone", () => {
+  const st = P.createClaudeState({ sessionId: NEW_SID });
+  const L = (o) => JSON.stringify({ sessionId: NEW_SID, timestamp: "2026-10-18T11:00:00Z", ...o });
+  // mid-call, so a stray tool_result / tool_use in a copy would show
+  P.parseClaudeLine(st, L({ type: "assistant", cwd: "/tmp/demo-app", message: { id: "m0", content: [{ type: "tool_use", id: "live", name: "Read", input: { file_path: "/tmp/demo-app/a.ts" } }], stop_reason: "tool_use" } }));
+  const before = { pending: [...st.main.pending.keys()], lastKind: st.main.lastKind, cwd: st.main.cwd, announced: st.main.announced };
+  const shapes = [
+    ...meta("2026-10-18T11:00:01Z"),
+    ...request("2026-10-18T11:00:02Z", { role: "assistant", content: [{ type: "tool_use", id: "copy", name: "Bash", input: { command: "npm test" } }] }),
+    { type: "api-request-blob", sessionId: NEW_SID, hash: "h3", message: { role: "user", content: [{ type: "tool_result", tool_use_id: "live", content: "copy" }] } },
+    { type: "api-request-blob", sessionId: NEW_SID, hash: "h4", message: { role: "assistant", content: "a string" } },
+    { type: "api-request-shape", sessionId: NEW_SID, shapeHash: "s" },
+    { type: "attachment", attachment: { type: "queued_command", prompt: "made up" } },
+    { type: "attachment", attachment: { type: "hook_additional_context", content: ["x"] } },
+    { type: "attachment" },
+    { type: "queue-operation", operation: "enqueue", content: "<task-notification>made up</task-notification>" },
+    { type: "queue-operation", operation: "remove" },
+    { type: "file-history-snapshot", messageId: "m", snapshot: { trackedFileBackups: {} }, isSnapshotUpdate: true },
+    { type: "file-history-delta", messageId: "m" },
+    { type: "cost-state", costUSD: 1 },
+    { type: "fork-context-ref", ref: "r" },
+    { type: "message", message: { role: "assistant", content: [{ type: "tool_use", id: "m-copy", name: "Bash", input: { command: "npm test" } }], stop_reason: "end_turn" } },
+    { type: "message", message: "a string" },
+    { type: "text", text: "made up" },
+    { type: "text", text: { nested: true } },
+    { type: "some-future-record", message: { role: "user", content: "made up" } },
+  ];
+  for (const o of shapes) {
+    const evs = P.parseClaudeLine(st, L(o));
+    assert.deepEqual(evs, [], `${o.type} ${o.operation ?? o.attachment?.type ?? ""}`);
+  }
+  assert.deepEqual({ pending: [...st.main.pending.keys()], lastKind: st.main.lastKind, cwd: st.main.cwd, announced: st.main.announced }, before);
+  // and the real result still closes the real call
+  const end = P.parseClaudeLine(st, L({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "live", content: "ok" }] } }));
+  assert.deepEqual(kinds(end), ["tool_end"]);
+  assert.equal(end[0].tool, "Read");
+});
+
 test("command code v3: tools, tests, intern, reply, error", () => {
   const evs = run(P.createCommandCodeState({ sessionId: "aB3dE5gH7jK9mN1pQ3sT5" }), P.parseCommandCodeLine, CC_V3);
   assertPrivate(evs);

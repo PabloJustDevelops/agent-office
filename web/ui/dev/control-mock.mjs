@@ -488,6 +488,50 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
     req.on("close", () => clearInterval(ping));
   };
 
+  /** GET /setup: a plausible "Your setup" inventory (names only, like the real one). */
+  function setupInventory(agent, folder) {
+    const claude = agent === "claude", codex = agent === "codex";
+    const login = claude
+      ? [
+          { kind: "subscription", label: "Claude subscription", detail: "expires ~Oct 2027", available: true, keys: ["CLAUDE_CODE_OAUTH_TOKEN"] },
+          { kind: "key", label: "API key", detail: "ANTHROPIC_API_KEY, stored", available: true, keys: ["ANTHROPIC_API_KEY"] },
+          { kind: "none", label: "Sign in there myself", available: true },
+        ]
+      : codex
+        ? [
+            { kind: "key", label: "API key", detail: "OPENAI_API_KEY, stored", available: true, keys: ["OPENAI_API_KEY"] },
+            { kind: "device", label: "Device code", detail: "Codex shows a link and a code in the terminal", available: true },
+            { kind: "copy", label: "This Mac's ChatGPT sign-in", detail: "~/.codex/auth.json", available: true },
+          ]
+        : [];
+    const mcp = claude || codex
+      ? [
+          { name: "github", transport: "http", scope: "user", ok: true, what: "api.githubcopilot.com", secrets: 1 },
+          { name: "linear", transport: "sse", scope: "user", ok: true, what: "mcp.linear.app" },
+          { name: "playwright", transport: "stdio", scope: "user", ok: true, what: "npx -y @playwright/mcp" },
+          { name: "postgres", transport: "stdio", scope: "local", ok: true, what: "uvx mcp-server-postgres", secrets: 1 },
+          { name: "notes", transport: "stdio", scope: "user", ok: false, why: "runs ~/bin/notes-mcp, which the sandbox won't have" },
+          { name: "figma", transport: "http", scope: "user", ok: false, why: "listens on this Mac's localhost", what: "127.0.0.1:3845" },
+        ]
+      : [];
+    const instructions = claude
+      ? [
+          { id: "CLAUDE.md", label: "CLAUDE.md", files: 1, bytes: 4_200 },
+          { id: "rules", label: "Rules", files: 3, bytes: 9_800 },
+          { id: "skills", label: "Skills", files: 41, bytes: 512_000, count: 12, skipped: ["render/bin/ffmpeg: 40 MB binary"] },
+          { id: "agents", label: "Agents", files: 2, bytes: 3_100 },
+          { id: "settings.json", label: "settings.json", files: 1, bytes: 1_600, skipped: ["hooks: run files on this Mac"] },
+        ]
+      : codex
+        ? [{ id: "AGENTS.md", label: "AGENTS.md", files: 1, bytes: 2_900 }, { id: "prompts", label: "Prompts", files: 4, bytes: 6_400 }]
+        : [];
+    const project = folder
+      ? { folder, display: tidy(folder), files: 412, bytes: 3_250_000, git: { present: true, bytes: 8_400_000, ok: true }, envFiles: [".env.local"], ok: true }
+      : undefined;
+    const notes = claude || codex ? [] : [`MCP servers and instructions come along for Claude Code and Codex; ${NAMES[agent] ?? agent} gets its keys and the project.`];
+    return { agent, login, shellKeys: ["GITHUB_TOKEN"], mcp, instructions, ...(project ? { project } : {}), notes };
+  }
+
   async function handle(req, res, url) {
     if (!url.pathname.startsWith("/api/control")) return false;
     if (req.headers["x-agent-office"] !== "1") return json(res, 403, { error: "Missing the X-Agent-Office header." }), true;
@@ -504,6 +548,11 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
       if (body.place.kind === "local" && !av?.installed) return json(res, 400, { error: `${NAMES[body.agent]} isn't installed on this Mac.` }), true;
       const s = hire(body);
       return json(res, 200, s), true;
+    }
+    if (path === "/setup" && method === "GET") {
+      const agent = url.searchParams.get("agent") ?? "claude";
+      const folder = url.searchParams.get("folder");
+      return json(res, 200, setupInventory(agent, folder)), true;
     }
     if (path === "/fs" && method === "GET") {
       const p = url.searchParams.get("path") || HOME;

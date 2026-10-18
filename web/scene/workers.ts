@@ -11,8 +11,8 @@ import type { AgentKind, Host, OfficeEvent, Snapshot, ToolCategory, WorkerState 
 import { BRAND, HOST_BRAND, IDLE_MS } from "../../src/shared/events.ts";
 import { BRAND_ART, C, rgba, type ArtKey } from "./palette.ts";
 import {
-  Layout, WALL_H, CORRIDOR_Y, DESK_W, SEAT_W, LAPTOP_DX, DESK_DY, POD_H, RUG_TOP,
-  benchDX, routeFromSeat, routeToSeat, type Block, type Pt, type Seat,
+  Layout, WALL_H, CORRIDOR_Y, DESK_W, SEAT_W, LAPTOP_DX, RUG_TOP,
+  benchDX, deskTop, routeFromSeat, routeToSeat, type Block, type Pt, type Seat,
 } from "./layout.ts";
 import { lookFor, silhouette, sprite, SPRITE_FOOT, SPRITE_W, type Dir, type Look, type Pose } from "./sprites.ts";
 import * as P from "./props.ts";
@@ -814,7 +814,7 @@ export class Crew {
     };
     for (const st of b.stations) {
       const dx = Math.round(b.x + st.x);
-      const dy = Math.round(b.y) + DESK_DY;
+      const dy = deskTop(b, st);
       // In a pod two agents share, each desk is in its own agent's colours.
       const key = b.zone === "local" && st.agent && st.agent !== b.agent ? (st.agent as ArtKey) : podKey;
       if (st.hot) {
@@ -846,11 +846,11 @@ export class Crew {
     if (b.offline) {
       // the sandbox went away: the pod goes dark and shows a pulled plug
       out.push({
-        y: Math.round(b.y) + POD_H + 0.9,
+        y: Math.round(b.y) + b.h + 0.9,
         fn: (g) => {
           g.globalAlpha = 0.5 * a;
           g.fillStyle = C.sv0;
-          g.fillRect(Math.round(b.x), Math.round(b.y) + RUG_TOP - 2, b.w, POD_H - RUG_TOP + 2);
+          g.fillRect(Math.round(b.x), Math.round(b.y) + RUG_TOP - 2, b.w, b.h - RUG_TOP + 2);
           g.globalAlpha = a;
           P.unplugged(g, Math.round(b.x) + Math.round(b.w / 2) - 6, Math.round(b.y) + RUG_TOP + 18, now);
           g.globalAlpha = 1;

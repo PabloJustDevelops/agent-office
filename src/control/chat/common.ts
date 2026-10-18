@@ -10,6 +10,7 @@
 import { spawn } from "node:child_process";
 import type { Approval, ApprovalAnswer, ChatItem } from "../../shared/control.ts";
 import { redactSecrets } from "../../ingest/redact.ts";
+import { approvalDetail } from "../approvals.ts";
 import { Emitter, Latch } from "../emitter.ts";
 import { ControlError, type ChatConn, type Disposable, type PipeProc, type TermExit } from "../types.ts";
 import { exitOf } from "../pty.ts";
@@ -23,8 +24,8 @@ export function scrubChat(text: string): string {
   return redactSecrets(t);
 }
 
-export function approvalItem(a: Approval, text: string): ChatItem {
-  return { id: `ap-${a.id}`, kind: "approval", tool: a.tool, ...(a.category ? { category: a.category } : {}), summary: a.summary, ...(a.detail ? { detail: a.detail } : {}), text, at: a.at };
+export function approvalItem(a: Approval, text: string, turnId?: string): ChatItem {
+  return { id: `ap-${a.id}`, kind: "approval", tool: a.tool, ...(a.category ? { category: a.category } : {}), summary: a.summary, ...(a.detail ? { detail: a.detail } : {}), text, ...(turnId ? { turnId } : {}), at: a.at };
 }
 
 export const APPROVAL_TEXT = {
@@ -42,6 +43,52 @@ export function shortReason(text: unknown, max = 300): string {
   return redactSecrets(s.length > max ? s.slice(0, max - 1) + "…" : s);
 }
 
+/** ChatItem.detail on a tool: its output's last few lines. */
+export const TAIL_LINES = 12;
+export const TAIL_CHARS = 2000;
+const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])/g;
+
+/**
+ * The tail of what a tool printed, for ChatItem.detail: colours out, a
+ * progress line's carriage-return rewrites folded to their last state, keys
+ * masked (each whole line, before any cut), home as "~", <= TAIL_LINES lines
+ * and TAIL_CHARS characters. Undefined for no output.
+ */
+export function outputTail(text: unknown, home?: string): string | undefined {
+  if (typeof text !== "string" || !text.trim()) return undefined;
+  const lines = text
+    .slice(-TAIL_CHARS * 8)
+    .replace(ANSI, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+$/, "")
+    .split("\n")
+    .slice(-TAIL_LINES)
+    .map((l) => redactSecrets(l.slice(l.lastIndexOf("\r") + 1)).slice(0, TAIL_CHARS));
+  const tail = approvalDetail([lines.join("\n")], home);
+  if (!tail) return undefined;
+  return tail.length > TAIL_CHARS ? "…" + tail.slice(tail.length - TAIL_CHARS + 1) : tail;
+}
+
+/** A longer, multi-line reason, for an error item's detail (masked, home as "~", capped). */
+export function longReason(text: unknown, home?: string): string | undefined {
+  return typeof text === "string" ? approvalDetail([text], home) : undefined;
+}
+
+/** A finite number, or undefined. */
+export function num(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/** What closes a turn: ChatItem.turnEnd on a text-less "done", on "Interrupted.", or on an error. */
+export interface TurnEnd {
+  text?: string;
+  kind?: "system" | "error";
+  detail?: string;
+  /** The whole turn, as the agent reports it or as timed here. */
+  durationMs?: number;
+  tokens?: number;
+}
+
 export abstract class ChatBase implements ChatConn {
   protected readonly items = new Emitter<ChatItem>();
   protected readonly approvals = new Emitter<Approval | null>();
@@ -51,6 +98,8 @@ export abstract class ChatBase implements ChatConn {
   protected sessionId: string | undefined;
   private busy = false;
   private readonly last = new Map<string, { at: number; timer?: ReturnType<typeof setTimeout>; item?: ChatItem }>();
+  /** Assistant items put with `streaming: true` and not final yet: their latest version. */
+  private readonly open = new Map<string, ChatItem>();
   private seq = 0;
 
   constructor(protected readonly now: () => number = Date.now) {}
@@ -108,9 +157,16 @@ export abstract class ChatBase implements ChatConn {
     return this.busy;
   }
 
-  /** Emit an item now (final), flushing any throttled version of it first. */
+  /** Emit an item now (an assistant item without `streaming` is final), flushing any throttled version of it first. */
   protected put(item: ChatItem): void {
-    const it = item.text !== undefined ? { ...item, text: scrubChat(item.text) } : item;
+    let it = item.text !== undefined ? { ...item, text: scrubChat(item.text) } : item;
+    if (it.kind === "assistant") {
+      if (it.streaming) this.open.set(it.id, item);
+      else {
+        if (it.streaming === undefined) it = { ...it, streaming: false };
+        this.open.delete(it.id);
+      }
+    }
     const l = this.last.get(it.id);
     if (l?.timer) clearTimeout(l.timer);
     this.last.set(it.id, { at: this.now() });
@@ -118,8 +174,10 @@ export abstract class ChatBase implements ChatConn {
     this.items.emit(it);
   }
 
-  /** Emit a streaming update, at most ITEM_MIN_MS apart per id; the latest version always arrives. */
+  /** Emit a streaming update (`streaming: true`), at most ITEM_MIN_MS apart per id; the latest version always arrives. */
   protected stream(item: ChatItem): void {
+    item = { ...item, streaming: true };
+    this.open.set(item.id, item);
     const l = this.last.get(item.id);
     const t = this.now();
     if (!l || t - l.at >= ITEM_MIN_MS) return this.put(item);
@@ -131,16 +189,65 @@ export abstract class ChatBase implements ChatConn {
     }, ITEM_MIN_MS - (t - l.at));
   }
 
-  protected system(text: string, kind: "system" | "error" = "system"): void {
-    this.put({ id: this.nextId(kind === "error" ? "err" : "sys"), kind, text, at: this.iso() });
+  /** Text still marked streaming whose final version never came (an interrupted reply): put it final as it stands. */
+  protected settle(turnId?: string): void {
+    for (const it of [...this.open.values()]) if (turnId === undefined || it.turnId === turnId) this.put({ ...it, streaming: false, at: this.iso() });
   }
 
-  protected user(text: string): void {
-    this.put({ id: this.nextId("u"), kind: "user", text, at: this.iso() });
+  protected system(text: string, kind: "system" | "error" = "system", extra: Partial<ChatItem> = {}): void {
+    this.put({ id: this.nextId(kind === "error" ? "err" : "sys"), kind, text, ...extra, at: this.iso() });
+  }
+
+  /** A prompt; a `queued` one waits for its turn (unqueue it when that starts). */
+  protected user(text: string, extra: Pick<ChatItem, "turnId" | "queued"> = {}): ChatItem {
+    const it: ChatItem = { id: this.nextId("u"), kind: "user", text, ...(extra.turnId ? { turnId: extra.turnId } : {}), ...(extra.queued ? { queued: true } : {}), at: this.iso() };
+    this.put(it);
+    return it;
+  }
+
+  /** A queued prompt's turn starts: the same item again, without `queued`. */
+  protected unqueue(it: ChatItem): void {
+    const { queued: _queued, ...rest } = it;
+    this.put({ ...rest, at: this.iso() });
+  }
+
+  /** A fresh ChatItem.turnId: the office's own, one per prompt, fixed from the moment it is sent. */
+  protected newTurnId(): string {
+    return this.nextId("turn");
+  }
+
+  /** The item that closes a turn. */
+  protected endTurn(turnId: string, e: TurnEnd = {}): void {
+    const ms = num(e.durationMs);
+    const tokens = num(e.tokens);
+    this.put({
+      id: `end-${turnId}`,
+      kind: e.kind ?? "system",
+      ...(e.text ? { text: e.text } : {}),
+      ...(e.detail ? { detail: e.detail } : {}),
+      turnId,
+      turnEnd: true,
+      ...(ms !== undefined && ms >= 0 ? { durationMs: Math.round(ms) } : {}),
+      ...(tokens !== undefined && tokens > 0 ? { tokens: Math.round(tokens) } : {}),
+      at: this.iso(),
+    });
+  }
+
+  /**
+   * Queued prompts that will never run (the user interrupted the turn before
+   * them, or the agent exited). Each leaves the queue as a turn of its own
+   * that says so.
+   */
+  protected dropQueued(prompts: ChatItem[], why = "Not sent: the turn before it was interrupted."): void {
+    for (const it of prompts) {
+      this.unqueue(it);
+      if (it.turnId) this.endTurn(it.turnId, { text: why });
+    }
   }
 
   protected finished(e: TermExit): void {
     for (const l of this.last.values()) if (l.timer) clearTimeout(l.timer);
+    this.settle();
     this.setBusy(false);
     this.exit.fire(e);
   }

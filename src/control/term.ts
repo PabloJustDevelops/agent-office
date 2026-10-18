@@ -197,13 +197,18 @@ export class TermBuffer {
     this.term.dispose();
   }
 
-  /** The visible screen as plain text, for tests and diagnostics. */
-  screen(): Promise<string> {
+  /** The visible screen as plain text, for tests and diagnostics. `unwrap`: a line the terminal wrapped comes back whole (a long URL). */
+  screen(o: { unwrap?: boolean } = {}): Promise<string> {
     return new Promise((resolve) =>
       this.term.write("", () => {
         const b = this.term.buffer.active;
         const lines: string[] = [];
-        for (let y = 0; y < this.term.rows; y++) lines.push((b.getLine(b.viewportY + y)?.translateToString(true) ?? "").trimEnd());
+        for (let y = 0; y < this.term.rows; y++) {
+          const line = b.getLine(b.viewportY + y);
+          if (o.unwrap && y > 0 && line?.isWrapped && lines.length) lines[lines.length - 1] += line.translateToString(true);
+          else lines.push(line?.translateToString(true) ?? "");
+        }
+        for (let i = 0; i < lines.length; i++) lines[i] = lines[i]!.trimEnd();
         while (lines.length && !lines[lines.length - 1]) lines.pop();
         resolve(lines.join("\n"));
       }),
