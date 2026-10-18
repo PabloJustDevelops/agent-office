@@ -14,7 +14,7 @@ import type { Camera } from "./camera.ts";
 import { C, HAIRS, SKINS, mix } from "./palette.ts";
 import { brandInk, TP_MS, type Crew, type Worker } from "./workers.ts";
 import { clamp } from "./util.ts";
-import { DESK_DY, DESK_W, LAPTOP_DX, SEAT_W, benchDX } from "./layout.ts";
+import { DESK_W, LAPTOP_DX, SEAT_W, benchDX, deskTop } from "./layout.ts";
 import { podInk } from "./room.ts";
 import type { Screen } from "./props.ts";
 
@@ -198,7 +198,7 @@ export function furnitureFigures(crew: Crew, cam: Camera, cell: { w: number; h: 
     if (b.alpha < 0.5) continue;
     const wood = mix(podInk(b), C.slate3, b.offline ? 0.7 : 0.35);
     for (const st of b.stations) {
-      const dx = Math.round(b.x + st.x), dy = Math.round(b.y) + DESK_DY;
+      const dx = Math.round(b.x + st.x), dy = deskTop(b, st);
       const occ = st.main ? crew.workers.get(st.main) : undefined;
       const flip = occ?.show?.kind === "flip" ? now - occ.show.t0 : -1;
       if (st.hot) { bench(dx, dy, st); continue; }
