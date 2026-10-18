@@ -417,6 +417,9 @@ export interface CreateOptions {
   name: string;
   timeoutMin: number;
   cwd?: string;
+  /** Railway: the project (id or name) and environment the hire picked. */
+  project?: string;
+  environment?: string;
   /** Called the moment the platform has the sandbox (recorded in sandboxes.json), before it is up. */
   onCreated?(id: string): void;
 }

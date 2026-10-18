@@ -83,8 +83,8 @@ export interface HireRequest {
   permission?: PermissionMode;
   /** Names of stored keys to hand to a remote agent. Ignored for local. */
   keys?: string[];
-  /** For place.target === "new". */
-  sandbox?: { name?: string; timeoutMin?: number };
+  /** For place.target === "new". Railway: `project` and `environment` (ids, or names) say where it goes; absent, ProviderStatus.dest. */
+  sandbox?: { name?: string; timeoutMin?: number; project?: string; environment?: string };
   /** "Bring my setup": what of this machine's setup to copy there. Remote places only; absent: nothing. */
   setup?: SetupChoice;
 }
@@ -350,6 +350,18 @@ export interface ProviderStatus {
   hosts?: string[];
   /** Why canCreate is false, or what creating will do ("creates vercel-sandbox-default-project first"). */
   note?: string;
+  /** Railway: the projects (and their environments) a new sandbox can go in. */
+  projects?: CloudProject[];
+  /** Railway: where a new sandbox goes when the hire doesn't pick (ids), and why there ("last used"). Absent: the hire has to pick. */
+  dest?: { project: string; environment: string; why: string };
+}
+
+export interface CloudProject {
+  id: string;
+  name: string;
+  /** Named when the login sees more than one workspace. */
+  workspace?: string;
+  environments: { id: string; name: string }[];
 }
 
 export interface AgentAvailability {

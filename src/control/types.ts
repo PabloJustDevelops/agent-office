@@ -62,7 +62,7 @@ export const FILES = {
   sandboxes: "sandboxes.json",
   /** {v:1, version, node, installedAt, startAtLogin}. */
   service: "service.json",
-  /** {v:1, recentFolders: string[]}. */
+  /** {v:1, recentFolders: string[], railway?: {projectId, environmentId}} (the last Railway project a sandbox went in). */
   state: "control-state.json",
   /** The service's stable copy of the package: app/<version>/, app/current -> it. */
   app: "app",

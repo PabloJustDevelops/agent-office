@@ -197,6 +197,9 @@ test("Railway: the exec bridge carries the values in init_exec.env and the archi
       if (q.includes("sandbox(environmentId")) return { json: { data: { sandbox: { id: v.id, status: "RUNNING" } } } };
       if (q.includes("generateShellToken")) return { json: { data: { generateShellToken: "jwt-dummy" } } };
       if (q.includes("projectToken")) return { json: { data: { projectToken: null } } };
+      // config.json's ids are looked up in the account's projects before anything uses them.
+      if (q.includes("me { workspaces")) return { json: { data: { me: { workspaces: [{ id: "w1", name: "me" }] } } } };
+      if (q.includes("projects(workspaceId")) return { json: { data: { projects: { edges: [{ node: { id: "p1", name: "shop", environments: { edges: [{ node: { id: "e1", name: "production" } }] } } }], pageInfo: { hasNextPage: false } } } } };
       return { json: { data: {} } };
     },
     ws(conn) {

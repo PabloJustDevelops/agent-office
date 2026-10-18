@@ -377,6 +377,9 @@ test("bodies: JSON only, capped, and validated before anything is hired", async 
     { agent: "claude", place: { kind: "local", target: "~" }, keys: ["ANTHROPIC_API_KEY"] },
     { agent: "claude", place: { kind: "daytona", target: "new" }, keys: ["lower"] },
     { agent: "claude", place: { kind: "daytona", target: "new" }, sandbox: { name: "a b" } },
+    { agent: "claude", place: { kind: "railway", target: "new" }, sandbox: { environment: "production" } },
+    { agent: "claude", place: { kind: "railway", target: "new" }, sandbox: { project: "a\nb" } },
+    { agent: "claude", place: { kind: "railway", target: "new" }, sandbox: { project: "p".repeat(129) } },
   ]) {
     const r = await call("POST", "/api/control/hire", { cookie, body });
     assert.equal(r.status, 400, JSON.stringify(body));
@@ -400,6 +403,10 @@ test("hire and drive: the router hands requests to the sessions part, local fold
   assert.equal(hire.permission, "plan");
   const id = r.json.id;
   assert.ok(!logs.some((l) => l.includes("fix it")), "prompts never reach the log");
+  // Railway: where the new sandbox goes travels as given (ids, or names the places part looks up).
+  const rw = await call("POST", "/api/control/hire", { cookie, body: { agent: "claude", place: { kind: "railway", target: "new" }, mode: "chat", sandbox: { timeoutMin: 15, project: " agentoffice-test ", environment: "production" } } });
+  assert.equal(rw.status, 200);
+  assert.deepEqual(sessions.calls.filter((c) => c[0] === "hire").at(-1)[1].sandbox, { timeoutMin: 15, project: "agentoffice-test", environment: "production" });
   for (const [what, body, want] of [
     ["input", { data: "\x1b[A" }, ["input", id, "\x1b[A"]],
     ["resize", { cols: 9999, rows: 1 }, ["resize", id, 500, 4]],

@@ -130,7 +130,7 @@ Agents in cloud sandboxes or on another machine sit in a glass-walled **cloud wi
 | <img src="docs/logos/boat.svg" width="18"> | **boat** | `BOAT_API_KEY`, or the `boat` CLI; only with `--boat` | built from docs.boat.dev, untested on a real VM |
 | | **any ssh box** | your own `ssh`, `BatchMode=yes`, one multiplexed connection | beta |
 
-**Auto-detect.** On start the office looks for those keys and logins (files and environment only) and watches the running sandboxes in your own scope, so a teammate's sandbox never ends up in your recording: your default Vercel team, the Railway project linked to the folder plus the sandboxes your CLI created, and your personal Daytona organization. boat keeps every command's output for 90 days, so it is watched only when you ask with `--boat`. `--no-cloud` turns auto-detect off.
+**Auto-detect.** On start the office looks for those keys and logins (files and environment only) and watches the running sandboxes in your own scope, so a teammate's sandbox never ends up in your recording: your default Vercel team, the Railway project linked to the folder and the one the office creates its sandboxes in, plus the sandboxes the office and your CLI created, and your personal Daytona organization. boat keeps every command's output for 90 days, so it is watched only when you ask with `--boat`. `--no-cloud` turns auto-detect off.
 
 | flag | |
 | --- | --- |
@@ -217,11 +217,11 @@ Hire an agent into a new sandbox, a running one, or an ssh box, and its terminal
 | --- | --- | --- | --- |
 | **Daytona** | `agentoffice-…`, labelled `agentoffice=1`, deleted as soon as it stops, never alive past its lifetime | Daytona's own PTY; `daytona ssh` if that fails | no (v1) |
 | **Vercel Sandbox** | `agentoffice-…`, tagged `agentoffice=1`, not persistent (no snapshot is kept), in `vercel-sandbox-default-project` (created on your first sandbox if it's missing; the page says so first) or `VERCEL_PROJECT_ID` | Vercel's interactive shell; the pinned `npx sandbox@4.8.1` CLI if that fails | no (v1) |
-| **Railway** | in the environment of a `RAILWAY_TOKEN` project token, or the one you set in `config.json` (below), or the `railway link` of the folder you started the office in, or your account's only environment; destroyed by Railway once it has been idle for its lifetime | `railway sandbox ssh` (needs the `railway` CLI, which registers its ssh key on your Railway account the first time, as it always does) | Claude Code and Codex |
+| **Railway** | in the project and environment you pick in Hire (the office remembers it for next time); it starts on the last one you used, else the one in `config.json` (below, ids or names), a project the office's sandboxes are in, a project named `agentoffice…`, the `railway link` of the folder you started the office in, or your account's only project. A `RAILWAY_TOKEN` project token always uses its own. Each is looked up in your account first, so a link to a deleted project is skipped. Destroyed by Railway once it has been idle for its lifetime | `railway sandbox ssh` (needs the `railway` CLI, which registers its ssh key on your Railway account the first time, as it always does) | Claude Code and Codex |
 | **ssh box** | | your own `ssh`, sharing the watcher's connection, with no prompts: a key with a passphrase must be in your ssh-agent and the host key already known (run `ssh <host>` once), or the hire says so | Claude Code and Codex |
 
 ```json
-{ "control": { "railway": { "project": "<project id>", "environment": "<environment id>" } } }
+{ "control": { "railway": { "project": "<project id or name>", "environment": "<environment id or name>" } } }
 ```
 
 **What it costs.** A new sandbox lives 30 minutes unless you pick another lifetime (1 to 240; Railway caps idle time at 120, Vercel's Hobby plan at 45). The office never extends one, keeps at most three of its own at once, and stops its heartbeats when the agent quits, so the platform's own timers end the sandbox. Every sandbox it creates is recorded in `~/.agentoffice/sandboxes.json`; only those can be deleted from the page without "force".

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { load, tmp, until, writeBin } from "./remote.fakes.mjs";
 import { AGENT_SCRIPT, collect, fakeContext, fakePty, wsServe } from "./control.cloud.fakes.mjs";
 
-const M = await load("src/control/cloud/index.ts");
+const M = await load("src/control/cloud/index.ts", "src/control/fs.ts");
 
 const KEY = "sk-ant-dummy-railway-0004";
 const made = [];
@@ -26,7 +26,9 @@ after(async () => {
 });
 
 let n = 0;
-async function fakeRailway() {
+const APP = { id: "p1", name: "app", envs: [["e1", "production"], ["e2", "staging"]] };
+/** projects: [{id, name, envs: [[id, name]]}], one workspace; the CLI's `list --json` prints them and refreshes the stored login. */
+async function fakeRailway({ projects = [APP] } = {}) {
   const bin = tmp();
   writeBin(bin, "claude", AGENT_SCRIPT);
   made.push(bin);
@@ -42,8 +44,11 @@ async function fakeRailway() {
       const q = body?.query ?? "";
       const v = body?.variables ?? {};
       seen.queries.push(q.slice(0, 40));
-      if (q.includes("me { workspaces")) return { json: { data: { me: { workspaces: [{ id: "w1" }] } } } };
-      if (q.includes("projects(workspaceId")) return { json: { data: { projects: { edges: [{ node: { id: "p1", name: "app", environments: { edges: [{ node: { id: "e1" } }, { node: { id: "e2" } }] } } }], pageInfo: { hasNextPage: false } } } } };
+      if (q.includes("me { workspaces")) return { json: { data: { me: { workspaces: [{ id: "w1", name: "Kira" }] } } } };
+      if (q.includes("projects(workspaceId")) {
+        const edges = projects.map((p) => ({ node: { id: p.id, name: p.name, environments: { edges: p.envs.map(([id, name]) => ({ node: { id, name } })) } } }));
+        return { json: { data: { projects: { edges, pageInfo: { hasNextPage: false } } } } };
+      }
       if (q.includes("sandboxes(environmentId")) return { json: { data: {} } };
       if (q.includes("sandboxCreate")) {
         seen.creates.push(v.input);
@@ -100,6 +105,19 @@ async function fakeRailway() {
   const cli = writeBin(cliDir, "railway", `const fs = require("fs"); const { spawn } = require("child_process");
 const a = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(join(cliDir, "argv.log"))}, JSON.stringify({ a, token: !!process.env.RAILWAY_API_TOKEN }) + "\\n");
+if (a[0] === "list" && a[1] === "--json") {
+  // As the real CLI does: an expired login is refreshed on the way.
+  const cfg = process.env.HOME + "/.railway/config.json";
+  if (fs.existsSync(cfg) && !process.env.FAKE_NO_REFRESH) {
+    const j = JSON.parse(fs.readFileSync(cfg, "utf8"));
+    j.user = { ...j.user, accessToken: "rtok", tokenExpiresAt: Math.floor(Date.now() / 1000) + 3600 };
+    fs.writeFileSync(cfg, JSON.stringify(j));
+  }
+  const ps = ${JSON.stringify(projects)};
+  process.stdout.write(JSON.stringify([...ps.map((p) => ({ id: p.id, name: p.name, deletedAt: null, workspace: { name: "Kira" }, environments: { edges: p.envs.map(([id, name]) => ({ node: { id, name, canAccess: true } })) } })),
+    { id: "p-gone", name: "old", deletedAt: "2026-01-01T00:00:00Z", workspace: { name: "Kira" }, environments: { edges: [{ node: { id: "e-gone", name: "production", canAccess: true } }] } }]));
+  process.exit(0);
+}
 if (a[0] !== "sandbox" || (a[1] !== "ssh" && a[1] !== "exec")) process.exit(2);
 const id = a[a.indexOf("--id") + 1]; const home = JSON.parse(fs.readFileSync(${JSON.stringify(homesFile)}, "utf8"))[id];
 const rest = a.slice(a.indexOf("--") + 1);
@@ -111,9 +129,9 @@ c.on("exit", (code) => process.exit(code ?? 1));`);
   return { srv, seen, boxes, cli, cliLog, save };
 }
 
-function places(r, { config = true, token = true, home = tmp() } = {}) {
+function places(r, { config = true, token = true, home = tmp(), env: extra = {} } = {}) {
   made.push(home);
-  if (config) writeFileSync(join(home, "config.json"), JSON.stringify({ remotes: [], control: { railway: { project: "p1", environment: "e1" } } }));
+  if (config) writeFileSync(join(home, "config.json"), JSON.stringify({ remotes: [], control: { railway: config === true ? { project: "p1", environment: "e1" } : config } }));
   const pty = fakePty();
   ptys.push(pty);
   const env = {
@@ -123,19 +141,111 @@ function places(r, { config = true, token = true, home = tmp() } = {}) {
     RAILWAY_GRAPHQL_ENDPOINT: `${r.srv.url}/graphql`,
     RAILWAY_TCP_PROXY_WS_ENDPOINT: `${r.srv.wsUrl}/ws/exec`,
     ...(token ? { RAILWAY_API_TOKEN: "rtok" } : {}),
+    ...extra,
   };
   const ctx = fakeContext({ home, pty, env });
   return { ctx, pty, home, places: M.createPlaces(ctx, { pollMs: 10, bins: { railway: r.cli } }) };
 }
 
-test("no environment to put a sandbox in: canCreate is false and the note names the config key", async () => {
-  const r = await fakeRailway();
+const WEB = { id: "p2", name: "web", envs: [["e3", "production"]] };
+const railwayRow = async (p) => (await p.status({ fresh: true })).find((x) => x.kind === "railway");
+const hire = (p, sandbox = {}) => p.open({ kind: "railway", target: "new" }, { agent: "claude", sandbox, progress: () => {} });
+
+test("several projects, no link, nothing to go by: the page gets them all, a hire without a pick is a plain 409, a pick is remembered", async () => {
+  const r = await fakeRailway({ projects: [APP, WEB] });
+  const { places: p, home } = places(r, { config: false });
+  writeFileSync(join(home, "control-state.json"), JSON.stringify({ v: 1, recentFolders: ["/tmp/x"] }));
+  const row = await railwayRow(p);
+  assert.equal(row.canCreate, true, "the hire form lets you pick");
+  assert.equal(row.dest, undefined, "no guessing between two projects");
+  assert.deepEqual(row.projects, [
+    { id: "p1", name: "app", environments: [{ id: "e1", name: "production" }, { id: "e2", name: "staging" }] },
+    { id: "p2", name: "web", environments: [{ id: "e3", name: "production" }] },
+  ]);
+  await assert.rejects(hire(p), (e) => e.status === 409 && /^Pick the Railway project for the new sandbox: your account has 2 \(app, web\)$/.test(e.message));
+  assert.equal(r.seen.creates.length, 0);
+
+  const place = await hire(p, { project: "p2", environment: "e3" });
+  assert.deepEqual(r.seen.creates.map((c) => c.environmentId), ["e3"]);
+  assert.deepEqual(JSON.parse(readFileSync(join(home, "sandboxes.json"), "utf8")).sandboxes.map((x) => [x.environmentId, x.projectId]), [["e3", "p2"]]);
+  const st = JSON.parse(readFileSync(join(home, "control-state.json"), "utf8"));
+  assert.deepEqual(st.railway, { projectId: "p2", environmentId: "e3" });
+  assert.deepEqual(st.recentFolders, ["/tmp/x"], "the rest of the file is kept");
+  // A hire on this Mac adds a recent folder and keeps the pick.
+  new M.HiredFolders(home).add("/tmp/y");
+  assert.deepEqual(JSON.parse(readFileSync(join(home, "control-state.json"), "utf8")), { v: 1, recentFolders: ["/tmp/y", "/tmp/x"], railway: { projectId: "p2", environmentId: "e3" } });
+  await p.deleteSandbox("railway", place.host.id.slice("railway:".length));
+  // Next time it starts there.
+  assert.deepEqual((await railwayRow(p)).dest, { project: "p2", environment: "e3", why: "last used" });
+  await hire(p);
+  assert.deepEqual(r.seen.creates.map((c) => c.environmentId), ["e3", "e3"]);
+});
+
+test("names become ids: config.json and the hire may name a project and an environment, Railway and the CLI only ever get ids", async () => {
+  const r = await fakeRailway({ projects: [APP, WEB] });
+  const { places: p, pty } = places(r, { config: { project: "web", environment: "production" } });
+  assert.deepEqual((await railwayRow(p)).dest, { project: "p2", environment: "e3", why: "config.json" });
+  const place = await hire(p, { project: "app", environment: "Staging" });
+  assert.deepEqual(r.seen.creates.map((c) => c.environmentId), ["e2"]);
+  await place.ensureAgent("claude", () => {});
+  const term = await place.attach({ argv: ["claude"], cwd: place.cwd, env: {}, secret: [] }, { cols: 80, rows: 24 });
+  const out = collect(term);
+  await until(() => out.text().includes("\n"), 5000, "agent output");
+  term.write("quit\n");
+  await out.done;
+  assert.deepEqual(pty.spawns[0].args.slice(4, 8), ["-p", "p1", "-e", "e2"], "ids on the CLI's command line, never names");
+
+  await assert.rejects(hire(p, { project: "nope" }), (e) => e.status === 409 && /No project "nope" in your Railway account \(it has app, web\)/.test(e.message));
+  await assert.rejects(hire(p, { project: "app", environment: "qa" }), (e) => e.status === 409 && /project "app" has no environment "qa" \(it has production, staging\)/.test(e.message));
+  // A config.json entry that matches nothing is said, not used.
+  const bad = places(r, { config: { project: "agentoffice-test", environment: "production" } });
+  const row = await railwayRow(bad.places);
+  assert.equal(row.dest, undefined);
+  assert.match(row.note, /config\.json's control\.railway doesn't match: No project "agentoffice-test"/);
+});
+
+test("a railway link to a project that's gone is skipped, never passed on; a live link is the default", async () => {
+  const r = await fakeRailway({ projects: [WEB] });
+  const home = tmp();
+  mkdirSync(join(home, ".railway"), { recursive: true });
+  writeFileSync(join(home, ".railway/config.json"), JSON.stringify({ projects: { [process.cwd()]: { project: "p-deleted", environment: "e-deleted" } } }));
+  const { places: p } = places(r, { config: false, home });
+  assert.deepEqual((await railwayRow(p)).dest, { project: "p2", environment: "e3", why: "your only project" });
+  await hire(p);
+  assert.deepEqual(r.seen.creates.map((c) => c.environmentId), ["e3"], 'not the linked e-deleted ("Project not found")');
+
+  const r2 = await fakeRailway({ projects: [APP, WEB] });
+  const home2 = tmp();
+  mkdirSync(join(home2, ".railway"), { recursive: true });
+  writeFileSync(join(home2, ".railway/config.json"), JSON.stringify({ projects: { [process.cwd()]: { project: "p1", environment: "e2" } } }));
+  const { places: p2 } = places(r2, { config: false, home: home2 });
+  assert.deepEqual((await railwayRow(p2)).dest, { project: "p1", environment: "e2", why: "linked to the office's folder" });
+});
+
+test("no projects at all: nothing can be created, and the note says what to do", async () => {
+  const r = await fakeRailway({ projects: [] });
   const { places: p } = places(r, { config: false });
-  const row = (await p.status()).find((x) => x.kind === "railway");
+  const row = await railwayRow(p);
   assert.equal(row.ready, true);
-  assert.equal(row.canCreate, false, "two environments on the account: no guessing");
-  assert.match(row.note, /"control": \{"railway": \{"project": "<id>", "environment": "<id>"\}\}/);
-  await assert.rejects(p.open({ kind: "railway", target: "new" }, { agent: "claude", progress: () => {} }), (e) => e.status === 409);
+  assert.equal(row.canCreate, false);
+  assert.deepEqual(row.projects, []);
+  assert.match(row.note, /^Your Railway account has no project to put a sandbox in\. Create an empty one \(railway\.com\/new, or `railway init` in any folder\), then hire again$/);
+  await assert.rejects(hire(p), (e) => e.status === 409 && /has no project to put a sandbox in/.test(e.message));
+});
+
+test("an expired CLI login: one `railway list --json` refreshes it, and the hire goes on over the API", async () => {
+  const r = await fakeRailway({ projects: [APP, WEB] });
+  const home = tmp();
+  mkdirSync(join(home, ".railway"), { recursive: true });
+  writeFileSync(join(home, ".railway/config.json"), JSON.stringify({ projects: {}, user: { accessToken: "stale", tokenExpiresAt: 1 } }));
+  const { places: p } = places(r, { config: false, token: false, home });
+  const row = await railwayRow(p);
+  assert.equal(row.via, "railway CLI login");
+  assert.equal(row.canCreate, true);
+  assert.deepEqual(row.projects.map((x) => x.id), ["p1", "p2"], "a deleted project in the CLI's list is left out");
+  assert.deepEqual(r.cliLog().map((c) => c.a), [["list", "--json"]]);
+  await hire(p, { project: "p1" });
+  assert.deepEqual(r.seen.creates.map((c) => c.environmentId), ["e1"], "production, when the pick names no environment");
 });
 
 test("create, record, open a terminal through the railway CLI: the key went over the bridge's env, not the command", async () => {
@@ -211,7 +321,7 @@ test("with only the CLI (the stored login expired), the env file goes over `rail
   const home = first.home;
   mkdirSync(join(home, ".railway"), { recursive: true });
   writeFileSync(join(home, ".railway/config.json"), JSON.stringify({ user: { accessToken: "old", tokenExpiresAt: 1 } }));
-  const second = places(r, { token: false, home });
+  const second = places(r, { token: false, home, env: { FAKE_NO_REFRESH: "1" } });
   const row = (await second.places.status()).find((x) => x.kind === "railway");
   assert.equal(row.ready, true);
   assert.equal(row.via, "railway CLI");

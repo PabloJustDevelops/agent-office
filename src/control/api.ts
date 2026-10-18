@@ -220,6 +220,13 @@ function parseHire(body: unknown, home: string): HireRequest {
       if (typeof s.timeoutMin !== "number" || !Number.isFinite(s.timeoutMin)) throw bad("Bad sandbox lifetime.");
       sandbox.timeoutMin = Math.round(s.timeoutMin);
     }
+    // Railway's project and environment: ids, or names (looked up in the account's list).
+    for (const k of ["project", "environment"] as const) {
+      if (s[k] === undefined) continue;
+      if (typeof s[k] !== "string" || s[k].length > 128 || /[\0-\x1f\x7f]/.test(s[k])) throw bad(`Bad Railway ${k}.`);
+      if (s[k].trim()) sandbox[k] = s[k].trim();
+    }
+    if (sandbox.environment && !sandbox.project) throw bad("Pick the Railway project too.");
     req.sandbox = sandbox;
   }
   if (b.setup !== undefined && b.setup !== null) {

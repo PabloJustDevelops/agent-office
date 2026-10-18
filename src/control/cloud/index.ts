@@ -234,7 +234,8 @@ export function createPlaces(ctx: PlacesContext, o: PlacesOptions = {}): Places 
         let made: string | undefined;
         let place2: BasePlace;
         try {
-          place2 = await cloud.create({ name: sandboxName(oo.sandbox?.name), timeoutMin, cwd: place.cwd, onCreated: (id) => (made = id) }, oo);
+          const { project, environment } = oo.sandbox ?? {};
+          place2 = await cloud.create({ name: sandboxName(oo.sandbox?.name), timeoutMin, cwd: place.cwd, ...(project ? { project } : {}), ...(environment ? { environment } : {}), onCreated: (id) => (made = id) }, oo);
         } catch (err) {
           // Stopped while it was being created, or it never came up: nobody will use it.
           if (!made) throw err;

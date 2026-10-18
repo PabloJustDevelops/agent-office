@@ -397,7 +397,7 @@ ${bold("Remotes")}  agents in sandboxes and on other machines, in the same offic
   --local-only      Only this machine (ignores the flags above and config.json)
   --no-control      Watch-only: no hiring or driving agents from the page
   Without flags, platforms you're logged in to are watched in your own scope only: Daytona's
-  personal organization, Railway's linked project and the sandboxes your railway CLI made,
+  personal organization, Railway's linked project, the office's own project and sandboxes, the sandboxes your railway CLI made,
   Vercel's default team. Nothing is installed on a remote: the office only reads transcripts
   there over that platform's exec. Permanent remotes go in ~/.agentoffice/config.json:
     {"remotes": [{"ssh": "me@box"}, {"vercel": "all"}], "cloud": true}

@@ -133,8 +133,16 @@ export class HiredFolders {
     const next = [folder, ...this.list().filter((p) => p !== folder)].slice(0, MAX_RECENT_HIRED);
     this.cache = next;
     try {
+      // The file keeps other remembered choices too (the last Railway project).
+      let j: unknown;
+      try {
+        j = JSON.parse(readFileSync(this.file, "utf8"));
+      } catch {
+        j = undefined;
+      }
+      const rest = j && typeof j === "object" && !Array.isArray(j) ? j : {};
       privateDir(this.home);
-      writePrivate(this.file, JSON.stringify({ v: 1, recentFolders: next }, null, 2) + "\n");
+      writePrivate(this.file, JSON.stringify({ ...rest, v: 1, recentFolders: next }, null, 2) + "\n");
     } catch {
       // Only a convenience.
     }
