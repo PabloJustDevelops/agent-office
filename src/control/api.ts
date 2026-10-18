@@ -21,7 +21,8 @@ import { expandPath, folderUnderHome, listFolders, type HiredFolders } from "./f
 import { importableNames } from "./keys.ts";
 import { loginShellVars } from "./env.ts";
 import type { Logins } from "./logins.ts";
-import { inventory, shellKeyNames } from "./setup.ts";
+import { createSetupCache, shellKeyNames, type SetupCache } from "./setup.ts";
+import { Swr } from "./swr.ts";
 
 export const BIG_BODY = 1 << 20;
 export const SMALL_BODY = 64 << 10;
@@ -29,6 +30,8 @@ export const SMALL_BODY = 64 << 10;
 const MAX_BACKLOG = 1 << 20;
 const PING_MS = 15_000;
 const HIRES_PER_MINUTE = 10;
+/** How long GET /api/control waits for a platform it has no row for yet (then: its login state, and the row follows). */
+export const INFO_PLACES_MS = 400;
 const AGENTS = Object.keys(AGENT_FACTS) as AgentKind[];
 const PLACES: PlaceKind[] = ["local", "ssh", "daytona", "vercel", "railway"];
 const MODES: ControlMode[] = ["terminal", "chat"];
@@ -62,6 +65,8 @@ export interface ApiDeps {
   logins?: Logins | null;
   /** Known key names set in the login shell (names only); default: a fresh login shell, cached a minute. */
   shellNames?: () => Promise<string[]>;
+  /** "Your setup", cached (tests pass their own). */
+  setupCache?: SetupCache;
 }
 
 /* ------------------------------------------------------------- helpers */
@@ -132,6 +137,7 @@ export function decode(s: string): string {
   }
 }
 
+const b64 = (chunk: Uint8Array) => Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).toString("base64");
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 const bad = (msg: string) => new ControlError(400, msg);
 
@@ -275,25 +281,27 @@ export function createApi(d: ApiDeps): (req: IncomingMessage, res: ServerRespons
   const sessions = () => need(d.sessions, "Hiring agents");
   const places = () => need(d.places, "Sandboxes");
   const logins = () => need(d.logins ?? null, "Signing in");
-  let shellCache: { at: number; names: Promise<string[]> } | undefined;
-  /** Names only: the values a login shell prints are dropped right here. */
-  const shellNames = () => {
+  const setupCache = d.setupCache ?? createSetupCache({ now: d.ctx.now });
+  /**
+   * Names only: the values a login shell prints are dropped right here. Fresh for a minute, then
+   * the last answer at once while a new shell is asked. A shell that didn't answer in time isn't
+   * remembered as "none": the next ask tries again.
+   */
+  const shellSwr = new Swr<string[]>(
+    () =>
+      loginShellVars(shellKeyNames(importableNames())).then((env) => {
+        if (!env) throw new Error("the login shell didn't answer");
+        return Object.keys(env).filter((k) => env[k]?.trim());
+      }),
+    { ttlMs: 60_000, now: d.ctx.now },
+  );
+  const shellNames = async (): Promise<string[]> => {
     if (d.shellNames) return d.shellNames();
-    if (!shellCache || d.ctx.now() - shellCache.at > 60_000) {
-      const p: Promise<string[]> = loginShellVars(shellKeyNames(importableNames())).then(
-        (env) => {
-          // A shell that didn't answer in time is asked again next time, not remembered as "none".
-          if (!env) shellCache = undefined;
-          return Object.keys(env ?? {}).filter((k) => env![k]?.trim());
-        },
-        () => {
-          shellCache = undefined;
-          return [];
-        },
-      );
-      shellCache = { at: d.ctx.now(), names: p };
+    try {
+      return (await shellSwr.get()).value;
+    } catch {
+      return [];
     }
-    return shellCache.names;
   };
 
   function session(id: string) {
@@ -305,9 +313,11 @@ export function createApi(d: ApiDeps): (req: IncomingMessage, res: ServerRespons
   async function info(): Promise<ControlInfo> {
     const within = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> =>
       Promise.race([p.catch(() => fallback), new Promise<T>((r) => setTimeout(() => r(fallback), ms).unref?.())]);
+    // The page waits on neither: the agents on PATH until their versions are probed, each platform's
+    // last known row (or its login state); the rest follows as control_info.
     const [agents, providers] = await Promise.all([
-      d.sessions ? within(d.sessions.availability(), 5_000, []) : Promise.resolve([]),
-      d.places ? within(d.places.status(), 3_000, []) : Promise.resolve([]),
+      d.sessions ? within(d.sessions.availability({ quick: true }), 5_000, []) : Promise.resolve([]),
+      d.places ? within(d.places.status({ deadlineMs: INFO_PLACES_MS }), 3_000, []) : Promise.resolve([]),
     ]);
     return {
       enabled: true,
@@ -377,7 +387,7 @@ export function createApi(d: ApiDeps): (req: IncomingMessage, res: ServerRespons
           folder = f;
         }
       }
-      const inv = await inventory(agent, { home, env: d.ctx.agentEnv(), keys: d.keys.list(), shellKeys: await shellNames() }, folder);
+      const inv = await setupCache.inventory(agent, { home, env: d.ctx.agentEnv(), keys: d.keys.list(), shellKeys: await shellNames() }, folder, { wait: q.get("wait") === "1" });
       return sendJson(res, 200, inv);
     }
 
@@ -418,8 +428,11 @@ export function createApi(d: ApiDeps): (req: IncomingMessage, res: ServerRespons
           sub =
             what === "term"
               ? sessions().attachTerm(id, {
-                  data: (chunk) => send("data", { d: Buffer.from(chunk).toString("base64") }),
+                  data: (chunk) => send("data", { d: b64(chunk) }),
                   exit: (code) => send("exit", { code }),
+                  // The screen at once ("screen", which an older page ignores), then the whole replay as the
+                  // first data frame, marked full: the page redraws from it.
+                  replay: (chunk, part) => (part === "screen" ? send("screen", { d: b64(chunk) }) : send("data", { d: b64(chunk), full: 1 })),
                 })
               : sessions().attachChat(id, { item: (it) => send("item", it) });
         } catch {

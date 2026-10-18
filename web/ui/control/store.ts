@@ -20,6 +20,8 @@ export class ControlStore {
   readonly sessions = new Map<string, ControlSession>();
   private subs = new Set<(what: "info" | "sessions") => void>();
   private loading: Promise<void> | null = null;
+  /** When GET /api/control last answered (ms): the first snapshot right after doesn't ask again. */
+  private loadedAt = 0;
 
   get enabled(): boolean {
     return this.state === "enabled";
@@ -62,11 +64,18 @@ export class ControlStore {
       this.expected = "enabled";
       this.emit("info");
     }
+    // asked a moment ago (the page primed it while /events connected): that answer stands
+    if (control === "enabled" && this.state === "enabled" && Date.now() - this.loadedAt < 5_000) return Promise.resolve();
     return this.refresh();
   }
 
-  refresh(): Promise<void> {
+  /**
+   * GET /api/control. `keepSessions`: only the rest (agents, platforms, keys, logins), for a dialog
+   * that opens; the sessions stay as their events left them, which may be newer than this answer.
+   */
+  refresh(o: { keepSessions?: boolean } = {}): Promise<void> {
     if (this.loading) return this.loading;
+    const keep = !!o.keepSessions && this.state === "enabled";
     this.loading = (async () => {
       try {
         const info = await api.info();
@@ -74,12 +83,15 @@ export class ControlStore {
           this.setLocked();
           return;
         }
-        this.info = info;
+        this.info = keep ? { ...info, sessions: this.info?.sessions ?? [] } : info;
         this.state = "enabled";
-        this.sessions.clear();
-        for (const s of info.sessions ?? []) this.sessions.set(s.id, s);
+        this.loadedAt = Date.now();
+        if (!keep) {
+          this.sessions.clear();
+          for (const s of info.sessions ?? []) this.sessions.set(s.id, s);
+        }
         this.emit("info");
-        this.emit("sessions");
+        if (!keep) this.emit("sessions");
       } catch (err) {
         if (err instanceof ControlError && err.status === 401) this.setLocked();
         else if (err instanceof ControlError && (err.status === 404 || err.status === 405 || err.status === 501)) this.setState("off");

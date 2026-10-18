@@ -44,9 +44,14 @@ const rand = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32);
 const pick = (xs) => xs[Math.floor(rand() * xs.length)];
 
 mkdirSync(join(OUT, "assets"), { recursive: true });
+// Split like the real build (scripts/build.mjs): the terminal, chat, Hire and Settings load as their own
+// chunks. The entry keeps its plain name, so index.html is copied as is.
 await build({
-  entryPoints: [join(ROOT, "web/main.ts")],
-  outfile: join(OUT, "assets/app.js"),
+  entryPoints: { app: join(ROOT, "web/main.ts") },
+  outdir: join(OUT, "assets"),
+  entryNames: "[name]",
+  chunkNames: "[name]-[hash]",
+  splitting: true,
   bundle: true,
   platform: "browser",
   format: "esm",

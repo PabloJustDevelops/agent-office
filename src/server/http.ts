@@ -5,8 +5,8 @@
  * the Host header, which defeats DNS rebinding; there are no CORS headers, so
  * other origins can't read anything; and every response carries a strict CSP.
  *
- *   GET /               dist/web/index.html
- *   GET /assets/*       dist/web/assets/*
+ *   GET /               dist/web/index.html (revalidated by ETag on every load)
+ *   GET /assets/*       dist/web/assets/*: hashed names cached for good, the rest revalidated
  *   GET /events         text/event-stream: snapshot, then office events, pings
  *   GET /api/snapshot   the Snapshot as JSON
  *   GET /healthz        liveness; ?challenge=<hex> also returns proof, an HMAC of
@@ -27,7 +27,7 @@ import type { AddressInfo } from "node:net";
 import type { OfficeEvent, Snapshot } from "../shared/events.ts";
 import type { ControlPlane } from "../control/types.ts";
 import type { OfficeState } from "./state.ts";
-import { defaultWebRoot, safeResolve, serveFile } from "./static.ts";
+import { defaultWebRoot, HASHED, IMMUTABLE, safeResolve, serveFile } from "./static.ts";
 
 export const DEFAULT_PORT = 4747;
 export const DEFAULT_HOST = "127.0.0.1";
@@ -171,7 +171,7 @@ export async function startServer(opts: ServerOptions): Promise<OfficeServer> {
     if (path.startsWith("/assets/")) {
       const file = safeResolve(assetsRoot, path.slice("/assets/".length));
       if (!file) return text(res, 400, "Bad path");
-      const ok = serveFile(req, res, assetsRoot, file, { cache: "no-cache", headers: SECURITY_HEADERS });
+      const ok = serveFile(req, res, assetsRoot, file, { cache: HASHED.test(file) ? IMMUTABLE : "no-cache", headers: SECURITY_HEADERS });
       if (!ok) text(res, 404, "Not found");
       return;
     }

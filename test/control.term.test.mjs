@@ -128,3 +128,119 @@ test("resize clamps and a viewer that throws is dropped", async () => {
   assert.equal(tb.viewerCount, 0);
   tb.dispose();
 });
+
+/* ---- the terminal worker, and the replay in two steps ---- */
+
+import { build } from "esbuild";
+import { join } from "node:path";
+import { scratch } from "./control.session-fakes.mjs";
+
+/** term-worker.ts built the way scripts/build.mjs builds it, into a scratch folder. */
+async function workerFile() {
+  const dir = scratch("agentoffice-termworker-");
+  const outfile = join(dir, "term-worker.mjs");
+  await build({ entryPoints: [join(ROOT, "src/control/term-worker.ts")], outfile, bundle: true, platform: "node", format: "esm", target: "node18", logLevel: "error" });
+  return outfile;
+}
+const WORKER = await workerFile();
+
+/** A viewer that takes the replay in two steps, the way the API's term stream does, recording the order. */
+function twoStep() {
+  const log = [];
+  let exit;
+  return {
+    sink: {
+      data: (c) => log.push({ kind: "data", text: Buffer.from(c).toString("utf8") }),
+      replay: (c, part) => log.push({ kind: part, text: Buffer.from(c).toString("utf8") }),
+      exit: (code) => (exit = { code }),
+    },
+    log,
+    exit: () => exit,
+    /** What a browser that resets on "screen" and "full" ends up writing. */
+    stream() {
+      let out = "";
+      for (const e of log) out = e.kind === "data" ? out + e.text : e.text;
+      return out;
+    },
+  };
+}
+
+for (const [name, worker] of [["this thread", false], ["the worker", WORKER]]) {
+  test(`${name}: answers queries, keeps bracketed paste, replays to a late viewer and reads the screen`, async () => {
+    const replies = [];
+    const tb = new TermBuffer({ cols: 80, rows: 24, reply: (d) => replies.push(d), worker });
+    tb.write(Buffer.from("hello\r\n\x1b[6n\x1b[?2004h"));
+    await until(() => replies.length >= 1, 3000, "the CPR answer");
+    assert.deepEqual(replies.flatMap(replyKinds), ["cpr"]);
+    await until(() => tb.bracketedPaste, 3000, "bracketed paste");
+    assert.equal(await tb.screen(), "hello");
+    const v = viewer();
+    tb.attach(v.sink);
+    tb.write(Buffer.from("+live"));
+    await until(() => v.text().includes("+live"), 3000, "live bytes");
+    assert.equal((await render(v.text())).text, "hello\n+live");
+    tb.dispose();
+  });
+
+  test(`${name}: a two-step viewer gets the screen first, then the whole replay, then what it didn't include`, async () => {
+    const tb = new TermBuffer({ cols: 40, rows: 6, reply: () => {}, worker });
+    for (let i = 0; i < 300; i++) tb.write(Buffer.from(`line ${i}\r\n`));
+    const v = twoStep();
+    tb.attach(v.sink);
+    // Live bytes from right after the attach, while the replay is being made.
+    for (let i = 300; i < 340; i++) tb.write(Buffer.from(`line ${i}\r\n`));
+    await until(() => v.log.some((e) => e.kind === "full"), 3000, "the whole replay");
+    for (let i = 340; i < 350; i++) tb.write(Buffer.from(`line ${i}\r\n`));
+    await until(() => v.stream().includes("line 349"), 3000, "the last line");
+    const kinds = v.log.map((e) => e.kind);
+    assert.equal(kinds[0], "screen", "the visible screen comes first");
+    assert.ok(kinds.indexOf("full") > 0, "then the whole replay");
+    assert.ok(v.log[0].text.length < v.log[kinds.indexOf("full")].text.length / 10, "the screen is small, the replay has the scrollback");
+    // What the browser draws: from the full replay on, with nothing missing or twice.
+    const t = new Terminal({ cols: 40, rows: 6, allowProposedApi: true, scrollback: 1000 });
+    await new Promise((r) => t.write(v.stream(), r));
+    const b = t.buffer.active;
+    const all = [];
+    for (let y = 0; y < b.length; y++) all.push(b.getLine(y).translateToString(true).trimEnd());
+    const lines = all.filter((x) => x.startsWith("line "));
+    assert.equal(lines.at(-1), "line 349");
+    for (let i = 1; i < lines.length; i++) assert.equal(Number(lines[i].slice(5)), Number(lines[i - 1].slice(5)) + 1, `in order at ${lines[i]}`);
+    assert.ok(lines.length >= 300, `the scrollback came along (${lines.length} lines)`);
+    tb.dispose();
+  });
+
+  test(`${name}: a two-step viewer that attaches after the exit gets the replay, then exit`, async () => {
+    const tb = new TermBuffer({ cols: 40, rows: 6, reply: () => {}, worker });
+    tb.write(Buffer.from("done\r\n"));
+    tb.exit(0);
+    const v = twoStep();
+    tb.attach(v.sink);
+    await until(() => v.exit(), 3000, "exit");
+    assert.deepEqual(v.log.map((e) => e.kind), ["screen", "full"]);
+    assert.match(v.stream(), /done/);
+    tb.dispose();
+  });
+}
+
+test("the worker serializes a big replay without holding up this thread", async () => {
+  const tb = new TermBuffer({ cols: 120, rows: 32, reply: () => {}, worker: WORKER });
+  const line = (i) => `\x1b[3${i % 7}m${String(i).padStart(5)}\x1b[0m ${"lorem ipsum dolor sit amet ".repeat(4)}\r\n`;
+  let s = "";
+  for (let i = 0; i < 4000; i++) s += line(i);
+  tb.write(Buffer.from(s));
+  await tb.screen();
+  let worst = 0;
+  let last = performance.now();
+  const iv = setInterval(() => {
+    const n = performance.now();
+    worst = Math.max(worst, n - last);
+    last = n;
+  }, 2);
+  const v = twoStep();
+  tb.attach(v.sink);
+  await until(() => v.log.some((e) => e.kind === "full"), 10_000, "the whole replay");
+  clearInterval(iv);
+  assert.ok(v.log.find((e) => e.kind === "full").text.length > 200_000);
+  assert.ok(worst < 100, `this thread was blocked for ${worst.toFixed(0)} ms`);
+  tb.dispose();
+});

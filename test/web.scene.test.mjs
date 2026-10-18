@@ -309,3 +309,26 @@ test("control store: a locked or control-less snapshot needs no request", async 
     globalThis.fetch = realFetch;
   }
 });
+
+test("control store: a primed answer stands for the first snapshot, and a dialog's refresh keeps the sessions events brought", async () => {
+  const store = new ControlStore();
+  const realFetch = globalThis.fetch;
+  let fetched = 0;
+  const session = (status) => ({ id: "s1", workerId: "w1", agent: "claude", mode: "terminal", status, title: "app", startedAt: new Date().toISOString(), place: { kind: "local", target: "/w" }, permission: "default" });
+  let reply = { enabled: true, agents: [], providers: [], keys: [], sessions: [session("starting")], recentFolders: [], service: {} };
+  globalThis.fetch = async () => { fetched++; return new Response(JSON.stringify(reply), { status: 200 }); };
+  try {
+    await store.refresh();
+    assert.equal(store.state, "enabled");
+    await store.fromSnapshot("enabled");
+    assert.equal(fetched, 1, "the snapshot right after the primed answer doesn't ask again");
+    store.onEvent("control", session("running"));
+    // an answer computed before that event, as a dialog's refresh might get
+    reply = { ...reply, keys: [{ name: "K", agents: [], preview: "k…1", addedAt: "" }], sessions: [session("starting")] };
+    await store.refresh({ keepSessions: true });
+    assert.equal(store.get("s1").status, "running", "the event's state stays");
+    assert.equal(store.info.keys[0].name, "K", "the rest is new");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});

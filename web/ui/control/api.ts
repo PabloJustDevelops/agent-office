@@ -87,7 +87,8 @@ export const api = {
   service: (startAtLogin: boolean) => call<ServiceStatus>("POST", "/service", { startAtLogin }),
   installPlan: () => call<InstallPlan>("GET", "/install"),
   install: (agents?: AgentKind[]) => call<InstallPlan>("POST", "/install", agents ? { agents } : {}),
-  setup: (agent: AgentKind, folder?: string) => call<SetupInventory>("GET", `/setup?agent=${enc(agent)}${folder ? `&folder=${enc(folder)}` : ""}`),
+  /** `wait`: answer once a refresh under way is done, rather than at once from the office's cache. */
+  setup: (agent: AgentKind, folder?: string, wait = false) => call<SetupInventory>("GET", `/setup?agent=${enc(agent)}${folder ? `&folder=${enc(folder)}` : ""}${wait ? "&wait=1" : ""}`),
   loginStart: () => call<LoginFlow>("POST", "/logins/claude"),
   loginInput: (data: string) => call<void>("POST", "/logins/claude/input", { data }),
   loginCancel: () => call<void>("DELETE", "/logins/claude"),

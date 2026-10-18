@@ -87,6 +87,7 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
   let hourOverride: number | null = null;
   let weather: "clear" | "rain" | null = null;
   let selectCb: ((id: string | null) => void) | null = null;
+  let hoverCb: ((id: string | null) => void) | null = null;
   let labelBoxes: { x: number; y: number; w: number; h: number; id?: string }[] = [];
 
   // world buffers: the pixel office, and the clean one ASCII mode samples
@@ -702,7 +703,12 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
     canvas.setPointerCapture?.(e.pointerId);
     const p = devXY(e);
     pointers.set(e.pointerId, p);
-    if (pointers.size === 1) { downAt = p; moved = false; }
+    if (pointers.size === 1) {
+      downAt = p;
+      moved = false;
+      // a tap has no hover first: the chrome hears about the worker now, a beat before the click
+      if (e.pointerType !== "mouse") hoverCb?.(pickAt(p.x, p.y));
+    }
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
       pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, z0: cam.tz };
@@ -714,6 +720,7 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
     const prev = pointers.get(e.pointerId);
     if (!prev) {
       const id = pickAt(p.x, p.y);
+      if (id !== crew.hovered) hoverCb?.(id);
       crew.hovered = id;
       canvas.style.cursor = id ? "pointer" : "grab";
       return;
@@ -808,6 +815,9 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
     },
     onSelect(cb) {
       selectCb = cb;
+    },
+    onHover(cb) {
+      hoverCb = cb;
     },
     select(id: string | null) {
       crew.selected = id && crew.workers.has(id) ? id : null;

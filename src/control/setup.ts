@@ -26,15 +26,23 @@
  * Limits: 20 MB of instructions, 100 MB and 20,000 files of project, 50 MB
  * of .git. Links that leave their folder, big binaries and anything over a
  * cap are skipped and named. No value is ever logged or returned to the page.
+ *
+ * The hire form asks for the inventory each time it opens and whenever the
+ * agent or folder changes: createSetupCache answers from a cache (per folder,
+ * per agent), stale-while-revalidate (swr.ts), stamped with the mtimes that
+ * show a change (the git index, the folder, the config files), so a repeat
+ * look is instant and an edit shows up on the next one.
  */
 import { execFile } from "node:child_process";
-import { lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, realpathSync, statSync, type Stats } from "node:fs";
+import { lstat, readdir, readlink, realpath } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { BRAND, type AgentKind } from "../shared/events.ts";
 import type { KeyInfo, SetupChoice, SetupInventory, SetupItem, SetupLogin, SetupMcp, SetupProject } from "../shared/control.ts";
 import { ControlError, PLATFORM_KEY_NAMES, type SetupBundle } from "./types.ts";
 import { mcpServerToml, parseToml, type TomlTable } from "./toml.ts";
 import { safeName, type TarEntry } from "./tar.ts";
+import { Swr, SwrMap } from "./swr.ts";
 
 export const INSTRUCTIONS_MAX_BYTES = 20 << 20;
 export const PROJECT_MAX_BYTES = 100 << 20;
@@ -519,28 +527,34 @@ function git(args: string[], cwd: string, maxBuffer = 64 << 20): Promise<string 
   });
 }
 
+/** lstat each path, a batch at a time, off the event loop (null for one that's gone). */
+async function lstatAll(paths: string[], batch = 256): Promise<(Stats | null)[]> {
+  const out: (Stats | null)[] = new Array(paths.length);
+  for (let i = 0; i < paths.length; i += batch) {
+    const part = await Promise.all(paths.slice(i, i + batch).map((p) => lstat(p).catch(() => null)));
+    for (let j = 0; j < part.length; j++) out[i + j] = part[j]!;
+  }
+  return out;
+}
+
 /** Folder size, stopping once it passes `cap` (returns cap + 1 then). */
-function duCapped(dir: string, cap: number, skip?: (rel: string) => boolean): number {
+async function duCapped(dir: string, cap: number, skip?: (rel: string) => boolean): Promise<number> {
   let total = 0;
   const stack: [string, string][] = [[dir, ""]];
   while (stack.length) {
     const [abs, rel] = stack.pop()!;
     let names: string[];
     try {
-      names = readdirSync(abs);
+      names = await readdir(abs);
     } catch {
       continue;
     }
-    for (const n of names) {
-      const r = rel ? `${rel}/${n}` : n;
-      if (skip?.(r)) continue;
-      let st;
-      try {
-        st = lstatSync(join(abs, n));
-      } catch {
-        continue;
-      }
-      if (st.isDirectory()) stack.push([join(abs, n), r]);
+    const kept = names.map((n) => [n, rel ? `${rel}/${n}` : n] as const).filter(([, r]) => !skip?.(r));
+    const sts = await lstatAll(kept.map(([n]) => join(abs, n)));
+    for (let i = 0; i < kept.length; i++) {
+      const st = sts[i];
+      if (!st) continue;
+      if (st.isDirectory()) stack.push([join(abs, kept[i]![0]), kept[i]![1]]);
       else if (st.isFile()) total += st.size;
       if (total > cap) return cap + 1;
     }
@@ -679,7 +693,7 @@ async function listProject(folder: string, o: { env: boolean; home: string }): P
       }
       if (st?.isFile()) out.git = { present: true, bytes: 0, ok: false, why: "a git worktree: its history lives in another folder" };
       else if (st?.isDirectory()) {
-        const bytes = duCapped(gitPath, GIT_MAX_BYTES, (r) => r === "hooks" || r.startsWith("hooks/"));
+        const bytes = await duCapped(gitPath, GIT_MAX_BYTES, (r) => r === "hooks" || r.startsWith("hooks/"));
         out.git = bytes > GIT_MAX_BYTES ? { present: true, bytes, ok: false, why: `.git is over ${GIT_MAX_BYTES >> 20} MB: the files go without their history` } : { present: true, bytes, ok: true };
         if (out.git.ok) out.gitDir = gitPath;
       }
@@ -691,7 +705,7 @@ async function listProject(folder: string, o: { env: boolean; home: string }): P
       const rel = stack.pop()!;
       let ents;
       try {
-        ents = readdirSync(join(root, rel), { withFileTypes: true });
+        ents = await readdir(join(root, rel), { withFileTypes: true });
       } catch {
         continue;
       }
@@ -709,18 +723,23 @@ async function listProject(folder: string, o: { env: boolean; home: string }): P
     if (skippedDirs.size) out.skipped.push(`${[...skippedDirs].sort().join(", ")}: not copied`);
   }
   rels.sort();
+  const names: string[] = [];
   for (const rel of rels) {
-    if (!safeName(rel) || /[\x00-\x1f]/.test(rel)) {
-      out.skipped.push(`${JSON.stringify(rel).slice(1, -1)}: a name that can't be copied`);
-      continue;
+    if (!safeName(rel) || /[\x00-\x1f]/.test(rel)) out.skipped.push(`${JSON.stringify(rel).slice(1, -1)}: a name that can't be copied`);
+    else names.push(rel);
+  }
+  // Thousands of files: stat them off the event loop, a batch at a time, and stop once over the cap.
+  const BATCH = 512;
+  let stats: (Stats | null)[] = [];
+  for (let i = 0; i < names.length; i++) {
+    if (i % BATCH === 0) {
+      if (out.files.length > PROJECT_MAX_FILES) break;
+      stats = await lstatAll(names.slice(i, i + BATCH).map((rel) => join(root, rel)));
     }
+    const rel = names[i]!;
     const abs = join(root, rel);
-    let st;
-    try {
-      st = lstatSync(abs);
-    } catch {
-      continue;
-    }
+    const st = stats[i % BATCH];
+    if (!st) continue;
     if (ENV_FILE.test(basename(rel))) {
       if (st.isFile()) out.envFiles.push(rel);
       continue;
@@ -728,7 +747,7 @@ async function listProject(folder: string, o: { env: boolean; home: string }): P
     if (st.isSymbolicLink()) {
       let real: string | undefined;
       try {
-        real = realpathSync(abs);
+        real = await realpath(abs);
       } catch {
         real = undefined;
       }
@@ -737,7 +756,8 @@ async function listProject(folder: string, o: { env: boolean; home: string }): P
         continue;
       }
       const target = relative(dirname(abs), real) || ".";
-      out.files.push({ rel, size: 0, mode: 0o777, link: readlinkSync(abs).startsWith("/") ? target : readlinkSync(abs) });
+      const raw = await readlink(abs).catch(() => target);
+      out.files.push({ rel, size: 0, mode: 0o777, link: raw.startsWith("/") ? target : raw });
       continue;
     }
     if (st.isDirectory()) {
@@ -908,15 +928,113 @@ export function shellKeyNames(names: string[]): string[] {
 
 /* ---------------------------------------------------------- inventory */
 
-export async function inventory(agent: AgentKind, s: SetupSource, folder?: string): Promise<SetupInventory> {
+/** The pieces of an inventory, each looked up on its own (and cached on its own by createSetupCache). */
+export interface InventoryParts {
+  mcp(agent: AgentKind, s: SetupSource, folder?: string): Promise<SetupMcp[]>;
+  instructions(agent: AgentKind, s: SetupSource): Promise<SetupItem[]>;
+  project(folder: string, home: string): Promise<SetupProject>;
+}
+
+const DIRECT: InventoryParts = {
+  mcp: async (agent, s, folder) => mcpOf(agent, s, folder).map(({ config: _c, table: _t, ...m }) => m),
+  instructions: async (agent, s) => instructionsOf(agent, s, { read: false }).items,
+  project: (folder, home) => projectInventory(folder, home),
+};
+
+export async function inventory(agent: AgentKind, s: SetupSource, folder?: string, parts: InventoryParts = DIRECT): Promise<SetupInventory> {
   const notes: string[] = [];
   if (agent === "claude") notes.push("claude.ai connectors don't come along with a setup-token login; MCP servers configured on this Mac do.");
-  const mcp = mcpOf(agent, s, folder).map(({ config: _c, table: _t, ...m }) => m);
-  const ins = instructionsOf(agent, s, { read: false });
-  let project: SetupProject | undefined;
-  if (folder) project = await projectInventory(folder, s.home);
+  const [mcp, instructions, project] = await Promise.all([parts.mcp(agent, s, folder), parts.instructions(agent, s), folder ? parts.project(folder, s.home) : undefined]);
   if (agent !== "claude" && agent !== "codex") notes.push(`MCP servers and instructions come along for Claude Code and Codex; ${BRAND[agent].name} gets its keys and the project.`);
-  return { agent, login: loginsOf(agent, s), shellKeys: shellKeyNames(s.shellKeys), mcp, instructions: ins.items, ...(project ? { project } : {}), notes };
+  return { agent, login: loginsOf(agent, s), shellKeys: shellKeyNames(s.shellKeys), mcp, instructions, ...(project ? { project } : {}), notes };
+}
+
+/* --------------------------------------------------- the cached inventory */
+
+/** How long each piece stays fresh when nothing it is stamped with changed. */
+export const SETUP_TTL_MS = { project: 30_000, instructions: 120_000, mcp: 30_000 } as const;
+
+/** mtime and size of each path ("-" for one that isn't there): what a stamp is made of. */
+function statStamp(paths: string[]): string {
+  return paths
+    .map((p) => {
+      try {
+        const st = statSync(p);
+        return `${Math.floor(st.mtimeMs)}:${st.size}`;
+      } catch {
+        return "-";
+      }
+    })
+    .join("|");
+}
+
+/**
+ * What changes when a project's file list does: the git index (an add, a commit, a checkout), HEAD,
+ * .gitignore and the folder itself (a file added or removed at the top). Deeper untracked changes
+ * wait for the TTL.
+ */
+export function projectStamp(folder: string): string {
+  return statStamp([folder, join(folder, ".git"), join(folder, ".git", "index"), join(folder, ".git", "HEAD"), join(folder, ".gitignore")]);
+}
+
+/** The agent's config folder and each instruction file or folder in it (an added skill, an edited CLAUDE.md). */
+export function instructionsStamp(agent: AgentKind, s: Pick<SetupSource, "home" | "env">): string {
+  const specs = INSTRUCTIONS[agent];
+  if (!specs) return "";
+  const root = agent === "claude" ? claudeDir(s) : codexDir(s);
+  return statStamp([root, ...specs.map((x) => join(root, x.rel)), join(root, "settings.json")]);
+}
+
+/** The files MCP servers are read from. */
+export function mcpStamp(agent: AgentKind, s: Pick<SetupSource, "home" | "env">, folder?: string): string {
+  if (agent === "claude") return statStamp([claudeJsonPath(s), ...(folder ? [join(folder, ".mcp.json")] : [])]);
+  if (agent === "codex") return statStamp([join(codexDir(s), "config.toml")]);
+  return "";
+}
+
+export interface SetupCache {
+  /**
+   * The inventory for the hire form, from the cache where it can: `refreshing` when a piece was
+   * stale (a fresh look is under way). `wait`: answer with fresh pieces, waiting for them.
+   */
+  inventory(agent: AgentKind, s: SetupSource, folder?: string, o?: { wait?: boolean }): Promise<SetupInventory>;
+  clear(): void;
+}
+
+export function createSetupCache(o: { now?: () => number; ttl?: Partial<typeof SETUP_TTL_MS>; parts?: InventoryParts } = {}): SetupCache {
+  const ttl = { ...SETUP_TTL_MS, ...o.ttl };
+  const direct = o.parts ?? DIRECT;
+  // The source a piece is computed from is the one of the request that made it (home and env don't change).
+  let src: SetupSource | undefined;
+  const projects = new SwrMap<string, SetupProject>((folder) => new Swr(() => direct.project(folder, src!.home), { ttlMs: ttl.project, stamp: () => projectStamp(folder), now: o.now }), 16);
+  const instructions = new SwrMap<AgentKind, SetupItem[]>((agent) => new Swr(() => direct.instructions(agent, src!), { ttlMs: ttl.instructions, stamp: () => instructionsStamp(agent, src!), now: o.now }), 8);
+  const mcps = new SwrMap<string, SetupMcp[]>((key) => {
+    const [agent, folder] = key.split("\0") as [AgentKind, string];
+    return new Swr(() => direct.mcp(agent, src!, folder || undefined), { ttlMs: ttl.mcp, stamp: () => mcpStamp(agent, src!, folder || undefined), now: o.now });
+  }, 32);
+  return {
+    async inventory(agent, s, folder, io = {}) {
+      src = s;
+      let stale = false;
+      const piece = async <V>(c: Swr<V>): Promise<V> => {
+        if (io.wait) return c.fresh();
+        const hit = await c.get();
+        if (!hit.fresh) stale = true;
+        return hit.value;
+      };
+      const inv = await inventory(agent, s, folder, {
+        mcp: (a, _s, f) => piece(mcps.of(`${a}\0${f ?? ""}`)),
+        instructions: (a) => piece(instructions.of(a)),
+        project: (f) => piece(projects.of(f)),
+      });
+      return stale ? { ...inv, refreshing: true } : inv;
+    },
+    clear() {
+      projects.clear();
+      instructions.clear();
+      mcps.clear();
+    },
+  };
 }
 
 /* ------------------------------------------------------------ collect */

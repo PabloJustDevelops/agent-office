@@ -23,6 +23,8 @@ export interface HireDialog {
   isOpen(): boolean;
   /** The store changed while open. */
   sync(): void;
+  /** The pointer is on Hire: ask for "Your setup" now, so the dialog has it when it opens. */
+  warm(): void;
 }
 
 type Where = "local" | "sandbox" | "ssh";
@@ -565,6 +567,11 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
     isOpen: () => el.open,
     sync() {
       if (el.open) render();
+    },
+    warm() {
+      if (el.open) return;
+      pickDefaults();
+      setupSec.update({ agent, remote: where !== "local", mode });
     },
   };
 }

@@ -23,12 +23,14 @@ adoptCss(css);
 const scene = createOfficeScene(mountPoint("office"));
 const chrome = mountChrome(mountPoint("chrome"), scene);
 
-// Fresh from /unlock: the token first, so the very first snapshot already says "enabled".
-void redeemUnlock().finally(() =>
+// Fresh from /unlock: the token first, so the very first snapshot already says "enabled". An
+// unlocked browser asks for the control plane alongside /events rather than after its snapshot.
+void redeemUnlock().finally(() => {
+  chrome.prime();
   connect(() => eventsUrl(), {
     snapshot: (s) => chrome.load(s),
     event: (e) => chrome.apply(e),
     state: (s, retryInMs) => chrome.connection(s, retryInMs),
     control: (name, data) => chrome.control(name, data),
-  }),
-);
+  });
+});

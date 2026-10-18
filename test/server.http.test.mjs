@@ -8,6 +8,7 @@ import { connect, createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { brotliCompressSync, brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
@@ -33,6 +34,7 @@ const { OfficeState, startServer, hostOf, safeResolve, allowedHosts, hostAllowed
 );
 
 const SECRET = "TOP SECRET DO NOT SERVE";
+const HASHED_JS = `export const office = ${JSON.stringify("x".repeat(4000))};\n`;
 let tmp, webRoot, state, srv, port;
 
 before(async () => {
@@ -42,6 +44,10 @@ before(async () => {
   writeFileSync(join(webRoot, "index.html"), "<!doctype html><title>office</title>");
   writeFileSync(join(webRoot, "assets", "app.js"), "export {};");
   writeFileSync(join(webRoot, "assets", "app.css"), "body{}");
+  // a build output: hashed name, with the precompressed copies the build writes next to it
+  writeFileSync(join(webRoot, "assets", "app-ABC234XY.js"), HASHED_JS);
+  writeFileSync(join(webRoot, "assets", "app-ABC234XY.js.br"), brotliCompressSync(HASHED_JS));
+  writeFileSync(join(webRoot, "assets", "app-ABC234XY.js.gz"), gzipSync(HASHED_JS));
   writeFileSync(join(webRoot, "assets", "logos", "claude.svg"), "<svg/>");
   writeFileSync(join(webRoot, "assets", ".env"), SECRET);
   writeFileSync(join(webRoot, "secret.txt"), SECRET); // inside the web root, outside assets
@@ -163,6 +169,50 @@ test("assets get the right content types and revalidate by ETag", async () => {
   const head = await get("/assets/app.js", {}, "HEAD");
   assert.equal(head.status, 200);
   assert.equal(head.body, "");
+});
+
+/** GET as raw bytes (no decoding), with these request headers. */
+function getRaw(path, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, path, headers: { Host: `localhost:${port}`, ...headers } }, (res) => {
+      const chunks = [];
+      res.on("data", (d) => chunks.push(d));
+      res.on("end", () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+test("hashed build outputs are cached for good and sent precompressed when the browser takes it", async () => {
+  const br = await getRaw("/assets/app-ABC234XY.js", { "Accept-Encoding": "gzip, deflate, br" });
+  assert.equal(br.status, 200);
+  assert.equal(br.headers["cache-control"], "public, max-age=31536000, immutable");
+  assert.equal(br.headers["content-encoding"], "br");
+  assert.equal(br.headers.vary, "Accept-Encoding");
+  assert.equal(br.headers["content-type"], "text/javascript; charset=utf-8");
+  assert.equal(brotliDecompressSync(br.body).toString("utf8"), HASHED_JS);
+  assert.equal(Number(br.headers["content-length"]), br.body.length);
+  const gz = await getRaw("/assets/app-ABC234XY.js", { "Accept-Encoding": "gzip" });
+  assert.equal(gz.headers["content-encoding"], "gzip");
+  assert.equal(gunzipSync(gz.body).toString("utf8"), HASHED_JS);
+  assert.notEqual(gz.headers.etag, br.headers.etag, "each encoding has its own ETag");
+  const plain = await getRaw("/assets/app-ABC234XY.js", { "Accept-Encoding": "identity, br;q=0" });
+  assert.equal(plain.headers["content-encoding"], undefined);
+  assert.equal(plain.body.toString("utf8"), HASHED_JS);
+  const again = await getRaw("/assets/app-ABC234XY.js", { "Accept-Encoding": "br", "If-None-Match": br.headers.etag });
+  assert.equal(again.status, 304);
+  // a name without a hash may change under the same name: revalidated each time
+  assert.equal((await get("/assets/app.js")).headers["cache-control"], "no-cache");
+  assert.equal((await get("/")).headers["cache-control"], "no-cache");
+});
+
+test("an asset that changes on disk is sent anew (the memory copy follows size and mtime)", async () => {
+  const file = join(webRoot, "assets", "changing.js");
+  writeFileSync(file, "export const v = 1;");
+  assert.equal((await get("/assets/changing.js")).body, "export const v = 1;");
+  writeFileSync(file, "export const v = 22;");
+  assert.equal((await get("/assets/changing.js")).body, "export const v = 22;");
 });
 
 test("path traversal is refused in every spelling", async () => {

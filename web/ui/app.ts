@@ -18,11 +18,12 @@ import { OfficeModel } from "./state.ts";
 import { Toasts } from "./toasts.ts";
 import { createToolbar } from "./toolbar.ts";
 import { createTopbar } from "./topbar.ts";
-import { createHire } from "./control/hire.ts";
-import { createSessionPanel } from "./control/session.ts";
+import type { HireDialog } from "./control/hire.ts";
+import { createSessionPanel, prefetchViews } from "./control/session.ts";
 import { createSessionList } from "./control/sessions.ts";
-import { createSettings, type SettingsTab } from "./control/settings.ts";
+import type { SettingsDrawer, SettingsTab } from "./control/settings.ts";
 import { ControlStore } from "./control/store.ts";
+import { controlToken } from "./control/token.ts";
 import type { ControlSession } from "../../src/shared/control.ts";
 
 export interface Chrome {
@@ -31,6 +32,8 @@ export interface Chrome {
   connection(state: ConnState, retryInMs?: number): void;
   /** `control`, `control_gone` or `control_info` from /events. */
   control(name: string, data: unknown): void;
+  /** This browser holds a control token: ask for the control plane now, alongside /events, not after its snapshot. */
+  prime(): void;
 }
 
 const LOCKED_TIP = "Controls unlock when the office is opened from this computer's link";
@@ -110,24 +113,62 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
     toast: say,
     worker: (wid) => model.get(wid),
   });
-  const hire = createHire(store, {
-    onHired: (s) => {
-      store.upsert(s);
-      openSession(s);
-      say(`Hiring ${agentName(s.agent)}…`);
-    },
-    openSettings: (tab) => {
-      hire.close();
-      openSettings(tab);
-    },
-  });
-  const settings = createSettings(store, { onClose: closeSettings, toast: say });
-  const sessionList = createSessionList(store, { onPick: (s) => openSession(s, true), onHire: openHire });
+  /*
+   * Hire and Settings are chunks of their own, like the session views: built on first use (or
+   * ahead of it, on hover and on idle), each in the place its slot holds in the chrome.
+   */
+  let hire: HireDialog | null = null;
+  let settings: SettingsDrawer | null = null;
+  const hireSlot = document.createComment("hire");
+  const settingsSlot = document.createComment("settings");
+  let hireLoad: Promise<HireDialog> | null = null;
+  let settingsLoad: Promise<SettingsDrawer> | null = null;
+  function loadHire(): Promise<HireDialog> {
+    return (hireLoad ??= import("./control/hire.ts").then(
+      (m) => {
+        const d = m.createHire(store, {
+          onHired: (s) => {
+            store.upsert(s);
+            openSession(s);
+            say(`Hiring ${agentName(s.agent)}…`);
+          },
+          openSettings: (tab) => {
+            d.close();
+            openSettings(tab);
+          },
+        });
+        hireSlot.replaceWith(d.el);
+        hire = d;
+        return d;
+      },
+      (err: unknown) => {
+        hireLoad = null;
+        throw err;
+      },
+    ));
+  }
+  function loadSettings(): Promise<SettingsDrawer> {
+    return (settingsLoad ??= import("./control/settings.ts").then(
+      (m) => {
+        const d = m.createSettings(store, { onClose: closeSettings, toast: say });
+        settingsSlot.replaceWith(d.el);
+        settings = d;
+        ro.observe(d.el);
+        syncInert();
+        return d;
+      },
+      (err: unknown) => {
+        settingsLoad = null;
+        throw err;
+      },
+    ));
+  }
+  const sessionList = createSessionList(store, { onPick: (s) => openSession(s, true), onHire: openHire, onHover: (s) => prefetchViews([s.mode]) });
 
   const toolbar = createToolbar({
     hire: openHire,
     sessions: (anchor) => sessionList.toggle(anchor),
-    settings: () => (settings.isOpen() ? closeSettings() : openSettings()),
+    settings: () => (settings?.isOpen() ? closeSettings() : openSettings()),
     mode: setMode,
     crt: () => setCrt(!crt),
     shot,
@@ -144,7 +185,48 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
   const hint = createStreamHint(() => setStream(false));
   const flashRoot = h("div", { class: "flash-root" });
 
-  root.append(topbar.el, feed.el, feed.tab, inspector.el, panel.el, settings.el, toolbar.el, toasts.el, conn.el, empty.el, hint.el, hint.corner, sessionList.el, toolbar.tip, help.el, hire.el, flashRoot);
+  root.append(topbar.el, feed.el, feed.tab, inspector.el, panel.el, settingsSlot, toolbar.el, toasts.el, conn.el, empty.el, hint.el, hint.corner, sessionList.el, toolbar.tip, help.el, hireSlot, flashRoot);
+
+  /*
+   * Code before it is needed. The pointer on a worker the office started, or on a "Your agents"
+   * row: that session's view. On Hire or Settings: theirs (and Hire's "Your setup", warmed on the
+   * server). After the first frames, on idle: all of it, and an xterm built ahead.
+   */
+  const viewsFor = (workerId: string | null) => {
+    const s = store.forWorker(workerId);
+    if (s) prefetchViews([s.mode]);
+  };
+  scene.onHover?.((id) => viewsFor(id));
+  toolbar.el.querySelector(".tb-sessions")?.addEventListener("pointerenter", () => prefetchViews([...new Set(store.list().map((s) => s.mode))]));
+  const hireBtn = toolbar.el.querySelector(".tb-hire");
+  for (const ev of ["pointerenter", "focus"]) {
+    hireBtn?.addEventListener(ev, () => {
+      if (store.state !== "enabled") return;
+      void loadHire().then((d) => d.warm(), () => {});
+    });
+    toolbar.el.querySelector(".tb-settings")?.addEventListener(ev, () => store.state === "enabled" && void loadSettings().catch(() => {}));
+  }
+  let idleDone = false;
+  /** Once the office has painted and the controls are known: everything a click may need, one piece per idle slot. */
+  function idlePrefetch(): void {
+    if (idleDone || store.state !== "enabled") return;
+    idleDone = true;
+    const idle = (fn: () => void) => (typeof requestIdleCallback === "function" ? requestIdleCallback(() => fn(), { timeout: 3000 }) : window.setTimeout(fn, 400));
+    const steps = [
+      () => prefetchViews(["terminal"], { warm: true }),
+      () => prefetchViews(["chat"]),
+      // the dialog's code, and its "Your setup" read on the office (cached there from then on)
+      () => void loadHire().then((d) => d.warm(), () => {}),
+      () => void loadSettings().catch(() => {}),
+    ];
+    const next = () => {
+      const step = steps.shift();
+      if (!step) return;
+      step();
+      idle(next);
+    };
+    window.setTimeout(() => idle(next), 600);
+  }
 
   scene.onSelect((id) => select(id));
   setMode(prefs.mode === "ascii" ? "ascii" : "pixel", false);
@@ -173,7 +255,7 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
         else overlay.bottom = Math.max(0, vh - inspector.el.offsetTop + gap);
       }
       // the session panel and the settings drawer sit on the right, over the feed
-      for (const side of [panel.isOpen() && !panel.isMax() ? panel.el : null, settings.isOpen() ? settings.el : null]) {
+      for (const side of [panel.isOpen() && !panel.isMax() ? panel.el : null, settings?.isOpen() ? settings.el : null]) {
         if (side && !isPhone()) overlay.right = Math.max(overlay.right, vw - side.offsetLeft + gap);
       }
       // On a phone the empty card sits low over the floor: frame the empty office above it.
@@ -181,7 +263,7 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
       if (isPhone() && !empty.el.hidden && card) overlay.bottom = Math.max(overlay.bottom, vh - card.getBoundingClientRect().top + gap);
     }
     // a right-hand panel is open: the toolbar centres in the room left of it
-    const sideEl = !isPhone() && !streamMode ? (settings.isOpen() ? settings.el : panel.isOpen() && !panel.isMax() ? panel.el : null) : null;
+    const sideEl = !isPhone() && !streamMode ? (settings?.isOpen() ? settings.el : panel.isOpen() && !panel.isMax() ? panel.el : null) : null;
     if (sideEl) {
       const tbw = toolbar.el.offsetWidth;
       const freeRight = sideEl.offsetLeft - gap;
@@ -198,7 +280,7 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
     safe(() => scene.setInsets?.(insets, overlay));
   }
   const ro = new ResizeObserver(() => syncInsets());
-  for (const el of [topbar.el, toolbar.el, feed.el, inspector.el, panel.el, settings.el]) ro.observe(el);
+  for (const el of [topbar.el, toolbar.el, feed.el, inspector.el, panel.el]) ro.observe(el);
   window.addEventListener("resize", syncInsets);
   requestAnimationFrame(syncInsets);
 
@@ -226,7 +308,7 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
   /* Panels hidden by CSS stay out of the tab order and the a11y tree. */
   function syncInert(): void {
     const phone = isPhone();
-    for (const el of [topbar.el, toolbar.el, inspector.el, empty.el, panel.el, settings.el]) el.inert = streamMode;
+    for (const el of [topbar.el, toolbar.el, inspector.el, empty.el, panel.el, settings?.el]) if (el) el.inert = streamMode;
     feed.el.inert = streamMode || (!feed.isOpen() && !phone);
     feed.tab.inert = streamMode || feed.isOpen() || phone;
   }
@@ -399,7 +481,13 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
       return;
     }
     sessionList.close();
-    hire.open();
+    // the sandboxes and logins as of now, behind the dialog (the office answers from its cache at once)
+    void store.refresh({ keepSessions: true });
+    if (hire) return hire.open();
+    loadHire().then(
+      (d) => store.state === "enabled" && d.open(),
+      () => say("Couldn't load the Hire dialog. Check the office is still running.", "error"),
+    );
   }
 
   function openSettings(tab?: SettingsTab): void {
@@ -408,13 +496,21 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
       say(store.state === "locked" ? `${LOCKED_TIP}.` : "This office server has no settings to change.");
       return;
     }
-    settings.open(tab);
-    toolbar.setSettings(true);
-    syncInsets();
+    const show = (d: SettingsDrawer) => {
+      d.open(tab);
+      toolbar.setSettings(true);
+      syncInsets();
+    };
+    void store.refresh({ keepSessions: true });
+    if (settings) return show(settings);
+    loadSettings().then(
+      (d) => store.state === "enabled" && show(d),
+      () => say("Couldn't load Settings. Check the office is still running.", "error"),
+    );
   }
 
   function closeSettings(): void {
-    settings.close();
+    settings?.close();
     toolbar.setSettings(false);
     syncInsets();
   }
@@ -428,14 +524,14 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
     const live = list.filter((x) => x.status !== "exited" && x.status !== "failed");
     toolbar.setSessions(list.length, live.filter((x) => x.pendingApproval).length);
     panel.sync();
-    hire.sync();
-    settings.sync();
+    hire?.sync();
+    settings?.sync();
     sessionList.sync();
     syncOrigin();
     if (store.state !== "enabled") {
-      if (hire.isOpen()) hire.close();
-      if (settings.isOpen()) closeSettings();
-    }
+      if (hire?.isOpen()) hire.close();
+      if (settings?.isOpen()) closeSettings();
+    } else idlePrefetch();
     // a selected worker the office just took over (or let go of) switches panels
     if (selected && !panel.isOpen() && store.forWorker(selected) && model.get(selected)) select(selected);
   }
@@ -545,9 +641,9 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
     const t = ev.target;
     if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
     if (help.isOpen() && ev.key !== "?") return;
-    if (hire.isOpen()) return;
+    if (hire?.isOpen()) return;
     if (ev.key === "Escape") {
-      if (settings.isOpen()) closeSettings();
+      if (settings?.isOpen()) closeSettings();
       else if (panel.isOpen()) closePanel();
       else if (streamMode) setStream(false);
       else if (selected) select(null);
@@ -632,6 +728,9 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
     },
     control(name, data) {
       store.onEvent(name, data);
+    },
+    prime() {
+      if (controlToken()) void store.refresh();
     },
     connection(state, retryInMs) {
       connState = state;

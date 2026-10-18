@@ -16,7 +16,7 @@ export interface SessionList {
   sync(): void;
 }
 
-export function createSessionList(store: ControlStore, opts: { onPick(s: ControlSession): void; onHire(): void }): SessionList {
+export function createSessionList(store: ControlStore, opts: { onPick(s: ControlSession): void; onHire(): void; onHover?(s: ControlSession): void }): SessionList {
   const list = h("ul", { class: "sl-list" });
   const el = h(
     "div",
@@ -38,7 +38,7 @@ export function createSessionList(store: ControlStore, opts: { onPick(s: Control
           null,
           h(
             "button",
-            { class: "sl-row", attrs: { type: "button", "aria-label": `${agentName(s.agent)}, ${s.title}: ${st.word}` }, on: { click: () => { close(); opts.onPick(s); } } },
+            { class: "sl-row", attrs: { type: "button", "aria-label": `${agentName(s.agent)}, ${s.title}: ${st.word}` }, on: { click: () => { close(); opts.onPick(s); }, pointerenter: () => opts.onHover?.(s), focus: () => opts.onHover?.(s) } },
             logo(s.agent),
             h("span", { class: "sl-main" }, h("span", { class: "sl-title", text: s.title || agentName(s.agent) }), h("span", { class: "sl-sub" }, placeBadge(s))),
             h("span", { class: `sl-status tone-${s.pendingApproval ? "wait" : st.tone}` }, h("span", { class: "ses-pill-dot" }), h("span", { text: s.pendingApproval ? "needs you" : st.word })),
