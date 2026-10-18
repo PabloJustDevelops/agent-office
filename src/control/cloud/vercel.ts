@@ -28,8 +28,10 @@
  *            replays from the start: one cut while the command runs (or as it finishes) is
  *            opened again, skipping what was delivered. It is read over node:https on its own socket, never
  *            fetch: with that stream open in Node 26's fetch, the stdin posts to the same host
- *            hung until it closed. GET …/cmd/{id}?wait=true has the exit code; POST
- *            …/cmd/{id}/kill {signal} signals it. Checked against Vercel's API on 2026-10-19.
+ *            hung until it closed. GET …/cmd/{id}?wait=true has the exit code, and then the
+ *            log is read once more to its end (a stream's end can't tell a cut from the
+ *            command's own). POST …/cmd/{id}/kill {signal} signals it. Checked against Vercel's
+ *            API on 2026-10-19.
  *
  * Keys: Vercel keeps every command's args (GET …/cmd lists them), so a key or a prompt is
  * never in args. On the WebSocket they ride the start frame's env, and in chat mode the
@@ -534,13 +536,12 @@ export class VercelPlace extends BasePlace {
     // The stream ended: the command did (its exit code), or the stream was cut (open it again,
     // and the replay skips what came already). A plain GET lags the end by a few seconds;
     // ?wait=true answers at once for a finished command and holds for a running one, so a short
-    // deadline tells the two apart. Only a stream that ended whole, for a command that had
-    // already finished, said everything: one cut while the agent finished is replayed once
-    // more, so its last words aren't lost.
+    // deadline tells the two apart. A stream's end can't say whether it was cut just before the
+    // command ended, so once it has, the log is read once more, to its end: only a stream opened
+    // after the exit and read whole is known to hold the agent's last words.
     const settle = async (clean: boolean): Promise<void> => {
       if (exit.fired) return;
       let code: number | undefined;
-      const t = Date.now();
       try {
         const j = jsonOf(await call(`${cPath}?wait=true`, { timeoutMs: 3_000 }), what);
         if (typeof j?.command?.exitCode === "number") code = j.command.exitCode;
@@ -551,8 +552,7 @@ export class VercelPlace extends BasePlace {
       }
       if (exit.fired) return;
       if (code !== undefined) {
-        if (clean && (draining || Date.now() - t < 1_500)) return end({ code });
-        if (draining && tries++ >= CHAT_RECONNECTS) return end({ code });
+        if (draining && (clean || tries++ >= CHAT_RECONNECTS)) return end({ code });
         draining = true;
         return follow();
       }

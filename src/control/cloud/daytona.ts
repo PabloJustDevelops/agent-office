@@ -24,8 +24,9 @@
  *           Output is the WebSocket …/command/{cmd}/logs?follow=true, which replays from the
  *           start and closes when the command ends; with X-Daytona-SDK-Version (0.167.0 or
  *           newer) each chunk is tagged 01 01 01 (stdout) or 02 02 02 (stderr), else they come
- *           merged. A socket that drops (while the agent runs, or as it finishes) is reopened,
- *           skipping what was already delivered. The exit code is GET …/command/{cmd}. There
+ *           merged. A socket that drops while the agent runs is reopened, skipping what was
+ *           already delivered. The exit code is GET …/command/{cmd}, and then the log is read
+ *           once more to its end (a close can't tell a cut from the command's own end). There
  *           is no stdin close: end() is SIGTERM through the pid file, and deleting the session
  *           (which removes its log) ends whatever is left. Checked against Daytona's daemon
  *           0.225 on 2026-10-19.
@@ -447,6 +448,9 @@ export class DaytonaPlace extends BasePlace {
     const demux = new LogDemux((s, b) => (s === 2 ? err : out).emit(b));
     let ws: Ws | undefined;
     let tries = 0;
+    /** The command has ended and its log is being read once more, to the end. */
+    let draining = false;
+    let exited: number | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     const end = (e: TermExit) => {
@@ -472,15 +476,16 @@ export class DaytonaPlace extends BasePlace {
         if (ws !== s) return;
         ws = undefined;
         if (Date.now() - at > 60_000) tries = 0;
-        // 1000: the daemon closes it so once the command has ended and its log is all sent.
         void settle(code === 1000);
       });
     };
     // The socket closed: the command ended (its exit code), or the connection dropped. A drop
-    // is followed by a new socket, whose replay skips what came already; one that dropped while
-    // the agent finished gets that replay too, so its last words aren't lost with the session.
+    // is followed by a new socket, whose replay skips what came already. Once the command has
+    // ended, the log is read once more, to the end, before the session (and the log) goes: a
+    // socket's close can't say whether it was cut just before the agent's last words.
     const settle = async (clean: boolean): Promise<void> => {
-      let code: number | undefined;
+      // Once known, the exit code doesn't change: the second read needn't ask again.
+      let code = exited;
       for (let i = 0; i < 4 && !exit.fired && code === undefined; i++) {
         try {
           const j = jsonOf(await call(cPath), what);
@@ -491,13 +496,18 @@ export class DaytonaPlace extends BasePlace {
         if (code === undefined) await sleep(500);
       }
       if (exit.fired) return;
-      if (code !== undefined && clean) return end({ code });
-      if (tries++ >= CHAT_RECONNECTS) {
-        if (code !== undefined) return end({ code });
-        this.log(`${this.where}: the chat's connection kept dropping; stopping the agent`, "warn");
-        return end({ code: null });
+      if (code !== undefined) {
+        // The second read closed with 1000, as the daemon closes it once the log is all sent.
+        if (draining && (clean || tries++ >= CHAT_RECONNECTS)) return end({ code });
+        draining = true;
+        exited = code;
+      } else {
+        if (tries++ >= CHAT_RECONNECTS) {
+          this.log(`${this.where}: the chat's connection kept dropping; stopping the agent`, "warn");
+          return end({ code: null });
+        }
+        await sleep(1000 * tries);
       }
-      if (code === undefined) await sleep(1000 * tries);
       if (exit.fired) return;
       try {
         await connect();

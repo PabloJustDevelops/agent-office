@@ -30,7 +30,7 @@ after(async () => {
 });
 
 let n = 0;
-async function fakeDaytona({ boxes = [], wsReject, dropLogs = 0, dropOnInput, execWaits = false } = {}) {
+async function fakeDaytona({ boxes = [], wsReject, dropLogs = 0, dropOnInput, closeOnInput, execWaits = false } = {}) {
   const bin = tmp();
   writeBin(bin, "claude", AGENT_SCRIPT);
   writeBin(bin, "claude-version", "console.log('2.1.302')");
@@ -153,6 +153,11 @@ async function fakeDaytona({ boxes = [], wsReject, dropLogs = 0, dropOnInput, ex
         if (dropOnInput && body.data.startsWith(dropOnInput)) {
           // The log socket goes down first: what the agent prints next lands only in the log.
           for (const s of c.socks) s.socket.destroy();
+          c.socks.clear();
+        }
+        if (closeOnInput && body.data.startsWith(closeOnInput)) {
+          // Closed with 1000, as the command's own end looks, just before the agent's last words.
+          for (const s of c.socks) s.close(1000);
           c.socks.clear();
         }
         // The daemon ends a write that lacks one with a newline.
@@ -410,7 +415,8 @@ test("chat: a toolbox session command of its own; the key by env file; whole lin
   assert.ok(exec.command.startsWith("sh -c '"));
   assert.ok(!exec.command.includes(KEY), "no key in the session command");
   assert.ok(d.seen.executes.find((e) => e.envs?.AO_ENV)?.envs.AO_ENV.includes(KEY), "the key rode one execute's per-command envs");
-  assert.deepEqual(d.seen.logOpens, [{ follow: "true", version: "0.167.0" }], "stdout and stderr tagged apart");
+  assert.deepEqual(d.seen.logOpens[0], { follow: "true", version: "0.167.0" }, "stdout and stderr tagged apart");
+  assert.equal(d.seen.logOpens.length, 2, "the log read once more after the exit, before the session goes");
   await until(() => d.seen.sessionDeletes.includes(session), 3000, "the session (and its log) deleted after the exit");
   await until(() => readdirSync(join(d.boxes[0].home, ".agentoffice/run")).length === 0, 3000, "pid file cleaned up");
 });
@@ -475,7 +481,7 @@ test("chat: an agent that finishes while its log socket is down still gets its l
   assert.match(io.out(), /got:last\nbye!\n/, "printed while the socket was down, read from the replay");
   assert.match(io.err(), /err:last\n/);
   assert.equal(io.out().split('"argv"').length - 1, 1, "and nothing twice");
-  assert.equal(d.seen.logOpens.length, 2);
+  assert.ok(d.seen.logOpens.length >= 2);
 });
 
 test("chat: what the replay brings with the upgrade, before anyone has subscribed, still arrives", async () => {
@@ -487,4 +493,17 @@ test("chat: what the replay brings with the upgrade, before anyone has subscribe
   const io = piped(pipe);
   assert.equal((await io.done).code, 127);
   assert.match(io.err(), /no-such-agent/, "the shell's reason reached stderr's listener");
+});
+
+test("chat: a socket closed with 1000 just before the agent's last words (a clean cut) still gets them through", async () => {
+  const d = await fakeDaytona({ closeOnInput: "last" });
+  const { places: p } = places(d);
+  const place = await p.open({ kind: "daytona", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe(CHAT(place.cwd));
+  const io = piped(pipe);
+  await until(() => io.out().includes("\n"), 5000, "first line");
+  pipe.write("last\nbye\n");
+  assert.equal((await io.done).code, 4);
+  assert.match(io.out(), /got:last\nbye!\n/);
+  assert.equal(io.out().split('"argv"').length - 1, 1, "nothing twice");
 });

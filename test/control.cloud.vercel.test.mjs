@@ -28,7 +28,7 @@ after(async () => {
 });
 
 let n = 0;
-async function fakeVercel({ project = false, hobby = false, noInteractive = false, dropStdin = 0, cutLogs = 0, dropOnInput } = {}) {
+async function fakeVercel({ project = false, hobby = false, noInteractive = false, dropStdin = 0, cutLogs = 0, dropOnInput, endOnInput } = {}) {
   const bin = tmp();
   writeBin(bin, "claude", AGENT_SCRIPT);
   writeBin(bin, "chat-agent", CHAT_SCRIPT);
@@ -153,6 +153,11 @@ async function fakeVercel({ project = false, hobby = false, noInteractive = fals
         if (dropOnInput && data.toString().startsWith(dropOnInput)) {
           // The log stream breaks first: what the agent prints next lands only in the log.
           for (const r of c.readers) r.destroy();
+          c.readers.clear();
+        }
+        if (endOnInput && data.toString().startsWith(endOnInput)) {
+          // Ended whole, as a command's own end looks, just before the agent's last words.
+          for (const r of c.readers) r.end();
           c.readers.clear();
         }
         // What it already has is skipped: a resend at the same offset writes nothing twice.
@@ -381,7 +386,7 @@ test("chat: a detached command with stdin attached; the key in its env only; std
   const offsets = v.seen.stdin.map((s) => s.offset);
   assert.deepEqual(offsets, [...offsets].sort((a, b) => a - b), "offsets only grow");
   assert.equal(v.seen.stdin.at(-1).close, true);
-  assert.equal(v.seen.logOpens, 1);
+  assert.equal(v.seen.logOpens, 2, "the log read once more after the exit, for anything a cut stream missed");
 });
 
 test("chat: a stdin request that drops after it was applied is resent at its offset and written once", async () => {
@@ -429,4 +434,17 @@ test("chat: an agent that finishes while its log stream is down still gets its l
   assert.match(io.out(), /got:last\nbye!\n/, "printed while the stream was down, read from the replay");
   assert.equal(io.out().split('"argv"').length - 1, 1, "and nothing twice");
   assert.ok(v.seen.logOpens >= 2);
+});
+
+test("chat: a stream that ends whole just before the agent's last words (a clean cut) still gets them through", async () => {
+  const v = await fakeVercel({ project: true, endOnInput: "last" });
+  const { places: p } = places(v);
+  const place = await p.open({ kind: "vercel", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe(CHAT(place.cwd));
+  const io = piped(pipe);
+  await until(() => io.out().includes("\n"), 5000, "first line");
+  pipe.write("last\nbye\n");
+  assert.equal((await io.done).code, 4);
+  assert.match(io.out(), /got:last\nbye!\n/);
+  assert.equal(io.out().split('"argv"').length - 1, 1, "nothing twice");
 });
