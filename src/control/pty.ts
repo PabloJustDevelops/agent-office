@@ -233,7 +233,20 @@ export function pythonBackend(python: string): PtyBackend {
       child.stdin!.on("error", () => {});
       ctl?.on("error", () => {});
       child.on("error", () => exit.fire({ code: 127 }));
-      child.on("exit", (code, signal) => exit.fire(exitOf(code, signal)));
+      // "exit" can come before the last of stdout is read: hold it until stdout ends, so the
+      // agent's final words (or the bridge's "cannot run") reach the screen. A grandchild that
+      // keeps the pipe open can't hold the exit for more than half a second.
+      let ended = false;
+      let status: TermExit | undefined;
+      child.stdout!.on("close", () => {
+        ended = true;
+        if (status) exit.fire(status);
+      });
+      child.on("exit", (code, signal) => {
+        status = exitOf(code, signal);
+        if (ended) exit.fire(status);
+        else setTimeout(() => exit.fire(status!), 500).unref();
+      });
       return {
         pid: child.pid,
         write: (d) => {
