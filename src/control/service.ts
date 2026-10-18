@@ -45,6 +45,8 @@ export interface ServiceDeps {
   pkgRoot: string;
   /** Absolute node for the unit (src/install/command.ts stableNode). */
   node: string;
+  /** What runs this CLI where it was installed from (src/install/command.ts selfCommand): the service's hints name it. */
+  command?: string;
   now?: () => number;
 }
 
@@ -55,7 +57,12 @@ export interface ServiceFile {
   installedAt: string;
   startAtLogin: boolean;
   port: number;
+  /** "agentoffice" or "npx theagentoffice": what installed it, since app/<version> is on nobody's PATH. */
+  command?: string;
 }
+
+/** The commands a service.json may name (it ends up in the office's own pages). */
+const COMMANDS = new Set(["agentoffice", "npx theagentoffice"]);
 
 export function supported(platform: NodeJS.Platform): boolean {
   return platform === "darwin" || platform === "linux";
@@ -222,6 +229,7 @@ export function readServiceFile(home: string): ServiceFile | null {
       installedAt: String(j.installedAt ?? ""),
       startAtLogin: j.startAtLogin !== false,
       port: Number.isInteger(j.port) ? j.port : 4747,
+      ...(COMMANDS.has(j.command) ? { command: j.command as string } : {}),
     };
   } catch {
     return null;
@@ -352,6 +360,7 @@ export async function installService(d: ServiceDeps, o: InstallServiceOptions): 
     installedAt: new Date((d.now ?? Date.now)()).toISOString(),
     startAtLogin: true,
     port: o.port,
+    ...(d.command && COMMANDS.has(d.command) ? { command: d.command } : {}),
   });
   if (d.platform === "darwin") {
     await d.run("launchctl", ["enable", target(d)]);

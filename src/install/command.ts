@@ -11,9 +11,10 @@
  * launched it even when the client's self-reported name is unfamiliar.
  */
 import { accessSync, constants, realpathSync } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentKind } from "../shared/events.ts";
+import { readServiceFile } from "../control/service.ts";
 
 export const SERVER_NAME = "agentoffice";
 export const PACKAGE_NAME = "theagentoffice";
@@ -42,13 +43,22 @@ export function isEphemeral(script: string): boolean {
   return /\/_npx\/|\/\.pnpm-store\/|\/pnpm\/dlx\/|\/dlx-\d+\/|\/bunx-|\/\.bun\/install\/cache\/|\/yarn\/berry\/cache\//.test(p);
 }
 
+/** The background service's copy: <AGENT_OFFICE_HOME>/app/<version>/dist/cli.js (src/control/service.ts copyApp). */
+const SERVICE_COPY = /\/app\/[^/]+\/dist\/cli\.js$/;
+
 /**
  * What to type to run this CLI again, for the commands its hints name: `agentoffice` after a
  * global install, `npx theagentoffice` from a package-runner cache, where `agentoffice` was
- * never put on PATH.
+ * never put on PATH. The background service's copy isn't on PATH either: it names what installed
+ * it, as service.json beside app/ records (npx when that predates the record).
  */
 export function selfCommand(script = fileURLToPath(import.meta.url)): string {
-  return isEphemeral(script) ? `npx ${PACKAGE_NAME}` : "agentoffice";
+  if (isEphemeral(script)) return `npx ${PACKAGE_NAME}`;
+  if (SERVICE_COPY.test(script.replace(/\\/g, "/"))) {
+    const f = readServiceFile(dirname(dirname(dirname(dirname(script)))));
+    if (f) return f.command ?? `npx ${PACKAGE_NAME}`;
+  }
+  return "agentoffice";
 }
 
 export function chooseLaunch(opts: { remote: boolean; version?: string; script?: string; node?: string; platform?: string }): Launch {

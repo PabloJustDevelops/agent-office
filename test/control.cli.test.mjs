@@ -1,13 +1,15 @@
 // Tests for the control plane's CLI wiring (src/cli.ts, src/control/cli.ts), on a fresh bundle of
 // src/cli.ts against a fake HOME and a scratch AGENT_OFFICE_HOME: the banner's Controls line
 // (never the unlock link), `agentoffice open --print` and `--rotate`, a watch-only office with
-// --no-control, help and doctor rows, the hints a copy run from an npx cache prints, and what
-// happens with no browser to open. No service is installed or loaded, and no real browser opens.
+// --no-control, help and doctor rows, the hints a copy run from an npx cache (or the service's copy
+// of one) prints, and what happens with no browser to open. No service is loaded (an install
+// writes its files under a fake HOME, its launchctl/systemctl calls only recorded), and no real
+// browser opens.
 import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +31,8 @@ before(async () => {
       external: ["@lydell/node-pty"], logLevel: "error",
     });
   }
+  // A package root the service can copy (src/control/service.ts copyApp).
+  writeFileSync(join(NPX_CLI, "..", "..", "package.json"), JSON.stringify({ name: "theagentoffice", version: "0.2.0" }));
   try {
     symlinkSync(join(ROOT, "node_modules"), join(TMP, "pkg", "node_modules"));
   } catch {
@@ -258,4 +262,32 @@ test("openBrowser resolves false when no opener ran or it gave up, true when it 
   assert.equal(await openBrowser(url, { platform: "linux", opener: fakeBin(bin, "gives-up", "process.exit(3)") }), false);
   assert.equal(await openBrowser(url, { platform: "linux", opener: fakeBin(bin, "opens", "process.exit(process.argv[2] === 'http://127.0.0.1:1/' ? 0 : 1)") }), true);
   assert.equal(await openBrowser(url, { platform: "linux", opener: fakeBin(bin, "stays", "setTimeout(() => {}, 5000)"), waitMs: 300 }), true);
+});
+
+test("a background service installed through npx keeps naming npx theagentoffice: its app copy isn't on PATH either", { timeout: 30_000 }, async () => {
+  const { installService, readServiceFile } = await load("src/control/service.ts");
+  const { env, home, ao } = homes();
+  const calls = [];
+  const deps = (command) => ({
+    home: ao, userHome: home, platform: process.platform === "linux" ? "linux" : "darwin", uid: 501, version: "0.2.0",
+    env: { PATH: env.PATH, LANG: "en_US.UTF-8" }, pkgRoot: join(NPX_CLI, "..", ".."), node: process.execPath, command,
+    run: async (cmd, args) => (calls.push([cmd, ...args].join(" ")), { code: 0, out: "" }),
+  });
+  await installService(deps("npx theagentoffice"), { start: false, port: 4747 });
+  assert.ok(calls.length && calls.every((c) => /^(launchctl|systemctl) /.test(c)), "launchctl/systemctl were only recorded");
+  assert.equal(readServiceFile(ao).command, "npx theagentoffice");
+  const copy = join(ao, "app", "current", "dist", "cli.js");
+  const { child, info, output } = await office(env, [], { cli: copy });
+  try {
+    assert.match(output(), /Controls\s+locked · npx theagentoffice open unlocks a browser/);
+    const spent = await get(info.port, "/unlock?t=0.0.0", { "sec-fetch-site": "none" });
+    assert.equal(spent.status, 403);
+    assert.match(spent.body, /Run <code>npx theagentoffice open<\/code> for a new one/);
+  } finally {
+    await stop(child);
+  }
+  // Installed from a global install, the copy keeps the short name.
+  await installService(deps("agentoffice"), { start: false, port: 4747 });
+  assert.equal(readServiceFile(ao).command, "agentoffice");
+  assert.match(run(["--bogus"], env, copy).stderr, /Run agentoffice --help for usage/);
 });

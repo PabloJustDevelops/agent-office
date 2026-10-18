@@ -93,6 +93,7 @@ export function serviceDeps(version: string, env: NodeJS.ProcessEnv = process.en
     run: (cmd, args) => defaultRun(cmd, args),
     pkgRoot: packageRoot(),
     node: stableNode(),
+    command: selfCommand(),
   };
 }
 
