@@ -1,0 +1,158 @@
+name: Windows
+
+# The office on windows-latest: the checks, then the packed package run the way
+# `npx theagentoffice` runs it, from PowerShell with a fresh, empty user profile.
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/windows]
+
+jobs:
+  check:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+        continue-on-error: true
+      - run: npm pack
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package
+          path: theagentoffice-*.tgz
+
+  smoke:
+    needs: check
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 22, 24]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: package
+          path: pkg
+      - name: Install the package into a fresh profile
+        run: |
+          $tgz = (Get-ChildItem pkg\theagentoffice-*.tgz).FullName
+          $root = Join-Path $env:RUNNER_TEMP "office"
+          New-Item -ItemType Directory -Force "$root\home\AppData\Roaming", "$root\home\AppData\Local", "$root\app" | Out-Null
+          npm install --no-audit --no-fund --prefix "$root\app" $tgz
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "TGZ=$tgz" >> $env:GITHUB_ENV
+          "OFFICE_ROOT=$root" >> $env:GITHUB_ENV
+          "OFFICE_BIN=$root\app\node_modules\.bin\theagentoffice.cmd" >> $env:GITHUB_ENV
+      - name: Smoke test
+        run: |
+          $ErrorActionPreference = "Stop"
+          # A user's shell: their own profile folders, no HOME, no CI (CI turns the browser off; --no-open does it here).
+          $env:USERPROFILE = "$env:OFFICE_ROOT\home"
+          $env:APPDATA = "$env:OFFICE_ROOT\home\AppData\Roaming"
+          $env:LOCALAPPDATA = "$env:OFFICE_ROOT\home\AppData\Local"
+          Remove-Item Env:HOME, Env:CI -ErrorAction SilentlyContinue
+          $bin = $env:OFFICE_BIN
+          $fail = 0
+          function Check($name, [scriptblock]$body) {
+            Write-Host "::group::$name"
+            try { & $body; Write-Host "ok: $name" } catch { Write-Host "::error::$name failed: $_"; $script:fail++ }
+            Write-Host "::endgroup::"
+          }
+          function Get-Url($url) {
+            $r = curl.exe -sS -f --max-time 10 $url
+            if ($LASTEXITCODE) { throw "curl $url exited $LASTEXITCODE" }
+            return ($r -join "`n")
+          }
+          function Start-Office($port, $extra) {
+            $log = "$env:OFFICE_ROOT\office-$port"
+            $p = Start-Process -FilePath $bin -ArgumentList (@("--no-open", "--port", "$port") + $extra) -RedirectStandardOutput "$log.out" -RedirectStandardError "$log.err" -PassThru -NoNewWindow
+            for ($i = 0; $i -lt 60; $i++) {
+              curl.exe -s -f --max-time 2 "http://127.0.0.1:$port/healthz" | Out-Null
+              if (-not $LASTEXITCODE) { return $p }
+              if ($p.HasExited) { break }
+              Start-Sleep -Milliseconds 500
+            }
+            Get-Content "$log.out", "$log.err" -ErrorAction SilentlyContinue | Write-Host
+            throw "the office on port $port never answered /healthz"
+          }
+          function Stop-Office($p, $port) {
+            taskkill /T /F /PID $p.Id | Out-Null
+            Write-Host "--- office $port stdout"; Get-Content "$env:OFFICE_ROOT\office-$port.out" -ErrorAction SilentlyContinue | Write-Host
+            Write-Host "--- office $port stderr"; Get-Content "$env:OFFICE_ROOT\office-$port.err" -ErrorAction SilentlyContinue | Write-Host
+          }
+
+          Check "--help" {
+            $h = & $bin --help
+            if ($LASTEXITCODE) { throw "exit $LASTEXITCODE" }
+            if (-not ($h -match "Usage")) { throw "no usage text" }
+            & $bin --version
+          }
+          Check "npx --package" {
+            $v = npx --yes --package $env:TGZ theagentoffice --version
+            if ($LASTEXITCODE) { throw "exit $LASTEXITCODE" }
+            Write-Host "npx: $v"
+          }
+          Check "office" {
+            $p = Start-Office 4747 @()
+            try {
+              $html = Get-Url "http://127.0.0.1:4747/"
+              $assets = [regex]::Matches($html, '/assets/[A-Za-z0-9._-]+\.js') | ForEach-Object { $_.Value } | Sort-Object -Unique
+              if (-not $assets) { throw "index.html names no scripts" }
+              foreach ($a in $assets) { Get-Url "http://127.0.0.1:4747$a" | Out-Null; Write-Host "fetched $a" }
+              Get-Url "http://127.0.0.1:4747/healthz" | Write-Host
+              $snap = Get-Url "http://127.0.0.1:4747/api/snapshot" | ConvertFrom-Json
+              Write-Host "snapshot: $($snap.sessions.Count) sessions, control=$($snap.control)"
+              if (-not (Test-Path "$env:USERPROFILE\.agentoffice\office.json")) { throw "no office.json in the fresh profile" }
+            } finally { Stop-Office $p 4747 }
+          }
+          Check "--demo" {
+            $p = Start-Office 4748 @("--demo")
+            try {
+              curl.exe -s -N --max-time 4 "http://127.0.0.1:4748/events" | Out-Null
+              Start-Sleep -Seconds 3
+              $snap = Get-Url "http://127.0.0.1:4748/api/snapshot" | ConvertFrom-Json
+              Write-Host "demo snapshot: $($snap.sessions.Count) sessions"
+              if (-not $snap.demo) { throw "the snapshot is not the demo's" }
+            } finally { Stop-Office $p 4748 }
+          }
+          Check "mcp" {
+            $init = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}'
+            $list = '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
+            $r = ($init, $list) | & $bin mcp
+            $r | Write-Host
+            if (-not ($r -match '"office_status"')) { throw "no tools in tools/list" }
+          }
+          Check "doctor" {
+            & $bin doctor
+            if ($LASTEXITCODE -gt 1) { throw "exit $LASTEXITCODE" }
+          }
+          Check "install --dry-run" {
+            & $bin install --dry-run
+            if ($LASTEXITCODE -gt 1) { throw "exit $LASTEXITCODE" }
+          }
+          Check "install --service" {
+            $s = & $bin install --service 2>&1
+            $s | Write-Host
+            if ($s -match "    at ") { throw "a stack trace" }
+          }
+          Check "node-pty" {
+            Push-Location "$env:OFFICE_ROOT\app"
+            try {
+              node -e "const p=require('@lydell/node-pty');const t=p.spawn('cmd.exe',['/c','echo','pty-ok'],{cols:80,rows:24});let o='';t.onData(d=>o+=d);t.onExit(e=>{console.log(JSON.stringify(o));process.exit(o.includes('pty-ok')?0:1)});setTimeout(()=>{console.log('timeout',JSON.stringify(o));process.exit(2)},15000)"
+              if ($LASTEXITCODE) { throw "exit $LASTEXITCODE" }
+            } finally { Pop-Location }
+          }
+          if ($fail) { Write-Host "::error::$fail smoke checks failed"; exit 1 }
