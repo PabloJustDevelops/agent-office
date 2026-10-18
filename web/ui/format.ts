@@ -53,7 +53,7 @@ export function describe(e: Pick<OfficeEvent, "kind" | "summary" | "tool" | "cat
     case "prompt":
       return { text: "picked up a task", glyph, tone: "plain" };
     case "idle":
-      return { text: "went idle", glyph, tone: "muted" };
+      return { text: s || "went idle", glyph, tone: "muted" };
     default:
       return null;
   }

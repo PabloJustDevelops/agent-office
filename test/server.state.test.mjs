@@ -133,6 +133,39 @@ test("a worker waiting on its human stays waiting until it goes home", () => {
   assert.equal(seen.at(-1).kind, "session_end");
 });
 
+test("a session waiting while its interns work is supervising, then needs its human", () => {
+  const { state, seen, ev, advance } = office();
+  state.ingest(ev({ kind: "session_start" }));
+  state.ingest(ev({ workerId: "a1", parentId: "s1", kind: "subagent_start", role: "Explore" }));
+  state.ingest(ev({ workerId: "a1", parentId: "s1", kind: "tool_start", tool: "Read", category: "read" }));
+  state.ingest(ev({ kind: "waiting" }));
+  assert.equal(seen.at(-1).kind, "idle");
+  assert.equal(seen.at(-1).summary, "supervising 1 intern");
+  assert.equal(state.sessions()[0].status, "idle");
+  // the boss stays while the intern works, however long
+  for (let i = 0; i < 30; i++) {
+    advance(60_000);
+    state.ingest(ev({ workerId: "a1", parentId: "s1", kind: "tool_start", tool: "Read", category: "read" }));
+  }
+  assert.equal(state.sessions().length, 1, "a boss does not go home while the interns work");
+  state.ingest(ev({ workerId: "a1", parentId: "s1", kind: "subagent_end" }));
+  advance(1_000);
+  assert.equal(seen.filter((e) => e.workerId === "s1").at(-1).kind, "waiting");
+});
+
+test("interns showing up after the turn ended turn waiting into supervising", () => {
+  const { state, seen, ev } = office();
+  state.ingest(ev({ kind: "session_start" }));
+  state.ingest(ev({ kind: "waiting" }));
+  assert.equal(seen.at(-1).kind, "waiting");
+  state.ingest(ev({ workerId: "a1", parentId: "s1", kind: "subagent_start", role: "general-purpose" }));
+  const boss = seen.filter((e) => e.workerId === "s1").at(-1);
+  assert.equal(boss.kind, "idle");
+  assert.match(boss.summary, /^supervising/);
+  state.ingest(ev({ kind: "prompt" }));
+  assert.equal(state.sessions()[0].status, "prompt", "new activity clears the held wait");
+});
+
 test("session_end after GONE_MS removes the worker and its interns", () => {
   const { state, seen, ev, advance } = office();
   state.ingest(ev({ kind: "session_start" }));

@@ -44,6 +44,11 @@ const ID_MAX = 200;
 const CATEGORIES = new Set<ToolCategory>([
   "read", "edit", "bash", "search", "web", "agent", "todo", "mcp", "other",
 ]);
+/**
+ * An intern counts as at work for this long after its last line. A session whose
+ * turn ended while its interns work is supervising them, not waiting on its human.
+ */
+const SUPERVISE_MS = 5 * 60_000;
 /** Events that only describe an existing worker; never create one. */
 const ENDINGS = new Set<EventKind>(["session_end", "subagent_end", "idle"]);
 
@@ -68,6 +73,8 @@ interface Worker {
   lastActive: number;
   /** Set by subagent_end: drop the intern from the map at this time. */
   removeAt?: number;
+  /** Its turn ended while interns worked: it needs its human once they are done. */
+  heldWait?: boolean;
 }
 
 export class OfficeState {
@@ -100,7 +107,7 @@ export class OfficeState {
 
   /** Fold one event in. Returns the published event, or null if it was dropped. */
   ingest(raw: RawEvent): OfficeEvent | null {
-    const e = this.sanitize(raw);
+    let e = this.sanitize(raw);
     if (!e) return null;
     const now = this.now();
     let w = this.workers.get(e.workerId);
@@ -129,8 +136,34 @@ export class OfficeState {
     }
 
     if (e.kind === "session_end") return this.remove(w, e);
+    if (!e.parentId && e.kind !== "idle") w.heldWait = undefined;
+    if (!e.parentId && e.kind === "waiting" && this.busyInterns(w, now)) e = this.supervise(w, e.ts, now);
     this.fold(w, e, now);
-    return this.publish(e);
+    const out = this.publish(e);
+    // Interns that show up after their boss's turn ended turn the waiting into supervising.
+    const boss = e.parentId ? this.workers.get(e.parentId) : undefined;
+    if (boss && boss.state.status === "waiting" && boss.removeAt === undefined && this.busyInterns(boss, now)) {
+      const held = this.supervise(boss, e.ts, now);
+      this.fold(boss, held, now);
+      this.publish(held);
+    }
+    return out;
+  }
+
+  /** Interns of this session that are still at work. */
+  private busyInterns(w: Worker, now: number): number {
+    let n = 0;
+    for (const c of this.workers.values()) {
+      if (c.state.parentId === w.state.workerId && c.removeAt === undefined && now - c.lastActive < SUPERVISE_MS) n++;
+    }
+    return n;
+  }
+
+  /** The boss leans back and watches; the waiting is held until the interns are done. */
+  private supervise(w: Worker, ts: string, now: number): RawEvent {
+    w.heldWait = true;
+    const n = this.busyInterns(w, now);
+    return { ...this.base(w, ts), kind: "idle", summary: `supervising ${n} intern${n === 1 ? "" : "s"}` };
   }
 
   /** Emit idle / session_end for workers that went quiet. Called every second by start(). */
@@ -144,7 +177,16 @@ export class OfficeState {
       }
       const quiet = now - w.lastActive;
       const ts = new Date(now).toISOString();
-      if (quiet >= this.goneMs) {
+      const supervising = !w.state.parentId && this.busyInterns(w, now) > 0;
+      if (w.heldWait && !supervising) {
+        // The interns are done and nothing moved since: now it is the human's turn.
+        w.heldWait = undefined;
+        const e: RawEvent = { ...this.base(w, ts), kind: "waiting" };
+        this.fold(w, e, now);
+        this.publish(e);
+        continue;
+      }
+      if (quiet >= this.goneMs && !supervising) {
         this.remove(w, { ...this.base(w, ts), kind: w.state.parentId ? "subagent_end" : "session_end" });
       } else if (quiet >= this.idleMs && w.state.status !== "idle" && w.state.status !== "waiting") {
         // A worker waiting on its human still needs them however long it waits; it only goes home.
