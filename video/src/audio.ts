@@ -114,7 +114,7 @@ export async function synth(cues: Cue[], total: number): Promise<string> {
   };
 
   // the bed: a pulse on every beat while the office is on screen, a hat on the off-beat
-  for (const c of cues.filter((c) => c.kind === "bed")) {
+  for (const c of cues.filter((c) => c.kind === "bed" && (c.level ?? 1) > 0)) {
     const t0 = c.t, t1 = c.t + (c.dur ?? 0);
     const lvl = c.level ?? 1;
     const first = Math.ceil(t0 / (60 / BPM) - 1e-6);

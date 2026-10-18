@@ -15,12 +15,13 @@ export const full = (e: Engine): UiView => ({ cx: e.app.w / 2, cy: e.app.h / 2, 
 
 export function place(e: Engine, v: UiView) {
   const APP = e.app;
-  // keep the app covering the whole frame
-  const s = Math.max(v.s, e.W / APP.w, e.H / APP.h);
+  // keep the app covering the frame above the band
+  const RH = e.regionH;
+  const s = Math.max(v.s, e.W / APP.w, RH / APP.h);
   let tx = e.W / 2 - v.cx * s;
-  let ty = e.H / 2 - v.cy * s;
+  let ty = RH / 2 - v.cy * s;
   tx = clamp(tx, e.W - APP.w * s, 0);
-  ty = clamp(ty, e.H - APP.h * s, 0);
+  ty = clamp(ty, RH - APP.h * s, 0);
   e.appEl.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) scale(${s.toFixed(4)})`;
   e.mem.ui = { tx, ty, s };
 }
@@ -98,7 +99,7 @@ export function ripple(g: CanvasRenderingContext2D, x: number, y: number, k: num
 }
 
 /** Dim everything but `r`. */
-function spotlight(g: CanvasRenderingContext2D, W: number, H: number, r: { x: number; y: number; w: number; h: number } | null, k: number) {
+export function spotlight(g: CanvasRenderingContext2D, W: number, H: number, r: { x: number; y: number; w: number; h: number } | null, k: number) {
   if (!r || k <= 0) return;
   const pad = 10;
   g.save();
@@ -115,26 +116,28 @@ function spotlight(g: CanvasRenderingContext2D, W: number, H: number, r: { x: nu
 }
 
 /** A keycap with a label beside it, pressed at `at`. */
-export function keycap(g: CanvasRenderingContext2D, key: string, label: string, x: number, y: number, s: number, lt: number, at: number, align: "left" | "center" = "left") {
-  const kk = ease.outBack(ramp(lt, at - 0.25, at - 0.05));
-  const gone = ramp(lt, at + 0.55, at + 0.85);
+export function keycap(g: CanvasRenderingContext2D, key: string, label: string, x: number, y: number, s: number, lt: number, at: number, align: "left" | "center" = "left", hold = 0.55) {
+  const kk = ease.outBack(ramp(lt, at - 0.45, at - 0.2));
+  const gone = ramp(lt, at + hold, at + hold + 0.3);
   if (kk <= 0 || gone >= 1) return;
   const a = clamp(kk, 0, 1) * (1 - gone);
-  const w = 13 * s + 4 * s + textW(label, s);
+  // the cap fits its key: a square for "1", wider for "Enter"
+  const kw = Math.max(13, textW(key, 1) + 8) * s;
+  const w = kw + 4 * s + (label ? textW(label, s) : 0);
   const x0 = Math.round(align === "center" ? x - w / 2 : x);
   const y0 = Math.round(y + (1 - kk) * 3 * s);
-  const down = lt >= at && lt < at + 0.14 ? s : 0;
+  const down = lt >= at && lt < at + 0.16 ? s : 0;
   g.save();
   g.globalAlpha = a;
   g.fillStyle = "#06050b";
-  g.fillRect(x0, y0 + s, 13 * s, 13 * s);
+  g.fillRect(x0, y0 + s, kw, 13 * s);
   g.fillStyle = down ? INK.amber : "#f5f1e8";
-  g.fillRect(x0, y0 + down, 13 * s, 12 * s);
+  g.fillRect(x0, y0 + down, kw, 12 * s);
   g.fillStyle = "#c9c7d8";
-  g.fillRect(x0, y0 + down + 11 * s, 13 * s, s);
+  g.fillRect(x0, y0 + down + 11 * s, kw, s);
   g.restore();
-  px(g, key, x0 + 6.5 * s, y0 + down + 2 * s, s, { align: "center", color: "#0e0d16", shadow: null, alpha: a });
-  px(g, label, x0 + 17 * s, y0 + 3 * s, s, { color: INK.white, alpha: a });
+  px(g, key, x0 + kw / 2, y0 + down + 2 * s, s, { align: "center", color: "#0e0d16", shadow: null, alpha: a });
+  if (label) px(g, label, x0 + kw + 4 * s, y0 + 3 * s, s, { color: INK.white, alpha: a });
 }
 
 function uiCaption(e: Engine, g: CanvasRenderingContext2D, text: string, k: number, accent: string) {

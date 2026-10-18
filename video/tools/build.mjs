@@ -3,7 +3,7 @@
 //
 //   node tools/build.mjs [--work <dir>]
 import { build } from "esbuild";
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -62,6 +62,7 @@ export async function buildVideo(work) {
   await build({ ...common, entryPoints: [join(VIDEO, "src/stage.ts")], outfile: join(out, "stage.js") });
   await build({ ...common, entryPoints: [join(VIDEO, "src/ui/app.ts")], outfile: join(out, "app.js") });
   copyFileSync(join(VIDEO, "src/vt.js"), join(out, "vt.js"));
+  cpSync(join(VIDEO, "src/fonts"), join(out, "fonts"), { recursive: true });
   writeFileSync(join(out, "stage.html"), STAGE_HTML);
   writeFileSync(join(out, "app.html"), APP_HTML);
   return out;

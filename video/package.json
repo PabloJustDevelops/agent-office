@@ -6,6 +6,7 @@
   "scripts": {
     "render": "node tools/render.mjs",
     "render:main": "node tools/render.mjs main",
+    "render:social": "node tools/render.mjs social",
     "render:vertical": "node tools/render.mjs vertical",
     "render:square": "node tools/render.mjs square",
     "readme": "node tools/render.mjs readme readme-gif stills",

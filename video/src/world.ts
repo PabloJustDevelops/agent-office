@@ -251,6 +251,32 @@ export class World {
     }.bind(this));
   }
 
+  /** office_shout, as the agentoffice MCP server delivers it. */
+  shout(name: string, at: number, text: string) {
+    const h = this.hands.get(name)!;
+    this.at(at, function* () {
+      emit(h.c, "shout", { summary: text });
+    });
+  }
+
+  /** office_celebrate: confetti at the desk. */
+  celebrate(name: string, at: number) {
+    const h = this.hands.get(name)!;
+    this.at(at, function* () {
+      emit(h.c, "celebrate");
+    });
+  }
+
+  /** office_flip: the agent flips its own table, in its own words. */
+  selfFlip(name: string, at: number, why: string) {
+    const h = this.hands.get(name)!;
+    this.at(at, function* (this: World) {
+      this.hold(h.id, at + 7_000);
+      this.office.lastFlip = this.sim.now;
+      emit(h.c, "flip", { summary: why });
+    }.bind(this));
+  }
+
   status(name: string, at: number, mood: readonly [string, string]) {
     const h = this.hands.get(name)!;
     this.at(at, function* () {

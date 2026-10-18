@@ -76,3 +76,102 @@ export function script(w: World) {
   w.pass("hero", T.readmeFlip + 9_000);
   w.resume("hero", T.readmeFlip + 11_000);
 }
+
+/** World ms of the tour's beats (the product-tour cuts in tour.ts). */
+export const TT = {
+  arrive: 300,
+  gap: 520,
+  /** reading, typing, searching */
+  poses: 19_400,
+  interns: 26_000,
+  /** a hand goes up: "needs you" */
+  waiting: 37_500,
+  /** the hero's tests fail: the flip's t0 */
+  flip: 49_000,
+  /** the agents talk back over MCP: a shout, confetti, a table flipped on purpose */
+  mcp: 124_600,
+  /** "Edit auth.ts": the label the privacy beat shows */
+  privacy: 129_000,
+};
+
+/** The tour's office. Command Code is the first one out of the lift. */
+export function tourScript(w: World) {
+  const cast: [string, Parameters<World["persona"]>][] = [
+    ["cc", ["commandcode", "portfolio"]],
+    ["hero", ["claude", "api-gateway"]],
+    ["codex", ["codex", "payments-svc"]],
+    ["gemini", ["gemini", "ml-pipeline"]],
+    ["opencode", ["opencode", "docs-site"]],
+    ["cursor", ["cursor", "ascii"]],
+    ["qwen", ["qwen", "data-etl"]],
+    ["droid", ["droid", "auth-svc"]],
+  ];
+  cast.forEach(([name, args], i) => w.hire(name, w.persona(...args), TT.arrive + i * TT.gap, 6_000 + (i % 3) * 900));
+  w.status("hero", 9_000, MOODS[0]!);
+
+  w.pose("gemini", TT.poses - 600, "read", "Read train.py", TT.poses + 4_000);
+  w.pose("cc", TT.poses - 600, "edit", "Edit Hero.tsx", TT.poses + 4_000);
+  w.pose("opencode", TT.poses - 600, "search", "Search *.mdx", TT.poses + 4_000);
+
+  w.interns("hero", TT.interns, ["Explore", "general-purpose", "Plan"], 11_000);
+  w.resume("hero", TT.interns + 17_000);
+
+  w.waiting("codex", TT.waiting, 40_000);
+  w.resume("codex", TT.waiting + 6_000);
+
+  w.flip("hero", TT.flip);
+  w.pass("hero", TT.flip + 9_500);
+  w.resume("hero", TT.flip + 12_000);
+
+  // Over MCP: Command Code shouts and asks for confetti; Gemini flips its own table, in its own words.
+  w.shout("cc", TT.mcp, "shipped v2 🚀");
+  w.celebrate("cc", TT.mcp + 600);
+  w.selfFlip("gemini", TT.mcp + 2_200, "this cache is haunted");
+
+  w.pose("hero", TT.privacy - 400, "edit", "Edit auth.ts", TT.privacy + 6_000);
+}
+
+/** World ms of the product tour's beats, in the order the tour films them. */
+export const TV = {
+  arrive: 300,
+  gap: 520,
+  /** the app opens and the hire starts (after the boot) */
+  app: 8_500,
+  /** the "and also" montage, after the centrepiece */
+  interns: 106_000,
+  waiting: 118_000,
+  flip: 130_000,
+  mcp: 142_000,
+  privacy: 152_000,
+};
+
+/** The tour's office: Command Code first out of the lift; the montage's beats after the centrepiece. */
+export function tourScript2(w: World) {
+  const cast: [string, Parameters<World["persona"]>][] = [
+    ["cc", ["commandcode", "portfolio"]],
+    ["hero", ["claude", "api-gateway"]],
+    ["codex", ["codex", "payments-svc"]],
+    ["gemini", ["gemini", "ml-pipeline"]],
+    ["opencode", ["opencode", "docs-site"]],
+    ["cursor", ["cursor", "ascii"]],
+    ["qwen", ["qwen", "data-etl"]],
+    ["droid", ["droid", "auth-svc"]],
+  ];
+  cast.forEach(([name, args], i) => w.hire(name, w.persona(...args), TV.arrive + i * TV.gap, 6_000 + (i % 3) * 900));
+  w.status("hero", 9_000, MOODS[0]!);
+
+  w.interns("hero", TV.interns, ["Explore", "general-purpose", "Plan"], 11_000);
+  w.resume("hero", TV.interns + 17_000);
+
+  w.waiting("codex", TV.waiting, 30_000);
+  w.resume("codex", TV.waiting + 8_000);
+
+  w.flip("hero", TV.flip);
+  w.pass("hero", TV.flip + 9_500);
+  w.resume("hero", TV.flip + 12_000);
+
+  w.shout("cc", TV.mcp, "shipped v2 🚀");
+  w.celebrate("cc", TV.mcp + 900);
+
+  w.pose("hero", TV.privacy - 400, "edit", "Edit auth.ts", TV.privacy + 6_000);
+}

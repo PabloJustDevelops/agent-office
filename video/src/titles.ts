@@ -239,18 +239,24 @@ export function commandLine(g: CanvasRenderingContext2D, cx: number, cy: number,
 const AGENTS: AgentKind[] = ["claude", "codex", "commandcode", "opencode", "cursor", "droid", "qwen", "gemini"];
 const HOSTS = ["daytona", "vercel", "railway"] as const;
 
-export function endCard(g: CanvasRenderingContext2D, W: number, H: number, t: number, u: number) {
+export function endCard(g: CanvasRenderingContext2D, W: number, H: number, t: number, u: number, o: { tagline?: string; agents?: AgentKind[]; tagScale?: number; tagColor?: string } = {}) {
+  const agents = o.agents ?? AGENTS;
   const tall = H > W * 1.2;
   const narrow = W < 1300;
   const cx = W / 2;
   const big = Math.round((tall ? 11 : narrow ? 10 : 13) * u);
   const mid = Math.round((tall ? 7 : narrow ? 6 : 8) * u);
-  const small = Math.max(2, Math.round((tall ? 5 : narrow ? 4 : 4.5) * u));
+  const small = Math.max(2, Math.round((tall ? 6 : narrow ? 5 : 5.5) * u));
   const ls = Math.max(2, Math.round((tall ? 5 : 4) * u));
-  const tag = "your coding agents, working in a pixel office";
-  const tagLines = textW(tag, small) < W * 0.92 ? [tag] : ["your coding agents,", "working in a pixel office"];
+  const tagS = o.tagScale ? Math.max(2, Math.round(o.tagScale * u)) : small;
+  const tag = o.tagline ?? "your coding agents, working in a pixel office";
+  const words = tag.split(" ");
+  const half = Math.ceil(words.length / 2);
+  const tagLines = textW(tag, tagS) < W * 0.92 ? [tag] : [words.slice(0, half).join(" "), words.slice(half).join(" ")];
+  let cs = Math.round((tall ? 7 : narrow ? 6 : 8) * u);
+  while (cs > 3 && textW(`$ ${COMMAND}`, cs) + 8 * cs > W * 0.92) cs--;
   // stack it all, then centre the stack
-  const hTitle = 8 * big, hTag = tagLines.length * 11 * small, hCmd = 8 * mid, hRepo = 8 * small, hLogo = 9 * ls;
+  const hTitle = 8 * big, hTag = tagLines.length * 11 * tagS, hCmd = 8 * mid, hRepo = 8 * small, hLogo = 9 * ls;
   const gaps = [3 * big, 5 * mid, 6 * mid, 5 * small, 10 * small];
   const total = hTitle + hTag + hCmd + hRepo * 2 + hLogo + gaps.reduce((a, b) => a + b, 0);
   let y = Math.round((H - total) / 2 - (tall ? H * 0.03 : 0));
@@ -263,23 +269,25 @@ export function endCard(g: CanvasRenderingContext2D, W: number, H: number, t: nu
   brandMark(g, x0, y - Math.round(markS * 0.5) + Math.round((1 - kT) * 6) * markS, markS, kT);
   dropIn(g, "agent office", x0 + 12 * markS + 5 * big, y, big, t - 0.08, { color: INK.white, stagger: 0.025, depth: 1 });
   y += hTitle + gaps[0]!;
-  tagLines.forEach((l, i) => px(g, l, cx, y + i * 11 * small, small, { align: "center", color: INK.dim, alpha: ease.outCubic(ramp(t, 0.5, 1.0)), reveal: ease.outCubic(ramp(t, 0.45 + i * 0.1, 1.1 + i * 0.1)) }));
+  tagLines.forEach((l, i) => px(g, l, cx, y + i * 11 * tagS, tagS, { align: "center", color: o.tagColor ?? INK.dim, alpha: ease.outCubic(ramp(t, 0.5, 1.0)), reveal: ease.outCubic(ramp(t, 0.45 + i * 0.1, 1.1 + i * 0.1)) }));
   y += hTag + gaps[1]!;
   // the command, in neon, with the cursor from the opening
   const typed = ramp(t, 0.7, 1.5) * COMMAND.length;
-  commandLine(g, cx, y + 4 * mid, mid, typed, Math.floor(t * 2.2) % 2 === 0 || t < 1.6, ease.outCubic(ramp(t, 1.4, 2.0)));
+  commandLine(g, cx, y + 4 * mid, Math.min(mid, cs), typed, Math.floor(t * 2.2) % 2 === 0 || t < 1.6, ease.outCubic(ramp(t, 1.4, 2.0)));
   y += hCmd + gaps[2]!;
   // the repository and the license
-  px(g, "github.com/bas3line/agent-office", cx, y, small, { align: "center", color: INK.white, alpha: ease.outCubic(ramp(t, 1.5, 2.0)) });
+  let rs = small;
+  while (rs > 2 && textW("github.com/bas3line/agent-office", rs) > W * 0.9) rs--;
+  px(g, "github.com/bas3line/agent-office", cx, y, rs, { align: "center", color: INK.white, alpha: ease.outCubic(ramp(t, 1.5, 2.0)) });
   y += hRepo + gaps[3]!;
-  px(g, "MIT · no required dependencies", cx, y, small, { align: "center", color: INK.dim, alpha: ease.outCubic(ramp(t, 1.75, 2.25)) });
+  px(g, "MIT · no required dependencies", cx, y, rs, { align: "center", color: INK.dim, alpha: ease.outCubic(ramp(t, 1.75, 2.25)) });
   y += hRepo + gaps[4]!;
   // every agent and platform it watches, in their own colours
   const cell = 9;
   const step = cell * ls + 7 * ls;
-  const n = AGENTS.length + HOSTS.length;
+  const n = agents.length + HOSTS.length;
   let lx = Math.round(cx - (n * step + 10 * ls - 7 * ls) / 2);
-  AGENTS.forEach((a, i) => {
+  agents.forEach((a, i) => {
     const k = ease.outBack(ramp(t, 2.0 + i * 0.05, 2.35 + i * 0.05));
     if (k > 0) logo(g, a, lx, y + Math.round((1 - k) * 4) * ls, cell, ls, BRAND[a].color, clamp(k, 0, 1));
     lx += step;

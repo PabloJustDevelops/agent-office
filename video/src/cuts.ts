@@ -8,6 +8,7 @@ import { INK } from "./type.ts";
 import { asciiCrt, boot, cloud, command, end, flip, hook, interns, pose, setBack, supervise } from "./shots.ts";
 import { uiApprove, uiHire, uiNeedsYou } from "./uishots.ts";
 import { readme, readmeGif, stillsCut } from "./readme.ts";
+import { TOUR } from "./tour.ts";
 
 const main: Cut = {
   name: "main",
@@ -49,4 +50,12 @@ const short = (name: string, w: number, h: number): Cut => ({
   ],
 });
 
-export const CUTS: Record<string, Cut> = { main, vertical: short("vertical", 1080, 1920), square: short("square", 1080, 1080), readme, "readme-gif": readmeGif, stills: stillsCut };
+/** The first launch cut (feature-light); the product tour in tour.ts replaces it as "main". */
+export const CUTS: Record<string, Cut> = {
+  ...TOUR,
+  "launch-v1": main,
+  "launch-v1-vertical": short("vertical", 1080, 1920),
+  readme,
+  "readme-gif": readmeGif,
+  stills: stillsCut,
+};

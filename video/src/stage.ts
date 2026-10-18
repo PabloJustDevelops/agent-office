@@ -19,6 +19,8 @@ import { script } from "./script.ts";
 import { CUTS } from "./cuts.ts";
 import { Bridge } from "./ui/bridge.ts";
 import { synth, type Cue } from "./audio.ts";
+import { bandGeo, drawBand, loadFonts, type Feature } from "./band.ts";
+import { loadSponsor } from "./sponsor.ts";
 
 declare const __vt: {
   now: number;
@@ -45,6 +47,8 @@ export interface Shot {
   ui?: boolean;
   /** Level of the pulse under this shot (default 1 for office and UI shots, 0 otherwise). */
   bed?: number;
+  /** The feature this shot shows: the band names it, and the shot is framed above the band. */
+  feature?: Feature;
   enter?(e: Engine): void | Promise<void>;
   /** Before the office renders: camera, triggers. */
   update?(e: Engine, lt: number): void | Promise<void>;
@@ -66,6 +70,8 @@ export interface Cut {
   stills?: { t: number; name: string }[];
   /** Also write a GIF from every `every`-th frame. */
   gif?: { every: number };
+  /** What happens in the office (default: script.ts). */
+  script?: (w: World) => void;
 }
 
 const q = new URLSearchParams(location.search);
@@ -128,8 +134,14 @@ export class Engine {
   /** Scratch that outlives a shot (a later shot reading when an earlier one clicked). */
   readonly mem: Record<string, unknown> = {};
 
+  /** The band's height for this frame shape. */
+  readonly bandH = bandGeo(W, H).h;
+  private bandSince = -1;
+  private featureKey = "";
+  private featureSince = 0;
+
   constructor() {
-    script(this.world);
+    (cut.script ?? script)(this.world);
     this.world.on((e) => {
       this.scene?.apply(e);
       this.shadow.apply(e);
@@ -193,6 +205,12 @@ export class Engine {
     return this.world.hands.get(name)!.id;
   }
 
+  /** A worker the shadow crew knows, by a test (hired agents have no name in the world's cast). */
+  findWorker(test: (w: { id: string; agent: string; project: string; host?: { kind: string }; intern: boolean }) => boolean) {
+    for (const w of this.shadow.workers.values()) if (!w.gone && !w.leaving && test(w)) return { x: w.seat.x, y: w.seat.y, deskX: w.seat.deskX, deskY: w.seat.deskY, id: w.id };
+    return null;
+  }
+
   /** A worker's feet, in world px (the scene's own position). */
   at(name: string): { x: number; y: number } {
     const p = this.scene?.workerAt(this.id(name));
@@ -210,15 +228,22 @@ export class Engine {
 
   /** The zoom (device px per art px) that frames `r` with `pad` art px around it. */
   fitZoom(r: Rect, pad = 10) {
-    return Math.min(W / (r.w + pad * 2), H / (r.h + pad * 2));
+    return Math.min(W / (r.w + pad * 2), this.regionH / (r.h + pad * 2));
   }
 
   fit(r: Rect, pad = 10): View {
     return { x: r.x + r.w / 2, y: r.y + r.h / 2, z: this.fitZoom(r, pad) };
   }
 
+  /** The frame's height above the band (all of it when the shot has no feature). */
+  get regionH() {
+    return this.shot?.feature ? H - this.bandH : H;
+  }
+
+  /** Put the camera on `v`, centred in the part of the frame above the band. */
   view(v: View) {
-    this.scene?.view(v.x, v.y, v.z, true);
+    const off = this.shot?.feature ? this.bandH / 2 / v.z : 0;
+    this.scene?.view(v.x, v.y + off, v.z, true);
   }
 
   cue(kind: Cue["kind"], extra: Partial<Cue> = {}) {
@@ -265,7 +290,9 @@ export class Engine {
   private index = 0;
   private bounds: { shot: Shot; t0: number; t1: number }[] = [];
 
-  init() {
+  async init() {
+    await loadFonts();
+    await loadSponsor();
     let t = 0;
     for (const shot of cut.shots) {
       this.bounds.push({ shot, t0: t, t1: t + shot.dur });
@@ -309,10 +336,29 @@ export class Engine {
     og.setTransform(1, 0, 0, 1, 0, 0);
     og.clearRect(0, 0, W, H);
     b.shot.drawOver?.(this, og, lt);
-    appEl.style.display = b.shot.ui ? "block" : "none";
+    this.band(og);
+    // hidden, not removed from layout: the app's office keeps its size and its last frame between UI shots
+    appEl.style.visibility = b.shot.ui ? "visible" : "hidden";
     __vt.syncAnimations(document);
     if (this.bridge?.doc) __vt.syncAnimations(this.bridge.doc);
     return { shot: b.shot.name, world: __vt.now, clip: this.clip };
+  }
+
+  /** The feature band over everything, sliding in with the first feature and out after the last. */
+  private band(c: CanvasRenderingContext2D) {
+    const f = this.shot?.feature;
+    if (!f) {
+      this.bandSince = -1;
+      this.featureKey = "";
+      return;
+    }
+    if (this.bandSince < 0) this.bandSince = this.t;
+    if (f.title !== this.featureKey) {
+      this.featureKey = f.title;
+      this.featureSince = this.t;
+      this.cue("tick", { vol: 0.6 });
+    }
+    drawBand(c, W, H, f, Math.min(1, (this.t - this.bandSince) / 0.3), this.t - this.featureSince);
   }
 
   async audio(): Promise<string> {

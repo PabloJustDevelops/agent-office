@@ -36,7 +36,7 @@ const REVIEW = flag("review") ? Number(flag("review")) : 0;
 const STILLS = (flag("stills") ?? "").split(",").filter(Boolean).map(Number);
 const FROM = Number(flag("from", 0));
 const TO = Number(flag("to", Infinity));
-const BITRATE = { main: 16_000_000, vertical: 14_000_000, square: 12_000_000, readme: 3_000_000 };
+const BITRATE = { main: 16_000_000, social: 16_000_000, vertical: 14_000_000, square: 12_000_000, readme: 3_000_000 };
 /**
  * More encodes of a cut from the same frames: a lighter main cut for X, and the website's tour
  * (1280x720, 30 fps, with a JPEG poster at `poster` seconds).
@@ -44,7 +44,7 @@ const BITRATE = { main: 16_000_000, vertical: 14_000_000, square: 12_000_000, re
 const EXTRA = {
   main: [
     { file: "agent-office-main-x", bitrate: 10_000_000 },
-    { file: "tour", w: 1280, h: 720, fps: 30, bitrate: 2_750_000, poster: 21.0 },
+    { file: "tour", w: 1280, h: 720, fps: 30, bitrate: 2_750_000, poster: 79.9 },
   ],
 };
 /** Output names; the README's files keep the names the README uses. */
@@ -84,7 +84,7 @@ function chrome() {
   return found;
 }
 
-const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png" };
+const TYPES = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2" };
 async function serve(dir) {
   const srv = createServer((req, res) => {
     const p = join(dir, decodeURIComponent(new URL(req.url, "http://x").pathname));

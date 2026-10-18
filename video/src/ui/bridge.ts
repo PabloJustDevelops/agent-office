@@ -28,7 +28,7 @@ export class Bridge {
   doc: Document | null = null;
   win: Window | null = null;
   private sources = new Set<Source>();
-  private mock: { handle(req: unknown, res: unknown, url: URL): Promise<boolean> };
+  private mock: { handle(req: unknown, res: unknown, url: URL): Promise<boolean>; hire(req: unknown): { id: string } };
 
   constructor(readonly world: World) {
     this.mock = createControlMock({
@@ -41,6 +41,11 @@ export class Bridge {
     });
     world.on((e) => this.broadcast("office", JSON.stringify(e)));
     (window as unknown as { __bridge: Bridge }).__bridge = this;
+  }
+
+  /** Hire an agent the way the page's Hire button does, without the dialog (sessions that are already running when a shot opens). */
+  hire(req: Record<string, unknown>) {
+    return this.mock.hire(req);
   }
 
   private broadcast(name: string, data: string) {

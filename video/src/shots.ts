@@ -20,7 +20,7 @@ export const mixView = (a: View, b: View, k: number): View => ({
 
 /** Keep the frame on the floor plan: no void at the edges unless the room is smaller than the frame. */
 export function inside(e: Engine, v: View, r: Rect = e.geo().room, pad = -2): View {
-  const hw = e.W / 2 / v.z, hh = e.H / 2 / v.z;
+  const hw = e.W / 2 / v.z, hh = e.regionH / 2 / v.z;
   const x = r.w + pad * 2 > hw * 2 ? clamp(v.x, r.x - pad + hw, r.x + r.w + pad - hw) : r.x + r.w / 2;
   const y = r.h + pad * 2 > hh * 2 ? clamp(v.y, r.y - pad + hh, r.y + r.h + pad - hh) : r.y + r.h / 2;
   return { x, y, z: v.z };
@@ -95,7 +95,7 @@ const at = (e: Engine, lt: number, t: number) => Math.abs(lt - t) < 0.5 / e.fps;
 /* ------------------------------------------------------------ shots */
 
 /** "your agents are working." / "where?" over a wall of scrolling terminals. */
-export function hook(dur: number, o: { line1At?: number; line2At?: number; outAt?: number } = {}): Shot {
+export function hook(dur: number, o: { line1At?: number; line2At?: number; outAt?: number; line1?: string; line2?: string } = {}): Shot {
   const l1 = o.line1At ?? 0.25, l2 = o.line2At ?? 1.75, out = o.outAt ?? dur - 0.5;
   return {
     name: "hook",
@@ -113,20 +113,41 @@ export function hook(dur: number, o: { line1At?: number; line2At?: number; outAt
       const away = ramp(lt, out, dur);
       terminals(g, e.W, e.H, lt + 3, away, 0.15 + 0.55 * ramp(lt, l2 - 0.1, l2 + 0.15) * (1 - away));
       // line one types on, then is knocked out by line two
-      const line1 = "your agents are working.";
-      let s1 = Math.round((tall(e) ? 7 : 9) * u);
-      while (textW(line1, s1) > e.W * 0.9) s1--;
+      const line1 = o.line1 ?? "your agents are working.";
+      // on a tall frame a long line breaks in two rather than shrinking
+      const split = (t: string) => {
+        const w = t.split(" ");
+        const h = Math.ceil(w.length / 2);
+        return tall(e) && t.length > 14 ? [w.slice(0, h).join(" "), w.slice(h).join(" ")] : [t];
+      };
+      const l1s = split(line1);
+      let s1 = Math.round((tall(e) ? 9 : 9) * u);
+      while (Math.max(...l1s.map((t) => textW(t, s1))) > e.W * 0.86) s1--;
       const k1 = ramp(lt, l1, l1 + 0.9) * (1 - ramp(lt, l2 - 0.04, l2));
-      if (k1 > 0) caption(g, line1, e.W / 2, Math.round(e.H / 2 - 6 * s1), s1, ease.outCubic(k1));
-      // "where?" slams in
+      if (k1 > 0) l1s.forEach((t, i) => caption(g, t, e.W / 2, Math.round(e.H / 2 - 6 * s1 + (i - (l1s.length - 1) / 2) * 17 * s1), s1, ease.outCubic(ramp(k1, i * 0.15, 1))));
+      // line two slams in
+      const line2 = o.line2 ?? "where?";
+      const l2s = split(line2);
       const k2 = ramp(lt, l2, l2 + 0.2);
-      if (k2 > 0 && away < 0.95) {
-        let s2 = Math.round((tall(e) ? 26 : 26) * u);
-        while (textW("where?", s2) > e.W * 0.86) s2--;
+      if (k2 > 0 && away < 0.95 && l2s.length > 1) {
+        // two lines on a tall frame
+        let s2 = Math.round(16 * u);
+        while (Math.max(...l2s.map((t) => textW(t, s2))) > e.W * 0.86) s2--;
+        const land = ease.outBack(k2);
+        g.fillStyle = `rgba(6,5,11,${0.7 * clamp(k2 * 2, 0, 1) * (1 - ramp(away, 0.4, 0.95))})`;
+        g.fillRect(0, Math.round(e.H / 2 - 14 * s2), e.W, 26 * s2);
+        l2s.forEach((t, i) => px(g, t, e.W / 2, Math.round(e.H / 2 - 10 * s2 + i * 11 * s2 - Math.round((1 - land) * 3) * s2), s2, { align: "center", color: INK.claude, depth: 1, alpha: 1 - ramp(away, 0.4, 0.95) }));
+      } else if (k2 > 0 && away < 0.95) {
+        let s2 = Math.round((line2.length > 8 ? (tall(e) ? 12 : 14) : 26) * u);
+        while (textW(line2, s2) > e.W * 0.86) s2--;
         const land = ease.outBack(k2);
         const yy = Math.round(e.H / 2 - 4 * s2 - Math.round((1 - land) * 3) * s2);
         const jit = lt - l2 < 0.25 ? Math.round((noise(Math.floor(lt * 60), 3) - 0.5) * 2) * Math.round(s2 / 3) : 0;
-        px(g, "where?", e.W / 2 + jit, yy, s2, { align: "center", color: INK.claude, depth: 1, alpha: 1 - ramp(away, 0.4, 0.95) });
+        if (line2.length > 8) {
+          g.fillStyle = `rgba(6,5,11,${0.7 * clamp(k2 * 2, 0, 1) * (1 - ramp(away, 0.4, 0.95))})`;
+          g.fillRect(0, yy - 4 * s2, e.W, 16 * s2);
+        }
+        px(g, line2, e.W / 2 + jit, yy, s2, { align: "center", color: INK.claude, depth: 1, alpha: 1 - ramp(away, 0.4, 0.95) });
       }
       glitch(g, e.W, e.H, Math.max(0, 1 - Math.abs(lt - l2 - 0.03) / 0.14) * 0.9 + away * 0.5, Math.floor(lt * 30), "#d97757");
       vignette(g, e.W, e.H, 0.55);
@@ -243,6 +264,7 @@ export function pose(dur: number, o: { at?: number; who: string; word: string; c
     },
     draw(e, g, lt) {
       vignette(g, e.W, e.H, 0.4);
+      if (!o.word) return;
       const right = !!e.s.right;
       if (tall(e)) {
         const grad = g.createLinearGradient(0, 0, 0, e.H * 0.34);
@@ -314,14 +336,15 @@ const flipSide = (e: Engine) => (hash(e.id("hero")) & 2 ? 1 : -1);
  * The money shot. `$ pnpm test` runs and fails: hit-stop, the camera punches in, bars slam in,
  * the desk goes over in slow motion, (╯°□°)╯︵ ┻━┻. `impact` is the shot-local second the desk leaves the floor.
  */
-export function flip(dur: number, o: { impact: number; slow?: number }): Shot {
+export function flip(dur: number, o: { impact: number; slow?: number; flipAt?: number; band?: boolean }): Shot {
   const impact = o.impact;
   const slowTo = impact + (o.slow ?? 1.9);
+  const flipAt = o.flipAt ?? T.flip;
   return {
     name: "flip",
     dur,
     bed: 0,
-    at: T.flip + 600 - impact * 1000,
+    at: flipAt + 600 - impact * 1000,
     office: true,
     speed: (lt) => (lt < impact ? 1 : lt < slowTo ? lerp(0.18, 1, ease.inCubic(ramp(lt, impact, slowTo))) : 1),
     update(e, lt) {
@@ -356,7 +379,7 @@ export function flip(dur: number, o: { impact: number; slow?: number }): Shot {
         g.fillRect(0, 0, e.W, e.H);
       }
       vignette(g, e.W, e.H, lt < impact ? 0.3 + 0.35 * ramp(lt, 0, impact) : 0.45, lt < impact ? "0,0,0" : "70,0,0");
-      const kb = ease.outExpo(ramp(lt, impact - 0.02, impact + 0.16));
+      const kb = o.band ? 0 : ease.outExpo(ramp(lt, impact - 0.02, impact + 0.16));
       const h = bars(e, g, kb);
       if (h > 10) {
         // top: what failed; bottom: the kaomoji, as big as the bar takes
@@ -375,11 +398,11 @@ export function flip(dur: number, o: { impact: number; slow?: number }): Shot {
 }
 
 /** Later: the desk is set back, ┬─┬ノ( º _ºノ). The bars stay a moment, then open. */
-export function setBack(dur: number, o: { text?: string; from?: number } = {}): Shot {
+export function setBack(dur: number, o: { text?: string; from?: number; flipAt?: number } = {}): Shot {
   return {
     name: "set-back",
     dur,
-    at: T.flip + (o.from ?? 3_700),
+    at: (o.flipAt ?? T.flip) + (o.from ?? 3_700),
     office: true,
     update(e, lt) {
       const z = tall(e) ? 7 : 7;

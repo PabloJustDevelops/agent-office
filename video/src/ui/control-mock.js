@@ -5,6 +5,11 @@
  * the folders are the demo cast's fictional projects under ~/code, the ssh
  * hosts are made up, the chat plays the video's one turn (chat-scripts.js),
  * and an allowed test command reports its pass to the office, as tool() does.
+ * Added for the video, in the shapes of src/shared/control.ts: Settings,
+ * Logins (Claude connected), GET /setup (what "Your setup" lists, names only),
+ * a sandbox hire that brings the setup along, with step times close to a real
+ * sandbox's (the video time-lapses them), and new sandboxes named
+ * "agentoffice-…" as the real office names them.
  *
  * Dev-only, in-memory control plane for the dev server (--scenario control):
  * every endpoint in src/shared/control.ts, no real agents, no real keys.
@@ -26,9 +31,20 @@ const iso = (dt = 0) => new Date(Date.now() + dt).toISOString();
 
 const FS = {
   [HOME]: ["code", "Desktop", "Documents", "Downloads"],
-  [`${HOME}/code`]: ["cli-kit", "api-gateway", "payments-svc", "portfolio"],
+  [`${HOME}/code`]: ["search-api", "cli-kit", "api-gateway", "payments-svc", "portfolio"],
 };
-const GIT = new Set([`${HOME}/code/cli-kit`, `${HOME}/code/api-gateway`, `${HOME}/code/payments-svc`, `${HOME}/code/portfolio`]);
+/** What the setup inventory reports for a project folder: files, bytes, .git bytes. */
+const FS_PROJECTS = {
+  [`${HOME}/code/search-api`]: { files: 264, bytes: 3_640_000, git: 2_210_000 },
+  [`${HOME}/code/cli-kit`]: { files: 212, bytes: 3_250_000, git: 1_870_000 },
+  [`${HOME}/code/api-gateway`]: { files: 486, bytes: 6_900_000, git: 4_100_000 },
+  [`${HOME}/code/payments-svc`]: { files: 333, bytes: 5_100_000, git: 2_600_000 },
+  [`${HOME}/code/portfolio`]: { files: 128, bytes: 2_400_000, git: 1_100_000 },
+};
+const GIT = new Set([`${HOME}/code/search-api`, `${HOME}/code/cli-kit`, `${HOME}/code/api-gateway`, `${HOME}/code/payments-svc`, `${HOME}/code/portfolio`]);
+
+/** The demo cast's models (src/demo/cast.ts MODELS), first of each. */
+const MODELS_OF = { claude: "claude-opus-5-5", codex: "gpt-5.6-sol", commandcode: "deepseek/deepseek-v4-pro", opencode: "anthropic/claude-sonnet-5-5", droid: "claude-opus-5-5", gemini: "gemini-3-pro", qwen: "qwen3.5-coder-plus", cursor: "composer-2" };
 
 const NAMES = { claude: "Claude Code", codex: "Codex", opencode: "opencode", commandcode: "Command Code", droid: "Droid", gemini: "Gemini CLI", qwen: "Qwen Code", cursor: "Cursor" };
 
@@ -36,8 +52,11 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
   const keys = [
     { name: "ANTHROPIC_API_KEY", agents: ["claude"], preview: "sk-ant-…9f2c", addedAt: iso(-86_400_000 * 3) },
     { name: "OPENAI_API_KEY", agents: ["codex", "opencode"], preview: "sk-pro…41d0", addedAt: iso(-86_400_000) },
+    { name: "COMMAND_CODE_API_KEY", agents: ["commandcode"], preview: "cc_live…5d2a", addedAt: iso(-86_400_000 * 6) },
     { name: "DAYTONA_API_KEY", agents: [], preview: "dtn_3a…77b1", addedAt: iso(-3_600_000 * 5) },
+    { name: "CLAUDE_CODE_OAUTH_TOKEN", agents: ["claude"], preview: "sk-ant…7c1e", addedAt: iso(-86_400_000 * 3), expiresAt: iso(86_400_000 * 362) },
   ];
+  const logins = [{ agent: "claude", state: "connected", connectedAt: iso(-86_400_000 * 3), expiresAt: iso(86_400_000 * 362) }];
   const providers = [
     {
       kind: "daytona", name: "Daytona", ready: true, via: "DAYTONA_API_KEY", canCreate: true,
@@ -47,25 +66,80 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
       ],
     },
     { kind: "vercel", name: "Vercel Sandbox", ready: true, via: "sandbox CLI login", canCreate: true, sandboxes: [] },
-    { kind: "railway", name: "Railway", ready: false, canCreate: false, sandboxes: [] },
+    { kind: "railway", name: "Railway", ready: true, via: "railway CLI login", canCreate: true, sandboxes: [] },
     { kind: "ssh", name: "ssh", ready: true, canCreate: false, sandboxes: [], hosts: ["gpu-box", "build"] },
   ];
   const agents = [
     { agent: "claude", installed: true, version: "2.1.30", modes: ["terminal", "chat"], keyNames: ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] },
     { agent: "codex", installed: true, version: "0.98.0", modes: ["terminal", "chat"], keyNames: ["OPENAI_API_KEY"] },
     { agent: "opencode", installed: true, version: "1.4.2", modes: ["terminal", "chat"], keyNames: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"] },
-    { agent: "commandcode", installed: true, version: "3.2.0", modes: ["terminal"], keyNames: ["COMMANDCODE_API_KEY"] },
+    { agent: "commandcode", installed: true, version: "1.84.0", modes: ["terminal", "chat"], keyNames: ["COMMAND_CODE_API_KEY"] },
     { agent: "droid", installed: true, version: "0.22.1", modes: ["terminal"], keyNames: ["FACTORY_API_KEY"] },
     { agent: "gemini", installed: false, modes: ["terminal"], installCmd: "npm i -g @google/gemini-cli", keyNames: ["GEMINI_API_KEY"] },
     { agent: "qwen", installed: false, modes: ["terminal"], installCmd: "npm i -g @qwen-code/qwen-code", keyNames: ["DASHSCOPE_API_KEY"] },
     { agent: "cursor", installed: false, modes: ["terminal"], installCmd: "curl https://cursor.com/install -fsS | bash", keyNames: ["CURSOR_API_KEY"] },
   ];
   const service = { supported: true, installed: false, running: false, startAtLogin: false, platform: "darwin" };
-  const recentFolders = [`${HOME}/code/cli-kit`, `${HOME}/code/api-gateway`, `${HOME}/code/payments-svc`, `${HOME}/code/portfolio`];
+  const recentFolders = [`${HOME}/code/search-api`, `${HOME}/code/cli-kit`, `${HOME}/code/payments-svc`, `${HOME}/code/portfolio`];
+  /** Where each platform's image puts you (the demo's DEMO_HOSTS homes). */
+  const HOMES = { daytona: "/home/daytona", vercel: "/vercel/sandbox", railway: "/root", ssh: "/home/dev" };
   /** id -> { s: ControlSession, term: {buf, line, clients:Set}, chat: {items, clients:Set}, timers:[] } */
   const sessions = new Map();
 
-  const info = () => ({ enabled: true, agents, providers, keys, service, sessions: [...sessions.values()].map((x) => x.s), recentFolders });
+  const info = () => ({ enabled: true, agents, providers, keys, service, sessions: [...sessions.values()].map((x) => x.s), recentFolders, logins });
+
+  /* ------------------------------------------------------- your setup */
+  const month = (t) => new Date(t).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  function setupInventory(agent, folder) {
+    const claude = agent === "claude";
+    const tok = keys.find((k) => k.name === "CLAUDE_CODE_OAUTH_TOKEN");
+    const login = claude
+      ? [
+          tok ? { kind: "subscription", label: "Claude subscription", detail: `expires ~${month(tok.expiresAt)}`, available: true, keys: ["CLAUDE_CODE_OAUTH_TOKEN"] } : { kind: "subscription", label: "Claude subscription", available: false, why: "Connect Claude in Settings, Logins" },
+          { kind: "key", label: "API key", detail: "ANTHROPIC_API_KEY, stored", available: true, keys: ["ANTHROPIC_API_KEY"] },
+          { kind: "none", label: "Sign in there myself", available: true },
+        ]
+      : [];
+    const mcp = claude
+      ? [
+          { name: "github", transport: "http", scope: "user", ok: true, what: "api.githubcopilot.com", secrets: 1 },
+          { name: "linear", transport: "sse", scope: "user", ok: true, what: "mcp.linear.app" },
+          { name: "postgres", transport: "stdio", scope: "user", ok: true, what: "npx -y @modelcontextprotocol/server-postgres", secrets: 1 },
+          { name: "sentry", transport: "http", scope: "user", ok: true, what: "mcp.sentry.dev", secrets: 1 },
+          { name: "notes", transport: "stdio", scope: "user", ok: false, why: "runs ~/bin/notes-mcp, which the sandbox won't have", what: "~/bin/notes-mcp" },
+          { name: "figma-desktop", transport: "http", scope: "user", ok: false, why: "listens on this Mac's localhost", what: "127.0.0.1:3845" },
+        ]
+      : [];
+    const instructions = claude
+      ? [
+          { id: "CLAUDE.md", label: "CLAUDE.md", files: 1, bytes: 6_240 },
+          { id: "rules", label: "Rules", files: 4, bytes: 9_800 },
+          { id: "skills", label: "Skills", files: 41, bytes: 386_000, count: 12 },
+          { id: "agents", label: "Agents", files: 3, bytes: 7_100 },
+          { id: "commands", label: "Commands", files: 6, bytes: 5_400 },
+          { id: "settings.json", label: "settings.json", files: 1, bytes: 1_900, skipped: ["hooks: run files on this Mac", "statusLine: runs a file on this Mac"] },
+        ]
+      : [];
+    const f = folder && FS_PROJECTS[folder];
+    const project = f ? { folder, display: tidy(folder), files: f.files, bytes: f.bytes, git: { present: true, bytes: f.git, ok: true }, envFiles: [".env.local"], ok: true } : undefined;
+    return { agent, login, shellKeys: ["GITHUB_TOKEN"], mcp, instructions, ...(project ? { project } : {}), notes: [] };
+  }
+  const size = (n) => (n < 1 << 20 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1048576).toFixed(1)} MB`);
+  function setupSummary(agent, choice, keyNames = []) {
+    const inv = setupInventory(agent, choice.project?.folder);
+    const bits = [];
+    const l = inv.login.find((x) => x.kind === choice.login);
+    if (l && l.kind !== "none") bits.push(l.label);
+    const k = new Set([...keyNames, ...(choice.shellKeys ?? [])].filter((n) => !(l?.keys ?? []).includes(n))).size;
+    if (k) bits.push(`${k} key${k === 1 ? "" : "s"}`);
+    const mv = inv.mcp.filter((m) => m.scope !== "project");
+    if (mv.length) bits.push(`${(choice.mcp ?? []).length} of ${mv.length} MCP servers`);
+    const ins = (choice.instructions ?? []);
+    const skills = inv.instructions.find((i) => i.id === "skills")?.count ?? 0;
+    if (ins.length) bits.push(`${ins.includes("CLAUDE.md") ? "instructions" : "rules"}${ins.includes("skills") && skills ? ` + ${skills} skills` : ""}`);
+    if (inv.project) bits.push(`${inv.project.display} (${size(inv.project.bytes + (choice.project?.git ? inv.project.git.bytes : 0))})`);
+    return bits.join(" · ");
+  }
   const changed = (x) => emitControl("control", x.s);
   const infoChanged = (patch) => emitControl("control_info", patch);
 
@@ -94,7 +168,7 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
     const w = Math.max(30, Math.min(52, (x.cols ?? 80) - 1));
     const line = (t, vis = t.length) => `${C.orange}│${C.reset} ${t}${" ".repeat(Math.max(0, w - 3 - vis))}${C.orange}│${C.reset}\r\n`;
     write(x, `${C.orange}╭${"─".repeat(w - 2)}╮${C.reset}\r\n`);
-    const title = `✻ ${NAMES[s.agent]} (mock agent)`;
+    const title = `✻ ${NAMES[s.agent]}`;
     write(x, line(`${C.bold}${title}${C.reset}`, title.length));
     write(x, line(""));
     const cwd = `cwd: ${x.cwd}`;
@@ -110,9 +184,9 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
     if (!t) return write(x, `\r\n${PROMPT}`);
     write(x, `\r\n\r\n${C.orange}●${C.reset} I'll look into "${t.slice(0, 60)}".\r\n`);
     const steps = [
-      [`${C.green}●${C.reset} ${C.bold}Read${C.reset}(src/server/http.ts)`, `  ${C.gray}⎿  Read 214 lines${C.reset}`],
-      [`${C.green}●${C.reset} ${C.bold}Grep${C.reset}("CONTROL_HEADER")`, `  ${C.gray}⎿  Found 3 files${C.reset}`],
-      [`${C.green}●${C.reset} ${C.bold}Bash${C.reset}(npm test)`, `  ${C.gray}⎿  ${C.green}✓${C.gray} 198 passed${C.reset}`],
+      [`${C.green}●${C.reset} ${C.bold}Read${C.reset}(src/ranker.ts)`, `  ${C.gray}⎿  Read 188 lines${C.reset}`],
+      [`${C.green}●${C.reset} ${C.bold}Grep${C.reset}("tokenize")`, `  ${C.gray}⎿  Found 4 files${C.reset}`],
+      [`${C.green}●${C.reset} ${C.bold}Bash${C.reset}(bun test)`, `  ${C.gray}⎿  ${C.green}✓${C.gray} 64 passed${C.reset}`],
     ];
     office(x, "prompt");
     let i = 0;
@@ -121,13 +195,12 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
       if (i < steps.length) {
         const [a, b] = steps[i];
         write(x, `\r\n${a}\r\n${b}\r\n`);
-        office(x, "tool_start", { tool: ["Read", "Grep", "Bash"][i], category: ["read", "search", "bash"][i], summary: ["Read http.ts", "Grep CONTROL_HEADER", "$ npm test"][i] });
+        office(x, "tool_start", { tool: ["Read", "Grep", "Bash"][i], category: ["read", "search", "bash"][i], summary: ["Read ranker.ts", "Search tokenize", "$ bun test"][i] });
         i++;
         x.timers.push(setTimeout(tick, 900));
         return;
       }
-      if (Math.random() < 0.5 && !x.s.pendingApproval) return askApproval(x);
-      write(x, `\r\n${C.orange}●${C.reset} Done. The header is checked on every control route.\r\n\r\n${PROMPT}`);
+      write(x, `\r\n${C.orange}●${C.reset} Done. Ranking ties now break on recency; all 64 tests pass.\r\n\r\n${PROMPT}`);
       office(x, "waiting");
     };
     x.timers.push(setTimeout(tick, 700));
@@ -308,8 +381,8 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
         const base = { id, kind: "tool", tool: spec.tool, category: spec.category, summary: spec.summary, turnId: T.id };
         T.running.set(id, base);
         chatPut(x, { ...base, status: "running", at: iso() });
-        const ap = { id: randomBytes(4).toString("hex"), tool: spec.tool, category: spec.category, summary: spec.summary, at: iso() };
-        const apItem = { id: `ap-${ap.id}`, kind: "approval", tool: ap.tool, category: ap.category, summary: ap.summary, turnId: T.id, at: ap.at };
+        const ap = { id: randomBytes(4).toString("hex"), tool: spec.tool, category: spec.category, summary: spec.summary, at: iso(), ...(spec.full ? { detail: spec.full } : {}) };
+        const apItem = { id: `ap-${ap.id}`, kind: "approval", tool: ap.tool, category: ap.category, summary: ap.summary, turnId: T.id, at: ap.at, ...(spec.full ? { detail: spec.full } : {}) };
         chatPut(x, { ...apItem, text: "Waiting for you" });
         s.pendingApproval = ap;
         changed(x);
@@ -405,24 +478,33 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
     const prov = providers.find((p) => p.kind === place.kind);
     let sbx = prov?.sandboxes.find((s) => s.id === place.target);
     if (place.kind !== "local" && place.kind !== "ssh" && place.target === "new") {
-      sbx = { id: `${place.kind.slice(0, 2)}-${randomBytes(3).toString("hex")}`, name: `office-${id}`, provider: place.kind, status: "starting", ours: true, createdAt: iso(), expiresAt: iso((req.sandbox?.timeoutMin ?? 30) * 60_000), workers: 0 };
+      sbx = { id: `${place.kind.slice(0, 2)}-${randomBytes(3).toString("hex")}`, name: `agentoffice-${id}`, provider: place.kind, status: "starting", ours: true, createdAt: iso(), expiresAt: iso((req.sandbox?.timeoutMin ?? 30) * 60_000), workers: 0 };
       prov.sandboxes.push(sbx);
       infoChanged({ providers });
     }
-    const title = place.kind === "local" ? base(place.target) : place.cwd ? base(place.cwd) : sbx?.name ?? place.target;
+    // with Your setup's project the office makes ~/<name> there and works in it (sessions.ts createCwd)
+    const proj = req.setup?.project?.folder;
+    const title = place.kind === "local" ? base(place.target) : place.cwd ? base(place.cwd) : proj ? base(proj) : sbx?.name ?? place.target;
     const s = {
       id, agent: req.agent, place: { ...place, target: sbx?.id ?? place.target }, host: hostFor({ ...place, target: sbx?.id ?? place.target }, sbx?.name), mode: req.mode,
       workerId: `ctl:${id}`, status: place.target === "new" ? "creating" : remote ? "installing" : "starting",
-      detail: place.target === "new" ? `Creating ${prov?.name ?? place.kind} sandbox…` : remote ? `Installing ${NAMES[req.agent]}…` : `Starting ${NAMES[req.agent]}…`,
+      detail: place.target === "new" ? `Creating ${(prov?.name ?? place.kind).replace(/ Sandbox$/, "")} sandbox…` : remote ? `Checking ${NAMES[req.agent]}…` : `Starting ${NAMES[req.agent]}…`,
       startedAt: iso(), title, permission: req.permission ?? "default",
     };
-    const x = { s, cwd: place.kind === "local" ? place.target : place.cwd || (place.kind === "ssh" ? `/home/dev` : "/home/sandbox"), model: req.agent === "claude" ? "claude-opus-5-5" : req.agent === "codex" ? "gpt-5.6-sol" : "mock-model", term: { buf: "", line: "", clients: new Set() }, chat: { items: [], clients: new Set(), turn: null, queue: [], n: 0 }, timers: [] };
+    const home = HOMES[place.kind] ?? "/home/sandbox";
+    const x = { s, cwd: place.kind === "local" ? place.target : place.cwd || (proj ? `${home}/${base(proj)}` : home), model: MODELS_OF[req.agent] ?? "claude-sonnet-5-5", term: { buf: "", line: "", clients: new Set() }, chat: { items: [], clients: new Set(), turn: null, queue: [], n: 0 }, timers: [] };
     sessions.set(id, x);
-    office(x, "session_start");
+    // a local agent walks in at once; a remote one once its sandbox or box is there (sessions.ts: walkIn after places.open)
+    if (s.status !== "creating") office(x, "session_start");
     const steps = [];
-    if (s.status === "creating") steps.push([2600, () => { if (sbx) sbx.status = "running"; s.status = "installing"; s.detail = `Installing ${NAMES[req.agent]}…`; infoChanged({ providers }); }]);
-    if (remote) steps.push([2000, () => { s.status = "starting"; s.detail = `Starting ${NAMES[req.agent]}…`; }]);
-    steps.push([1100, () => {
+    // a new sandbox takes the better part of a minute: about what Daytona, Vercel and Railway take to boot one
+    if (s.status === "creating") steps.push([24_000, () => { if (sbx) sbx.status = "running"; s.status = "installing"; s.detail = `Checking ${NAMES[req.agent]}…`; infoChanged({ providers }); office(x, "session_start"); }]);
+    if (remote && req.setup) {
+      const summary = setupSummary(req.agent, req.setup, req.keys ?? []);
+      steps.push([6_000, () => { s.status = "installing"; s.detail = "Copying your setup…"; s.setup = { state: "running", summary }; }]);
+      steps.push([9_000, () => { s.setup = { state: "done", summary }; s.status = "starting"; s.detail = `Starting ${NAMES[req.agent]}…`; }]);
+    } else if (remote) steps.push([6_000, () => { s.status = "starting"; s.detail = `Starting ${NAMES[req.agent]}…`; }]);
+    steps.push([remote ? 4_000 : 1100, () => {
       s.status = "running";
       delete s.detail;
       if (s.mode === "terminal") banner(x);
@@ -448,7 +530,6 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
       const r = Math.random();
       if (r < 0.5) office(x, "tool_start", { tool: "Read", category: "read", summary: `Read ${["cli.ts", "http.ts", "state.ts", "README.md"][Math.floor(Math.random() * 4)]}` });
       else if (r < 0.7) office(x, "thinking");
-      else if (r < 0.75 && !x.s.pendingApproval) askApproval(x);
     }, 5200);
     return s;
   }
@@ -511,6 +592,11 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
       if (body.place.kind === "local" && !av?.installed) return json(res, 400, { error: `${NAMES[body.agent]} isn't installed on this Mac.` }), true;
       const s = hire(body);
       return json(res, 200, s), true;
+    }
+    if (path === "/setup" && method === "GET") {
+      const agent = url.searchParams.get("agent") || "claude";
+      const folder = url.searchParams.get("folder") || undefined;
+      return json(res, 200, setupInventory(agent, folder)), true;
     }
     if (path === "/fs" && method === "GET") {
       const p = url.searchParams.get("path") || HOME;
@@ -645,5 +731,5 @@ export function createControlMock({ locked = false, emitControl, emitOffice, emp
     return !!x;
   }
 
-  return { handle, poke };
+  return { handle, poke, hire };
 }
