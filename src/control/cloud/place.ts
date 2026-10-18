@@ -48,6 +48,29 @@ export class Listeners<T> {
   }
 }
 
+/**
+ * Listeners that keep what is emitted before the first one comes and hand it to that one (in a
+ * microtask, as Once does): a pipe whose output can arrive before its caller has subscribed.
+ */
+export class Held<T> {
+  private fns = new Listeners<T>();
+  private kept: T[] | undefined = [];
+  on(fn: (v: T) => void): Disposable {
+    const d = this.fns.on(fn);
+    const kept = this.kept;
+    this.kept = undefined;
+    if (kept?.length)
+      queueMicrotask(() => {
+        for (const v of kept) fn(v);
+      });
+    return d;
+  }
+  emit(v: T): void {
+    if (!this.kept) return this.fns.emit(v);
+    if (this.kept.length < 4096) this.kept.push(v);
+  }
+}
+
 /** One-shot: a listener that comes late still hears it. */
 export class Once<T> {
   private v: { v: T } | undefined;

@@ -94,6 +94,24 @@ test("server speaks first: the message waits for the first listener; fragments a
   await srv.close();
 });
 
+test("a server that sends and closes at once: the messages still reach the first listener, before the close", async () => {
+  const srv = await wsServe({
+    ws(conn) {
+      conn.binary(Buffer.from("replayed-1"));
+      conn.binary(Buffer.from("replayed-2"));
+      conn.close(1000);
+    },
+  });
+  const ws = await M.connectWs(srv.wsUrl);
+  await wait(80);
+  const seen = [];
+  ws.onMessage((m) => seen.push(Buffer.from(m).toString()));
+  ws.onClose((code) => seen.push(`close ${code}`));
+  await wait(50);
+  assert.deepEqual(seen, ["replayed-1", "replayed-2", "close 1000"]);
+  await srv.close();
+});
+
 test("an idle connection pings the server on its own, and stops once closed", async () => {
   const srv = await wsServe({ ws() {} });
   const ws = await M.connectWs(srv.wsUrl, { pingMs: 40 });

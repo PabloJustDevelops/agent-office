@@ -25,8 +25,8 @@
  *            POST …/cmd/{id}/stdin {data: base64, offset} -> {bytesWritten}; with the offset a
  *            resend is safe (the server skips what it has), {close: true} is EOF. Output is the
  *            ndjson stream GET …/cmd/{id}/logs ({stream: "stdout" | "stderr", data}), which
- *            replays from the start: one that ends while the command runs is opened again,
- *            skipping what was delivered. It is read over node:https on its own socket, never
+ *            replays from the start: one cut while the command runs (or as it finishes) is
+ *            opened again, skipping what was delivered. It is read over node:https on its own socket, never
  *            fetch: with that stream open in Node 26's fetch, the stdin posts to the same host
  *            hung until it closed. GET …/cmd/{id}?wait=true has the exit code; POST
  *            …/cmd/{id}/kill {signal} signals it. Checked against Vercel's API on 2026-10-19.
@@ -493,6 +493,8 @@ export class VercelPlace extends BasePlace {
     let skip = { ...seen };
     let logs: { close(): void } | undefined;
     let tries = 0;
+    /** The command has ended and its log is being read once more, to the end. */
+    let draining = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
 
     const end = (e: TermExit) => {
@@ -521,28 +523,39 @@ export class VercelPlace extends BasePlace {
     const follow = () => {
       skip = { ...seen };
       const at = Date.now();
-      const s = streamLines(url(`${cPath}/logs`), auth, onLine, () => {
+      const s = streamLines(url(`${cPath}/logs`), auth, onLine, (why) => {
         if (logs !== s) return;
         logs = undefined;
         if (Date.now() - at > 60_000) tries = 0;
-        void settle();
+        void settle(why === "end");
       });
       logs = s;
     };
-    // The stream ended: the command did (its exit code), or the stream was cut (open it again).
-    // A plain GET lags the end by a few seconds; ?wait=true answers at once for a finished
-    // command and holds for a running one, so a short deadline tells the two apart.
-    const settle = async (): Promise<void> => {
+    // The stream ended: the command did (its exit code), or the stream was cut (open it again,
+    // and the replay skips what came already). A plain GET lags the end by a few seconds;
+    // ?wait=true answers at once for a finished command and holds for a running one, so a short
+    // deadline tells the two apart. Only a stream that ended whole, for a command that had
+    // already finished, said everything: one cut while the agent finished is replayed once
+    // more, so its last words aren't lost.
+    const settle = async (clean: boolean): Promise<void> => {
       if (exit.fired) return;
+      let code: number | undefined;
+      const t = Date.now();
       try {
         const j = jsonOf(await call(`${cPath}?wait=true`, { timeoutMs: 3_000 }), what);
-        if (typeof j?.command?.exitCode === "number") return end({ code: j.command.exitCode });
+        if (typeof j?.command?.exitCode === "number") code = j.command.exitCode;
       } catch (e) {
         const c = (e as RemoteError).code;
         if (c === "gone" || c === "auth") return end({ code: null });
         // "timeout": still running.
       }
       if (exit.fired) return;
+      if (code !== undefined) {
+        if (clean && (draining || Date.now() - t < 1_500)) return end({ code });
+        if (draining && tries++ >= CHAT_RECONNECTS) return end({ code });
+        draining = true;
+        return follow();
+      }
       if (tries++ >= CHAT_RECONNECTS) {
         this.log(`${this.where}: the chat's connection kept dropping; stopping the agent`, "warn");
         kill("SIGKILL");

@@ -30,7 +30,7 @@ after(async () => {
 });
 
 let n = 0;
-async function fakeDaytona({ boxes = [], wsReject, dropLogs = 0 } = {}) {
+async function fakeDaytona({ boxes = [], wsReject, dropLogs = 0, dropOnInput, execWaits = false } = {}) {
   const bin = tmp();
   writeBin(bin, "claude", AGENT_SCRIPT);
   writeBin(bin, "claude-version", "console.log('2.1.302')");
@@ -142,12 +142,19 @@ async function fakeDaytona({ boxes = [], wsReject, dropLogs = 0 } = {}) {
           for (const s of c.socks) s.close(1000);
         });
         commands.set(c.id, c);
+        // An agent that dies at once: done before its log socket opens, which then brings it all with the upgrade.
+        if (execWaits) await new Promise((r) => c.child.on("close", () => setTimeout(r, 20)));
         return { status: 202, json: { cmdId: c.id, output: null, stdout: null, stderr: null, exitCode: null } };
       }
       if ((m = p.match(/^\/toolbox\/([^/]+)\/process\/session\/([^/]+)\/command\/([^/]+)\/input$/))) {
         const c = commands.get(decodeURIComponent(m[3]));
         if (c.exitCode !== undefined) return { status: 410, json: { statusCode: 410, message: `command has already completed with exit code ${c.exitCode}` } };
         seen.inputs.push(body.data);
+        if (dropOnInput && body.data.startsWith(dropOnInput)) {
+          // The log socket goes down first: what the agent prints next lands only in the log.
+          for (const s of c.socks) s.socket.destroy();
+          c.socks.clear();
+        }
         // The daemon ends a write that lacks one with a newline.
         c.child.stdin.write(body.data.endsWith("\n") ? body.data : `${body.data}\n`);
         return { status: 204, text: "" };
@@ -454,4 +461,30 @@ test("the log demuxer: markers cut across frames, and a replay skips what was de
   dm.replay();
   dm.feed(f(1, 1, 1, "out-a\n", 2, 2, 2, "err-a\n", 1, 1, 1, "out-b\nout-c\n"));
   assert.deepEqual(got, [[1, "out-c\n"]], "only what's new after the replay");
+});
+
+test("chat: an agent that finishes while its log socket is down still gets its last words through, then its exit", async () => {
+  const d = await fakeDaytona({ dropOnInput: "last" });
+  const { places: p } = places(d);
+  const place = await p.open({ kind: "daytona", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe(CHAT(place.cwd));
+  const io = piped(pipe);
+  await until(() => io.out().includes("\n"), 5000, "first line");
+  pipe.write("last\nbye\n");
+  assert.equal((await io.done).code, 4);
+  assert.match(io.out(), /got:last\nbye!\n/, "printed while the socket was down, read from the replay");
+  assert.match(io.err(), /err:last\n/);
+  assert.equal(io.out().split('"argv"').length - 1, 1, "and nothing twice");
+  assert.equal(d.seen.logOpens.length, 2);
+});
+
+test("chat: what the replay brings with the upgrade, before anyone has subscribed, still arrives", async () => {
+  const d = await fakeDaytona({ execWaits: true });
+  const { places: p } = places(d);
+  const place = await p.open({ kind: "daytona", target: "new" }, { agent: "claude", progress: () => {} });
+  // Fails at once: by the time the log socket opens, all there is comes as its replay.
+  const pipe = await place.pipe({ argv: ["no-such-agent"], cwd: place.cwd, env: {}, secret: [] });
+  const io = piped(pipe);
+  assert.equal((await io.done).code, 127);
+  assert.match(io.err(), /no-such-agent/, "the shell's reason reached stderr's listener");
 });

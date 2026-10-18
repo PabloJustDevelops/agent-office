@@ -28,7 +28,7 @@ after(async () => {
 });
 
 let n = 0;
-async function fakeVercel({ project = false, hobby = false, noInteractive = false, dropStdin = 0, cutLogs = 0 } = {}) {
+async function fakeVercel({ project = false, hobby = false, noInteractive = false, dropStdin = 0, cutLogs = 0, dropOnInput } = {}) {
   const bin = tmp();
   writeBin(bin, "claude", AGENT_SCRIPT);
   writeBin(bin, "chat-agent", CHAT_SCRIPT);
@@ -150,6 +150,11 @@ async function fakeVercel({ project = false, hobby = false, noInteractive = fals
         if (!c || c.exitCode !== null) return { status: 404, json: { error: { code: "command_not_found_or_exited", message: "Not found: command not found or has exited" } } };
         seen.stdin.push(body);
         let data = body.data ? Buffer.from(body.data, "base64") : Buffer.alloc(0);
+        if (dropOnInput && data.toString().startsWith(dropOnInput)) {
+          // The log stream breaks first: what the agent prints next lands only in the log.
+          for (const r of c.readers) r.destroy();
+          c.readers.clear();
+        }
         // What it already has is skipped: a resend at the same offset writes nothing twice.
         if (typeof body.offset === "number" && body.offset < c.written) data = data.subarray(Math.min(data.length, c.written - body.offset));
         if (data.length) {
@@ -410,4 +415,18 @@ test("chat: a log stream cut while the agent runs is opened again, and nothing c
   pipe.kill("SIGTERM");
   assert.equal((await io.done).code, 143);
   assert.deepEqual(v.seen.kills, [15]);
+});
+
+test("chat: an agent that finishes while its log stream is down still gets its last words through, then its exit", async () => {
+  const v = await fakeVercel({ project: true, dropOnInput: "last" });
+  const { places: p } = places(v);
+  const place = await p.open({ kind: "vercel", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe(CHAT(place.cwd));
+  const io = piped(pipe);
+  await until(() => io.out().includes("\n"), 5000, "first line");
+  pipe.write("last\nbye\n");
+  assert.equal((await io.done).code, 4);
+  assert.match(io.out(), /got:last\nbye!\n/, "printed while the stream was down, read from the replay");
+  assert.equal(io.out().split('"argv"').length - 1, 1, "and nothing twice");
+  assert.ok(v.seen.logOpens >= 2);
 });

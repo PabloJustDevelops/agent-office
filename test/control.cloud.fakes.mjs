@@ -390,8 +390,15 @@ process.on("SIGHUP", () => process.exit(129));
 process.on("SIGTERM", () => process.exit(143));
 `;
 
-/** AGENT_SCRIPT for chat transports, which keep stderr apart: each input line also comes back as "err:<line>" there. */
-export const CHAT_SCRIPT = AGENT_SCRIPT.replace(`process.stdout.write("got:" + l + "\\n");`, `process.stdout.write("got:" + l + "\\n"); process.stderr.write("err:" + l + "\\n");`);
+/**
+ * AGENT_SCRIPT for chat transports, which keep stderr apart: each input line also comes back as
+ * "err:<line>" there, and "bye" prints "bye!" and exits 4 once that is written (a pipe's writes
+ * are asynchronous on macOS: process.exit right after one can lose it).
+ */
+export const CHAT_SCRIPT = AGENT_SCRIPT.replace(`process.stdout.write("got:" + l + "\\n");`, `process.stdout.write("got:" + l + "\\n"); process.stderr.write("err:" + l + "\\n");`).replace(
+  `if (l === "quit") process.exit(3);`,
+  `if (l === "quit") process.exit(3); if (l === "bye") return void process.stdout.write("bye!\\n", () => process.exit(4));`,
+);
 
 /** Run `sh` as if it were a sandbox's login shell: input in, output out, under `home` with `bin` first on PATH. */
 export function sandboxShell(home, bin, extraEnv = {}) {

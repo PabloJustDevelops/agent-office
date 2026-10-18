@@ -24,10 +24,11 @@
  *           Output is the WebSocket …/command/{cmd}/logs?follow=true, which replays from the
  *           start and closes when the command ends; with X-Daytona-SDK-Version (0.167.0 or
  *           newer) each chunk is tagged 01 01 01 (stdout) or 02 02 02 (stderr), else they come
- *           merged. A socket that drops while the agent runs is reopened, skipping what was
- *           already delivered. The exit code is GET …/command/{cmd}. There is no stdin close:
- *           end() is SIGTERM through the pid file, and deleting the session (which removes its
- *           log) ends whatever is left. Checked against Daytona's daemon 0.225 on 2026-10-19.
+ *           merged. A socket that drops (while the agent runs, or as it finishes) is reopened,
+ *           skipping what was already delivered. The exit code is GET …/command/{cmd}. There
+ *           is no stdin close: end() is SIGTERM through the pid file, and deleting the session
+ *           (which removes its log) ends whatever is left. Checked against Daytona's daemon
+ *           0.225 on 2026-10-19.
  *
  * Keys: PTY `envs` are kept by the daemon and echoed by GET, and the sandbox's own `env`
  * is stored by Daytona, so neither carries a key. They go into a 0600 env file written by
@@ -45,7 +46,7 @@ import { connectWs, type Ws } from "../ws.ts";
 import { tgzOf, type TarEntry } from "../tar.ts";
 import { RUN_DIR, cleanupScript, cwdScript, envFromVarScript, envLines, launchLine, parseCwd, shWrap, stopScript } from "./launch.ts";
 import {
-  BasePlace, Listeners, Once, StreamTerm, afterExit, failed, helperEnv, sandboxRow, sid as newSid, sleep,
+  BasePlace, Held, Once, StreamTerm, afterExit, failed, helperEnv, sandboxRow, sid as newSid, sleep,
   type Cloud, type CloudDeps, type CreateOptions,
 } from "./place.ts";
 
@@ -439,8 +440,9 @@ export class DaytonaPlace extends BasePlace {
       throw err;
     }
     const cPath = `${sPath}/command/${encodeURIComponent(cmd)}`;
-    const out = new Listeners<Uint8Array>();
-    const err = new Listeners<Uint8Array>();
+    // Held: the replay can come with the upgrade itself, before the caller has subscribed.
+    const out = new Held<Uint8Array>();
+    const err = new Held<Uint8Array>();
     const exit = new Once<TermExit>();
     const demux = new LogDemux((s, b) => (s === 2 ? err : out).emit(b));
     let ws: Ws | undefined;
@@ -466,35 +468,41 @@ export class DaytonaPlace extends BasePlace {
       demux.replay();
       const at = Date.now();
       s.onMessage((m) => demux.feed(typeof m === "string" ? Buffer.from(m, "utf8") : m));
-      s.onClose(() => {
+      s.onClose((code) => {
         if (ws !== s) return;
         ws = undefined;
         if (Date.now() - at > 60_000) tries = 0;
-        void settle();
+        // 1000: the daemon closes it so once the command has ended and its log is all sent.
+        void settle(code === 1000);
       });
     };
-    // The socket closed: the command ended (its exit code), or the connection dropped (open it again).
-    const settle = async (): Promise<void> => {
-      for (let i = 0; i < 4 && !exit.fired; i++) {
+    // The socket closed: the command ended (its exit code), or the connection dropped. A drop
+    // is followed by a new socket, whose replay skips what came already; one that dropped while
+    // the agent finished gets that replay too, so its last words aren't lost with the session.
+    const settle = async (clean: boolean): Promise<void> => {
+      let code: number | undefined;
+      for (let i = 0; i < 4 && !exit.fired && code === undefined; i++) {
         try {
           const j = jsonOf(await call(cPath), what);
-          if (typeof j?.exitCode === "number") return end({ code: j.exitCode });
+          if (typeof j?.exitCode === "number") code = j.exitCode;
         } catch (e) {
           if ((e as RemoteError).code === "gone" || (e as RemoteError).code === "auth") return end({ code: null });
         }
-        await sleep(500);
+        if (code === undefined) await sleep(500);
       }
       if (exit.fired) return;
+      if (code !== undefined && clean) return end({ code });
       if (tries++ >= CHAT_RECONNECTS) {
+        if (code !== undefined) return end({ code });
         this.log(`${this.where}: the chat's connection kept dropping; stopping the agent`, "warn");
         return end({ code: null });
       }
-      await sleep(1000 * tries);
+      if (code === undefined) await sleep(1000 * tries);
       if (exit.fired) return;
       try {
         await connect();
       } catch {
-        void settle();
+        void settle(false);
       }
     };
     const kill = (signal?: NodeJS.Signals) => {
