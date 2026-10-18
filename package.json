@@ -1,0 +1,55 @@
+{
+  "name": "agentoffice",
+  "version": "0.1.0",
+  "description": "A live pixel-art office for your coding agents. Claude Code, Codex, Command Code, opencode, Cursor, Droid, Qwen Code and Gemini CLI sessions, local or in Daytona, Railway, Vercel and boat sandboxes, become little workers at desks.",
+  "type": "module",
+  "bin": {
+    "agentoffice": "dist/cli.js",
+    "agent-office": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs && node dist/cli.js --demo",
+    "test": "node scripts/build.mjs && node --test test/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepack": "node scripts/build.mjs"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "command-code",
+    "opencode",
+    "cursor",
+    "droid",
+    "qwen-code",
+    "gemini-cli",
+    "ai-agents",
+    "coding-agents",
+    "mcp",
+    "sandbox",
+    "vercel-sandbox",
+    "daytona",
+    "railway",
+    "pixel-art",
+    "visualizer",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bas3line/agent-office.git"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}
