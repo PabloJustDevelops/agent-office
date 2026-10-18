@@ -143,6 +143,7 @@ before(async () => {
     sessions: () => sessions,
     places: () => fakePlaces,
     pingMs: 50,
+    shellNames: async () => ["ANTHROPIC_API_KEY"],
   });
   srv = await M.startServer({ state, port: 0, webRoot, control: plane, pingMs: 50 });
   port = srv.port;
@@ -520,4 +521,40 @@ test("a plane that is off answers 404 everywhere and the snapshot says off", asy
 
 test("ownedPids comes from the sessions part; shutdown ends the sessions", async () => {
   assert.deepEqual(plane.ownedPids(), [4242]);
+});
+
+test("Your setup: the inventory has names only; a hire carries the setup to a remote place and never to this Mac", async () => {
+  const { cookie } = await unlock();
+  const SECRET = "mcp-http-secret-0404";
+  writeFileSync(join(HOME, ".claude.json"), JSON.stringify({ mcpServers: { tool: { command: "npx", args: ["-y", "@acme/tool"], env: { TOKEN: SECRET } } } }));
+  const r = await call("GET", "/api/control/setup?agent=claude&folder=" + encodeURIComponent("~/Codes/beta"), { cookie });
+  assert.equal(r.status, 200, r.text);
+  assert.deepEqual(r.json.mcp.map((m) => [m.name, m.ok, m.secrets]), [["tool", true, 1]]);
+  assert.deepEqual(r.json.shellKeys, ["ANTHROPIC_API_KEY"]);
+  assert.equal(r.json.project.display, "~/Codes/beta");
+  assert.ok(!r.text.includes(SECRET), "names only");
+  assert.equal((await call("GET", "/api/control/setup?agent=nope", { cookie })).status, 400);
+  assert.equal((await call("GET", "/api/control/setup?agent=claude&folder=" + encodeURIComponent(join(TMP, "outside")), { cookie })).status, 403);
+  assert.equal((await call("GET", "/api/control/setup?agent=claude")).status, 401, "locked browsers get nothing");
+
+  const local = await call("POST", "/api/control/hire", { cookie, body: { agent: "claude", mode: "terminal", place: { kind: "local", target: "~/Codes/beta" }, setup: { login: "none" } } });
+  assert.equal(local.status, 400);
+  assert.match(local.json.error, /already here/);
+  const bad = await call("POST", "/api/control/hire", { cookie, body: { agent: "claude", mode: "terminal", place: { kind: "daytona", target: "new" }, setup: { login: "steal", shellKeys: ["not a key"] } } });
+  assert.equal(bad.status, 400);
+  const ok = await call("POST", "/api/control/hire", { cookie, body: { agent: "claude", mode: "terminal", place: { kind: "daytona", target: "new" }, setup: { login: "key", shellKeys: ["ANTHROPIC_API_KEY"], mcp: ["tool"], instructions: ["CLAUDE.md"], project: { folder: "~/Codes/beta", env: true } } } });
+  assert.equal(ok.status, 200, ok.text);
+  const hired = sessions.calls.filter((c) => c[0] === "hire").at(-1)[1];
+  assert.deepEqual(hired.setup, { login: "key", shellKeys: ["ANTHROPIC_API_KEY"], mcp: ["tool"], instructions: ["CLAUDE.md"], project: { folder: join(HOME, "Codes", "beta"), git: true, env: true } });
+});
+
+test("Logins: the status rides ControlInfo; Connect Claude answers plainly when it can't run here", async () => {
+  const { cookie } = await unlock();
+  const info = await call("GET", "/api/control", { cookie });
+  assert.deepEqual(info.json.logins, [{ agent: "claude", state: "idle" }]);
+  const start = await call("POST", "/api/control/logins/claude", { cookie });
+  assert.ok([400, 503].includes(start.status), start.text);
+  assert.equal((await call("POST", "/api/control/logins/claude/input", { cookie, body: { data: "x" } })).status, 409);
+  assert.equal((await call("DELETE", "/api/control/logins/claude", { cookie })).status, 204);
+  assert.equal((await call("POST", "/api/control/logins/claude")).status, 401);
 });

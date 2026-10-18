@@ -30,9 +30,10 @@ import { createDaytonaProvider, daytonaLogin, daytonaToolboxUrl, type DaytonaLog
 import { RemoteError, displayName, http, jsonOf, scrubMessage, str, which } from "../../remote/util.ts";
 import { ControlError, type Launch, type OpenOptions, type PlacesContext, type Term } from "../types.ts";
 import { connectWs, type Ws } from "../ws.ts";
-import { cleanupScript, cwdScript, envFromVarScript, envLines, launchLine, parseCwd, shWrap } from "./launch.ts";
+import { tgzOf, type TarEntry } from "../tar.ts";
+import { RUN_DIR, cleanupScript, cwdScript, envFromVarScript, envLines, launchLine, parseCwd, shWrap } from "./launch.ts";
 import {
-  BasePlace, StreamTerm, afterExit, failed, helperEnv, sandboxRow, sleep,
+  BasePlace, StreamTerm, afterExit, failed, helperEnv, sandboxRow, sid as newSid, sleep,
   type Cloud, type CloudDeps, type CreateOptions,
 } from "./place.ts";
 
@@ -90,7 +91,7 @@ export function daytonaCloud(d: CloudDeps): Cloud {
     const id = String(s.id);
     const box: Box = { id, name: displayName(str(s.name) ?? id.slice(0, 8)), proxy: str(s.toolboxProxyUrl)?.replace(/\/+$/, "") ?? (await daytonaToolboxUrl(l, id, { timeoutMs: API_TIMEOUT_MS, fetch: d.fetch })) };
     const probe = place(l, box, "/", ours, o);
-    const cwd = parseCwd(await probe.run(cwdScript(asked, ours), { timeoutMs: 30_000 }), asked, `Daytona ${box.name}`);
+    const cwd = parseCwd(await probe.run(cwdScript(asked, ours || !!o.createCwd), { timeoutMs: 30_000 }), asked, `Daytona ${box.name}`);
     return place(l, box, cwd, ours, o);
   }
 
@@ -241,6 +242,31 @@ export class DaytonaPlace extends BasePlace {
 
   run(script: string, o: { timeoutMs: number }): Promise<string> {
     return this.exec(`sh -c ${shQuote(script)} 2>&1`, o.timeoutMs);
+  }
+
+  /** The values ride this one /process/execute's `envs`, which the daemon doesn't keep or echo. */
+  protected runSecret(script: string, env: Record<string, string>, o: { timeoutMs: number }): Promise<string> {
+    return this.exec(`sh -c ${shQuote(script)} 2>&1`, o.timeoutMs, env);
+  }
+
+  /** upload-v2 (raw body) into the 0700 run folder, then `tar xzf` into place and delete the archive. */
+  protected async upload(entries: TarEntry[], dir: string, o: { home: string; timeoutMs: number }): Promise<void> {
+    const tgz = await tgzOf(entries);
+    const file = `${o.home}/${RUN_DIR}/${newSid()}.tgz`;
+    await this.run(`umask 077; mkdir -p "$HOME"/${shQuote(RUN_DIR)}`, { timeoutMs: 30_000 });
+    const r = await http(this.toolbox(`/files/upload-v2?${new URLSearchParams({ path: file })}`), {
+      method: "POST",
+      headers: { ...this.hdrs, "content-type": "application/octet-stream" },
+      body: tgz,
+      timeoutMs: o.timeoutMs,
+      fetch: this.deps.fetch,
+    });
+    if (r.status >= 400) jsonOf(r, `Daytona ${this.box.name} upload`);
+    try {
+      await this.run(`umask 077; mkdir -p ${shQuote(dir)} && tar xzf ${shQuote(file)} -C ${shQuote(dir)}`, { timeoutMs: o.timeoutMs });
+    } finally {
+      this.exec(`rm -f ${shQuote(file)}`, 15_000).catch(() => {});
+    }
   }
 
   private cleanup(id: string): void {

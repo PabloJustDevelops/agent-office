@@ -28,6 +28,7 @@ import { agentEnv } from "./env.ts";
 import { HiredFolders, isDir } from "./fs.ts";
 import { createKeyStore } from "./keys.ts";
 import { createLinker, createOfficePort, type Linker } from "./link.ts";
+import { createLogins, type Logins } from "./logins.ts";
 
 export interface ControlPlaneOptions {
   state: OfficeState;
@@ -57,6 +58,8 @@ export interface ControlPlaneOptions {
   service?: ServiceControl;
   installer?: InstallControl;
   pingMs?: number;
+  /** "Bring my setup": known key names in the login shell (tests); default a fresh login shell. */
+  shellNames?: () => Promise<string[]>;
 }
 
 export interface Plane extends ControlPlane {
@@ -177,11 +180,15 @@ export function createControlPlane(o: ControlPlaneOptions): Plane {
     log(`control: hiring unavailable (${scrubMessage((err as Error).message).slice(0, 120)})`, "warn");
   }
 
+  let logins: Logins | null = null;
+  if (sessions) logins = createLogins({ ctx, keys, pty: o.pty ?? (async () => null) });
+
   // Probe the agents now, so the first page's GET /api/control (and its Hire button) doesn't wait on it.
   sessions?.availability().catch(() => {});
 
   const subs: Disposable[] = [];
-  subs.push(keys.onChange(() => info({ keys: keys.list() })));
+  subs.push(keys.onChange(() => info({ keys: keys.list(), ...(logins ? { logins: logins.status() } : {}) })));
+  if (logins) subs.push(logins.onChange((flows) => info({ logins: flows })));
   if (places) subs.push(places.onChange((providers) => info({ providers })));
   if (sessions) {
     subs.push(sessions.onChange((s) => emit({ event: "control", data: s })));
@@ -211,6 +218,8 @@ export function createControlPlane(o: ControlPlaneOptions): Plane {
     installer: o.installer ?? NO_INSTALLER,
     info,
     pingMs: o.pingMs,
+    logins,
+    ...(o.shellNames ? { shellNames: o.shellNames } : {}),
   });
 
   async function hook(req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
@@ -307,7 +316,7 @@ export function createControlPlane(o: ControlPlaneOptions): Plane {
     },
     ownedPids: () => {
       try {
-        return sessions?.ownedPids() ?? [];
+        return [...(sessions?.ownedPids() ?? []), ...(logins?.pids() ?? [])];
       } catch {
         return [];
       }
@@ -323,6 +332,7 @@ export function createControlPlane(o: ControlPlaneOptions): Plane {
         // Closing anyway.
       }
       for (const s of subs) s.dispose();
+      logins?.shutdown();
       try {
         places?.shutdown();
       } catch {

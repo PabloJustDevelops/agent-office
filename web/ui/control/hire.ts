@@ -13,6 +13,7 @@ import { glyph, icon } from "../icons.ts";
 import { agentColor, agentName, hostLogo, logo } from "../logos.ts";
 import { api, ControlError } from "./api.ts";
 import { PERMISSIONS, PLACE_NAME, until } from "./format.ts";
+import { createSetupSection } from "./setup.ts";
 import type { ControlStore } from "./store.ts";
 
 export interface HireDialog {
@@ -31,7 +32,7 @@ const PROVIDERS: Provider[] = ["daytona", "vercel", "railway"];
 const TIMEOUTS = [15, 30, 60, 120];
 const HEADLESS: AgentKind[] = ["claude", "codex", "opencode"];
 
-export function createHire(store: ControlStore, opts: { onHired(s: ControlSession): void; openSettings(tab: "keys" | "cloud" | "agents"): void }): HireDialog {
+export function createHire(store: ControlStore, opts: { onHired(s: ControlSession): void; openSettings(tab: "keys" | "cloud" | "agents" | "logins"): void }): HireDialog {
   /* ---- state ---- */
   let agent: AgentKind = "claude";
   let where: Where = "local";
@@ -118,6 +119,14 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
     h("p", { class: "hire-hint", text: "Set in the agent's environment there, for this session only. The office never shows a stored key again." }),
   );
 
+  const setupSec = createSetupSection(store, {
+    openSettings: (t) => opts.openSettings(t),
+    changed: () => {
+      renderKeys();
+      renderSummary();
+    },
+  });
+
   const err = h("p", { class: "hire-err", attrs: { hidden: true, role: "alert" } });
   const summary = h("span", { class: "hire-summary" });
   const cancelBtn = h("button", { class: "btn btn-quiet", attrs: { type: "button" }, text: "Cancel" });
@@ -138,6 +147,7 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
       section("How you drive it", modes),
       section("Permissions", permSel, permHint, bypassWarn),
       section("First prompt", promptInput),
+      setupSec.el,
       keysSection,
     ),
     h("footer", { class: "dlg-foot" }, err, h("div", { class: "dlg-foot-row" }, summary, h("span", { class: "dlg-gap" }), cancelBtn, hireBtn)),
@@ -345,8 +355,10 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
   }
 
   function renderKeys(): void {
-    keysSection.hidden = where === "local";
-    if (where === "local") return;
+    // With "Your setup" on, its Login row lists the keys (stored and from the shell).
+    keysSection.hidden = where === "local" || setupSec.on;
+    cwdInput.placeholder = (where !== "local" && setupSec.on && setupSec.cwdHint()) || "Home folder";
+    if (keysSection.hidden) return;
     keyList.replaceChildren();
     const stored = store.info?.keys ?? [];
     if (!stored.length) {
@@ -390,13 +402,13 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
     if (where === "sandbox" && !prov(provider)?.ready) return `Log in to ${PLACE_NAME[provider]} first.`;
     if (where === "sandbox" && sandbox === "new" && !prov(provider)?.canCreate) return "Pick a running sandbox.";
     if (where === "ssh" && !(hostInput.value.trim() || sshHost)) return "Pick an ssh host.";
-    return "";
+    return setupSec.problem();
   }
 
   function renderSummary(): void {
     const p = place();
     const whereText = !p ? "" : p.kind === "local" ? tidyPath(p.target) : p.kind === "ssh" ? `ssh ${p.target}` : `${PLACE_NAME[p.kind]} · ${p.target === "new" ? "new sandbox" : sbxName(p.target)}`;
-    setText(summary, [agentName(agent), mode === "chat" ? "chat" : "terminal", whereText].filter(Boolean).join(" · "));
+    setText(summary, [agentName(agent), mode === "chat" ? "chat" : "terminal", whereText, setupSec.on ? "your setup" : ""].filter(Boolean).join(" · "));
     const why = problem();
     hireBtn.disabled = busy || !!why;
     hireBtn.title = why;
@@ -409,6 +421,7 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
     renderAgents();
     renderWhere();
     renderMode();
+    setupSec.update({ agent, remote: where !== "local", mode });
     renderKeys();
     renderSummary();
   }
@@ -507,7 +520,10 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
     const req: HireRequest = { agent, place: p, mode, permission };
     const prompt = promptInput.value.trim();
     if (prompt) req.prompt = prompt;
-    if (p.kind !== "local") req.keys = [...keys];
+    if (p.kind !== "local") {
+      if (setupSec.on) setupSec.apply(req);
+      else req.keys = [...keys];
+    }
     if (p.kind !== "local" && p.kind !== "ssh" && p.target === "new") req.sandbox = { timeoutMin };
     busy = true;
     err.hidden = true;
@@ -530,6 +546,7 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
     el,
     open() {
       if (el.open) return;
+      setupSec.refresh();
       pickDefaults();
       if (!keysTouched) keys = presetKeys();
       err.hidden = true;

@@ -5,7 +5,7 @@
  * password field, sent once and cleared; the page never shows it again, keeps
  * no copy, and only ever sees a short preview from the server.
  */
-import type { InstallPlan, KeyInfo, ProviderStatus, SandboxInfo } from "../../../src/shared/control.ts";
+import type { InstallPlan, KeyInfo, LoginFlow, ProviderStatus, SandboxInfo } from "../../../src/shared/control.ts";
 import { BRAND, type AgentKind } from "../../../src/shared/events.ts";
 import { h, setText } from "../dom.ts";
 import { ago } from "../format.ts";
@@ -15,7 +15,7 @@ import { api, ControlError } from "./api.ts";
 import { PLACE_NAME, until } from "./format.ts";
 import type { ControlStore } from "./store.ts";
 
-export type SettingsTab = "keys" | "cloud" | "agents" | "service";
+export type SettingsTab = "logins" | "keys" | "cloud" | "agents" | "service";
 
 export interface SettingsDrawer {
   el: HTMLElement;
@@ -27,6 +27,7 @@ export interface SettingsDrawer {
 
 const AGENTS = Object.keys(BRAND) as AgentKind[];
 const TABS: [SettingsTab, string, Parameters<typeof icon>[0]][] = [
+  ["logins", "Logins", "lock"],
   ["keys", "Keys", "key"],
   ["cloud", "Cloud", "cloud"],
   ["agents", "Agents", "terminal"],
@@ -34,7 +35,7 @@ const TABS: [SettingsTab, string, Parameters<typeof icon>[0]][] = [
 ];
 
 export function createSettings(store: ControlStore, opts: { onClose(): void; toast(text: string, tone?: "plain" | "error" | "pass"): void }): SettingsDrawer {
-  let tab: SettingsTab = "keys";
+  let tab: SettingsTab = "logins";
   const tabBar = h("div", { class: "set-tabs", attrs: { role: "tablist", "aria-label": "Settings" } });
   for (const [t, label, ic] of TABS) {
     const b = h("button", { class: "set-tab", attrs: { type: "button", role: "tab", "aria-selected": "false", "data-tab": t } }, icon(ic, 1), h("span", { text: label }));
@@ -159,6 +160,97 @@ export function createSettings(store: ControlStore, opts: { onClose(): void; toa
       h("p", { class: "set-lede", text: "agent office keeps these keys for your agents and passes the ones you choose into a sandbox or ssh box when you hire an agent there. Values never come back to this page." }),
       h("div", { class: "set-card" }, h("div", { class: "set-row" }, h("h3", { class: "set-h", text: `Stored keys${keys.length ? ` · ${keys.length}` : ""}` }), importBtn), keys.length ? list : h("p", { class: "set-empty", text: "No keys yet. Add one below, or import the ones your shell already exports." })),
       keyForm,
+    ];
+  }
+
+  /* -------------------------------------------------------------- logins */
+  const codeInput = h("input", { class: "field", attrs: { type: "text", placeholder: "Paste the code from the browser", autocomplete: "off", spellcheck: "false", "aria-label": "Code from the browser", "data-1p-ignore": "true" } });
+  const codeSend = h("button", { class: "btn btn-quiet", attrs: { type: "submit" }, text: "Send code" });
+  const codeForm = h("form", { class: "set-row login-code", attrs: { autocomplete: "off" } }, codeInput, codeSend);
+  codeForm.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const v = codeInput.value.trim();
+    if (!v) return;
+    codeInput.value = "";
+    api.loginInput(`${v}\r`).catch((e: Error) => opts.toast(`Couldn't send it: ${e.message}`, "error"));
+  });
+  let loginBusy = false;
+  const fmtDate = (iso?: string) => (iso ? new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "");
+
+  function startLogin(): void {
+    loginBusy = true;
+    render();
+    api.loginStart().then(
+      (f) => {
+        if (store.info) store.info.logins = [f];
+        opts.toast("Your browser opens to sign in to Claude", "plain");
+      },
+      (e: Error) => opts.toast(`Couldn't start it: ${e.message}`, "error"),
+    ).finally(() => {
+      loginBusy = false;
+      render();
+    });
+  }
+
+  function renderLogins(): Node[] {
+    const f: LoginFlow = store.info?.logins?.find((x) => x.agent === "claude") ?? { agent: "claude", state: "idle" };
+    const connected = f.state === "connected" || (f.state === "failed" && !!f.connectedAt);
+    const status = f.state === "running"
+      ? h("span", { class: "set-ready is-wait" }, h("span", { class: "ready-dot is-wait" }), h("span", { text: "Signing in…" }))
+      : connected
+        ? h("span", { class: "set-ready is-ready" }, h("span", { class: "ready-dot is-ready" }), h("span", { text: `Connected${f.expiresAt ? ` · expires ~${fmtDate(f.expiresAt)}` : ""}` }))
+        : h("span", { class: "set-ready" }, h("span", { class: "ready-dot" }), h("span", { text: "Not connected" }));
+    const actions = h("div", { class: "set-row login-actions" });
+    if (f.state === "running") {
+      actions.append(h("span", { class: "set-hint", text: "Approve it in the browser; the office takes the token from there." }), h("button", { class: "btn btn-quiet", attrs: { type: "button" }, text: "Cancel", on: { click: () => api.loginCancel().catch(() => {}) } }));
+    } else if (connected) {
+      const del = h("button", { class: "btn btn-quiet btn-danger", attrs: { type: "button" }, text: "Disconnect" });
+      let armed = 0;
+      del.addEventListener("click", () => {
+        if (!armed) {
+          setText(del, "Disconnect?");
+          armed = window.setTimeout(() => { armed = 0; setText(del, "Disconnect"); }, 3000);
+          return;
+        }
+        clearTimeout(armed);
+        api.deleteKey("CLAUDE_CODE_OAUTH_TOKEN").then(() => { opts.toast("Disconnected Claude"); void store.refresh(); }, (e: Error) => opts.toast(`Couldn't: ${e.message}`, "error"));
+      });
+      const when = f.connectedAt ? ago(Date.parse(f.connectedAt)) : "";
+      actions.append(h("span", { class: "set-hint", text: when ? `Connected ${/^now$|^0/.test(when) ? "just now" : `${when} ago`}.` : "" }), h("button", { class: "btn btn-quiet", attrs: { type: "button", disabled: loginBusy }, text: "Reconnect", on: { click: startLogin } }), del);
+    } else {
+      actions.append(h("span", { class: "dlg-gap" }), h("button", { class: "btn btn-primary", attrs: { type: "button", disabled: loginBusy }, text: loginBusy ? "Starting…" : "Connect Claude", on: { click: startLogin } }));
+    }
+    const running: Node[] = [];
+    if (f.state === "running") {
+      if (f.url) running.push(h("p", { class: "set-hint" }, h("span", { text: "Browser didn't open? " }), h("a", { class: "login-link", attrs: { href: f.url, target: "_blank", rel: "noopener noreferrer" }, text: "Open the sign-in page" })));
+      if (f.screen) running.push(h("pre", { class: "set-diff login-screen", attrs: { "aria-label": "claude setup-token", tabindex: 0 }, text: f.screen }));
+      if (f.wantsCode) running.push(codeForm);
+    }
+    return [
+      h("p", { class: "set-lede", text: "Sign-ins for the agents you hire into a sandbox or onto an ssh box. They stay on this Mac; one goes to an agent only when you pick it in Your setup." }),
+      h(
+        "div",
+        { class: "set-card set-login" },
+        h("div", { class: "set-row" }, h("span", { class: "set-prov-name" }, logo("claude"), h("b", { text: "Claude subscription" })), status),
+        h("p", { class: "set-hint", text: "Runs claude setup-token here. Your browser opens to sign in; the one-year token it prints is kept as CLAUDE_CODE_OAUTH_TOKEN and never shown." }),
+        f.state === "failed" && f.error ? h("p", { class: "set-err", text: f.error }) : null,
+        ...running,
+        actions,
+        h("p", { class: "set-hint set-muted-hint", text: "A setup-token can only make model requests: claude.ai connectors don't come along. MCP servers set up on this Mac do, through Your setup." }),
+      ),
+      h(
+        "div",
+        { class: "set-card set-login" },
+        h("div", { class: "set-row" }, h("span", { class: "set-prov-name" }, logo("codex"), h("b", { text: "Codex" })), h("span", { class: "set-ready" }, h("span", { text: "Signs in there" }))),
+        h("p", { class: "set-hint", text: "With an API key, with a device code shown in the session panel, or with this Mac's ChatGPT sign-in copied over (~/.codex/auth.json). You pick when you hire." }),
+      ),
+      h(
+        "div",
+        { class: "set-card set-login" },
+        h("div", { class: "set-row" }, h("span", { class: "set-prov-name" }, icon("key", 1), h("b", { text: "Other agents" })), h("span", { class: "set-ready" }, h("span", { text: `${(store.info?.keys ?? []).length} stored key${(store.info?.keys ?? []).length === 1 ? "" : "s"}` }))),
+        h("p", { class: "set-hint", text: "Stored keys, plus the known key names your login shell exports: those are read when you hire and handed over without being stored." }),
+        h("div", { class: "set-row" }, h("span", { class: "dlg-gap" }), h("button", { class: "btn btn-quiet", attrs: { type: "button" }, text: "Manage keys", on: { click: () => { tab = "keys"; render(); } } })),
+      ),
     ];
   }
 
@@ -308,7 +400,7 @@ export function createSettings(store: ControlStore, opts: { onClose(): void; toa
   function render(): void {
     for (const b of tabBar.querySelectorAll<HTMLElement>("[data-tab]")) b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     const keep = tab === "keys" ? keyForm : null;
-    const kids = tab === "keys" ? renderKeys() : tab === "cloud" ? renderCloud() : tab === "agents" ? renderAgents() : renderService();
+    const kids = tab === "logins" ? renderLogins() : tab === "keys" ? renderKeys() : tab === "cloud" ? renderCloud() : tab === "agents" ? renderAgents() : renderService();
     // the key form keeps what is being typed across refreshes
     if (keep) keep.remove();
     body.replaceChildren(...kids);
@@ -335,7 +427,7 @@ export function createSettings(store: ControlStore, opts: { onClose(): void; toa
     },
     isOpen: () => !el.hidden,
     sync() {
-      if (!el.hidden && document.activeElement !== nameInput && document.activeElement !== valueInput) render();
+      if (!el.hidden && document.activeElement !== nameInput && document.activeElement !== valueInput && document.activeElement !== codeInput) render();
     },
   };
 }

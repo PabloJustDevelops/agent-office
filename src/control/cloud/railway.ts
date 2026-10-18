@@ -36,9 +36,10 @@ import { RAILWAY_GQL, RailwayBudget, createRailwayProvider, railwayToken } from 
 import { RemoteError, displayName, homeOf, http, jsonOf, readJson, run, str, which } from "../../remote/util.ts";
 import { ControlError, type Launch, type OpenOptions, type PipeProc, type PlacesContext, type Term, type TermExit } from "../types.ts";
 import { connectWs } from "../ws.ts";
+import { tgzOf, type TarEntry } from "../tar.ts";
 import { cleanupScript, cwdScript, envFromStdinScript, envFromVarScript, envLines, launchLine, parseCwd, shWrap } from "./launch.ts";
 import {
-  BasePlace, Listeners, Once, afterExit, failed, helperEnv, sandboxRow, sid as newSid, sleep, spawnPipe,
+  BasePlace, Listeners, Once, afterExit, failed, helperEnv, sandboxRow, sid as newSid, sleep, spawnPipe, untarScript,
   type Cloud, type CloudDeps, type CreateOptions,
 } from "./place.ts";
 
@@ -132,7 +133,7 @@ export function railwayCloud(d: CloudDeps): Cloud {
 
   async function ready(t: Token | undefined, box: RailwayBox, asked: string | undefined, ours: boolean, o: OpenOptions): Promise<RailwayPlace> {
     const probe = new RailwayPlace(ctx, d, budget, t, box, "/", ours, o.agent);
-    const cwd = parseCwd(await probe.run(cwdScript(asked, ours), { timeoutMs: 60_000 }), asked, `Railway ${box.name}`);
+    const cwd = parseCwd(await probe.run(cwdScript(asked, ours || !!o.createCwd), { timeoutMs: 60_000 }), asked, `Railway ${box.name}`);
     return new RailwayPlace(ctx, d, budget, t, box, cwd, ours, o.agent);
   }
 
@@ -260,7 +261,7 @@ export function railwayCloud(d: CloudDeps): Cloud {
 interface BridgeRun {
   command: string;
   env?: Record<string, string>;
-  stdin?: string;
+  stdin?: string | Buffer;
   timeoutMs: number;
 }
 
@@ -364,7 +365,7 @@ export class RailwayPlace extends BasePlace {
         reject(new RemoteError("unreachable", `Railway ${this.box.name}: exec bridge closed (${code})`));
       });
       if (o.stdin !== undefined) {
-        const b = Buffer.from(o.stdin, "utf8");
+        const b = typeof o.stdin === "string" ? Buffer.from(o.stdin, "utf8") : o.stdin;
         for (let i = 0; i < b.length; i += 16 << 10) ws.send(Buffer.concat([Buffer.from([2]), b.subarray(i, i + (16 << 10))]));
       }
       ws.send(JSON.stringify({ type: "stdin_close" }));
@@ -376,6 +377,28 @@ export class RailwayPlace extends BasePlace {
     const r = await this.bridge({ command: shWrap(script), timeoutMs: o.timeoutMs });
     if (r.code !== 0) throw failed(`Railway ${this.box.name}`, r.code, r.stderr || r.stdout);
     return r.stdout;
+  }
+
+  /** The values are this bridge command's env (no file, no stdin); with only the CLI, assignments on its stdin. */
+  protected async runSecret(script: string, env: Record<string, string>, o: { timeoutMs: number }): Promise<string> {
+    if (this.tok) {
+      const r = await this.bridge({ command: shWrap(script), env, timeoutMs: o.timeoutMs });
+      if (r.code !== 0) throw failed(`Railway ${this.box.name}`, r.code, r.stderr || r.stdout);
+      return r.stdout;
+    }
+    const bin = this.cli();
+    if (!bin) throw new ControlError(503, NO_CLI);
+    const r = await run(bin, this.sshArgs("sh -s"), { input: `${envLines(env)}${script}\n`, timeoutMs: o.timeoutMs, env: helperEnv(this.ctx.providerEnv(), true) });
+    if (r.code !== 0) throw failed(`Railway ${this.box.name}`, r.code ?? "?", r.stderr);
+    return r.stdout;
+  }
+
+  /** The archive on the exec bridge's stdin into `tar xzf -` (Railway has no file upload). */
+  protected async upload(entries: TarEntry[], dir: string, o: { home: string; timeoutMs: number }): Promise<void> {
+    if (!this.tok) throw new ControlError(502, "Railway: copying files needs an API token (RAILWAY_API_TOKEN) or a fresh railway login");
+    const tgz = await tgzOf(entries);
+    const r = await this.bridge({ command: shWrap(untarScript(dir)), stdin: tgz, timeoutMs: o.timeoutMs });
+    if (r.code !== 0) throw failed(`Railway ${this.box.name}`, r.code, r.stderr || r.stdout);
   }
 
   /** The env file: from this command's own env over the bridge, or the CLI's stdin. */

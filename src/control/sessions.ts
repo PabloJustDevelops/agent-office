@@ -19,7 +19,7 @@ import { realpathSync, statSync } from "node:fs";
 import { basename, isAbsolute, sep } from "node:path";
 import { BRAND, type AgentKind, type EventKind, type RawEvent } from "../shared/events.ts";
 import type {
-  AgentAvailability, Approval, ApprovalAnswer, ChatItem, ControlSession, HireRequest, PermissionMode, SessionStatus,
+  AgentAvailability, Approval, ApprovalAnswer, ChatItem, ControlSession, HireRequest, PermissionMode, SessionStatus, SetupChoice,
 } from "../shared/control.ts";
 import { safe } from "../ingest/redact.ts";
 import { scrubMessage } from "../remote/util.ts";
@@ -33,10 +33,14 @@ import { Emitter, NOOP } from "./emitter.ts";
 import { freePort, opencodeClient } from "./opencode-api.ts";
 import { clampSize, loadPty } from "./pty.ts";
 import { TermBuffer } from "./term.ts";
+import { loginShellVars } from "./env.ts";
+import { importableNames } from "./keys.ts";
+import { collect, defaultRemoteCwd, shellKeyNames } from "./setup.ts";
+import { setupError } from "./cloud/setup.ts";
 import {
   AGENT_FACTS, ControlError, DEFAULT_TERM_SIZE, EXITED_KEEP_MS, MAX_SESSIONS,
   type ChatConn, type ChatSink, type ControlContext, type Disposable, type HookCall, type HookReply, type Launch, type PipeProc,
-  type Places, type PtyBackend, type RemotePlace, type SessionManager, type Term, type TermDrive, type TermSink,
+  type Places, type PtyBackend, type RemotePlace, type SessionManager, type SetupBundle, type Term, type TermDrive, type TermSink,
 } from "./types.ts";
 
 export interface SessionManagerOptions {
@@ -54,6 +58,8 @@ export interface SessionManagerOptions {
   hookWaitMs?: number;
   /** A free loopback port for opencode's server; default asks the OS. */
   port?: () => Promise<number>;
+  /** "Bring my setup": these names from the login shell (default env.ts loginShellVars). Never stored. */
+  shellVars?: (names: string[]) => Promise<Record<string, string> | null>;
 }
 
 const HIRES_PER_MINUTE = 10;
@@ -67,6 +73,12 @@ const SHUTDOWN_KILL_MS = 3_000;
 const TRUST_WATCH_MS = 3 * 60_000;
 const TRUST_RE = /(trust (this|the contents of this) (folder|directory|workspace)|one you trust|Do you trust)/i;
 const TRUST_DETAIL = "Answer the trust question in the terminal";
+/** Codex's device sign-in: a link and a one-time code on screen (codex login --device-auth). The code lasts 15 minutes. */
+const DEVICE_RE = /one-time code/i;
+const DEVICE_WATCH_MS = 16 * 60_000;
+const DEVICE_DETAIL = "Sign in to Codex: open the link and enter the code";
+/** Codex signs in with its device code first when it isn't signed in there, then runs. */
+const CODEX_DEVICE_LOGIN = `if ! "$0" login status >/dev/null 2>&1; then "$0" login --device-auth || exit $?; fi; exec "$0" "$@"`;
 
 interface HookMeta {
   toolName: string;
@@ -149,7 +161,13 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
   const name = (a: AgentKind) => BRAND[a].name;
 
   function publish(l: Live): void {
-    changed.emit({ ...l.s, place: { ...l.s.place }, ...(l.s.pendingApproval ? { pendingApproval: { ...l.s.pendingApproval } } : {}) });
+    changed.emit({
+      ...l.s,
+      place: { ...l.s.place },
+      ...(l.s.pendingApproval ? { pendingApproval: { ...l.s.pendingApproval } } : {}),
+      ...(l.s.setup ? { setup: { ...l.s.setup, ...(l.s.setup.skipped ? { skipped: [...l.s.setup.skipped] } : {}) } } : {}),
+      ...(l.s.needs ? { needs: { ...l.s.needs } } : {}),
+    });
   }
 
   function setStatus(l: Live, status: SessionStatus, detail?: string): void {
@@ -214,7 +232,8 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
         if (l.s.workerId === w) return;
         l.s.workerId = w;
         l.linked = true;
-        if (l.s.detail === TRUST_DETAIL) delete l.s.detail;
+        if (l.s.detail === TRUST_DETAIL || l.s.detail === DEVICE_DETAIL) delete l.s.detail;
+        delete l.s.needs;
         publish(l);
       },
     });
@@ -249,6 +268,13 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
       if (r.mode === "chat") {
         if (!AGENT_FACTS[r.agent].chat) throw new ControlError(400, `${name(r.agent)} has no chat mode. Use terminal mode.`);
         if (r.place.kind !== "ssh" && r.place.kind !== "railway") throw new ControlError(400, "Use terminal mode in Daytona and Vercel sandboxes for now.");
+      }
+      if (r.setup) {
+        r.setup = normalizeSetup(r.agent, r.mode, r.setup, r.keys);
+        if (r.setup.project) {
+          r.setup.project = { ...r.setup.project, folder: localFolder(r.setup.project.folder) };
+          if (!r.place.cwd) r.place.cwd = defaultRemoteCwd(r.setup.project.folder);
+        }
       }
       if (r.keys.length) ctx.keys.reveal(r.keys); // throws 400 naming a missing key; the values are fetched again at launch
     }
@@ -299,7 +325,7 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
     return { ...l.s, place: { ...l.s.place } };
   }
 
-  function validateShape(req: HireRequest): HireRequest & { permission: PermissionMode; keys: string[] } {
+  function validateShape(req: HireRequest): HireRequest & { permission: PermissionMode; keys: string[]; setup?: SetupChoice } {
     if (!req || typeof req !== "object") throw new ControlError(400, "Bad hire request.");
     if (!Object.hasOwn(AGENT_FACTS, req.agent)) throw new ControlError(400, "Unknown agent.");
     if (req.mode !== "terminal" && req.mode !== "chat") throw new ControlError(400, "Unknown mode.");
@@ -310,7 +336,50 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
     if (!["default", "acceptEdits", "plan", "bypass"].includes(permission)) throw new ControlError(400, "Unknown permission mode.");
     if (req.prompt !== undefined && typeof req.prompt !== "string") throw new ControlError(400, "Bad prompt.");
     const keys = Array.isArray(req.keys) && p.kind !== "local" ? req.keys.filter((k) => typeof k === "string") : [];
-    return { ...req, place: { kind: p.kind, target: p.target, ...(p.cwd ? { cwd: p.cwd } : {}) }, permission, keys, ...(req.prompt?.trim() ? { prompt: req.prompt } : { prompt: undefined }) };
+    const setup = p.kind !== "local" && req.setup && typeof req.setup === "object" ? req.setup : undefined;
+    return { ...req, place: { kind: p.kind, target: p.target, ...(p.cwd ? { cwd: p.cwd } : {}) }, permission, keys, setup, ...(req.prompt?.trim() ? { prompt: req.prompt } : { prompt: undefined }) };
+  }
+
+  /**
+   * The keys a sign-in choice implies, and none that would override it:
+   * Claude's subscription token loses to an API key, Codex's ChatGPT sign-in
+   * to OPENAI_API_KEY. `keys` (stored names) is edited in place.
+   */
+  function normalizeSetup(agent: AgentKind, mode: HireRequest["mode"], setup: SetupChoice, keys: string[]): SetupChoice {
+    const allowed = new Set(shellKeyNames(importableNames()));
+    const stored = new Set(ctx.keys.list().map((k) => k.name));
+    let shell = (Array.isArray(setup.shellKeys) ? setup.shellKeys : []).filter((n) => typeof n === "string" && allowed.has(n) && !keys.includes(n));
+    const login = setup.login ?? "none";
+    const drop = (names: string[]) => {
+      for (const n of names) {
+        const i = keys.indexOf(n);
+        if (i >= 0) keys.splice(i, 1);
+      }
+      shell = shell.filter((n) => !names.includes(n));
+    };
+    const need = (name: string, what: string) => {
+      if (keys.includes(name) || shell.includes(name)) return;
+      if (stored.has(name)) keys.push(name);
+      else throw new ControlError(400, `${what} needs ${name}: ${name === "CLAUDE_CODE_OAUTH_TOKEN" ? "connect Claude in Settings, Logins" : "add it under Keys or export it in your shell"}.`);
+    };
+    if (agent === "claude" && login === "subscription") {
+      need("CLAUDE_CODE_OAUTH_TOKEN", "Signing in with your Claude subscription");
+      drop(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
+    } else if (agent === "claude" && login === "key") need("ANTHROPIC_API_KEY", "Signing in with an API key");
+    else if (agent === "codex" && login === "key") need("OPENAI_API_KEY", "Signing in with an API key");
+    else if (agent === "codex" && (login === "device" || login === "copy")) {
+      if (login === "device" && mode !== "terminal") throw new ControlError(400, "Codex's device sign-in shows its code in the terminal: hire it in terminal mode.");
+      drop(["OPENAI_API_KEY"]);
+    }
+    const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, 200) : undefined);
+    const p = setup.project;
+    return {
+      login,
+      shellKeys: shell,
+      ...(strings(setup.mcp) ? { mcp: strings(setup.mcp) } : {}),
+      ...(strings(setup.instructions) ? { instructions: strings(setup.instructions) } : {}),
+      ...(p && typeof p.folder === "string" && p.folder ? { project: { folder: p.folder, git: p.git !== false, env: p.env === true } } : {}),
+    };
   }
 
   /** An existing folder under the user's home, or one the office has seen agents work in. */
@@ -413,7 +482,14 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
   async function startRemote(l: Live): Promise<void> {
     const { agent, mode, permission } = l.s;
     const progress = (status: "creating" | "installing" | "starting", detail: string) => setStatus(l, status, detail);
-    const rp = await places!.open(l.s.place, { agent, ...(l.req.sandbox ? { sandbox: l.req.sandbox } : {}), progress, signal: l.abort.signal });
+    const setup = l.req.setup;
+    // Read on this machine while the sandbox comes up; nothing in it is logged.
+    let bundleP: Promise<SetupBundle> | undefined;
+    if (setup) {
+      bundleP = collect(agent, setup, { home: ctx.userHome, env: ctx.agentEnv(), keys: ctx.keys.list(), shellKeys: [] });
+      bundleP.catch(() => {});
+    }
+    const rp = await places!.open(l.s.place, { agent, ...(l.req.sandbox ? { sandbox: l.req.sandbox } : {}), progress, signal: l.abort.signal, ...(setup?.project ? { createCwd: true } : {}) });
     l.place = rp;
     if (l.stopping) return finish(l, null);
     l.s.host = rp.host;
@@ -426,13 +502,16 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
     if (l.s.status !== "installing") setStatus(l, "installing", `Checking ${name(agent)}…`);
     const got = await rp.ensureAgent(agent, progress);
     if (l.stopping) return finish(l, null);
+    const keys = await launchKeys(l);
+    if (bundleP) await bring(l, rp, await bundleP, keys);
+    if (l.stopping) return finish(l, null);
     await rp.firstRun(agent, rp.cwd);
     if (l.stopping) return finish(l, null);
     setStatus(l, "starting", `Starting ${name(agent)}…`);
-    const keys = l.req.keys?.length ? ctx.keys.reveal(l.req.keys) : {};
     if (mode === "terminal") {
       const sessionId = pin ? randomUUID() : undefined;
-      const launch = terminalLaunch({ agent, bin: got.bin, cwd: rp.cwd, permission, prompt: l.req.prompt, sessionId, remote: true, keys, path: got.path });
+      let launch = terminalLaunch({ agent, bin: got.bin, cwd: rp.cwd, permission, prompt: l.req.prompt, sessionId, remote: true, keys, path: got.path });
+      if (agent === "codex" && setup?.login === "device") launch = { ...launch, argv: ["sh", "-c", CODEX_DEVICE_LOGIN, ...launch.argv] };
       const term = await rp.attach(launch, { cols: l.buf!.cols, rows: l.buf!.rows });
       if (l.stopping) {
         term.kill();
@@ -463,6 +542,46 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
     if (!l.finished) l.keep = rp.keepAlive();
   }
 
+  /** The stored keys this hire hands over, plus the login shell's (read now, never stored). Never logged. */
+  async function launchKeys(l: Live): Promise<Record<string, string>> {
+    const out: Record<string, string> = {};
+    const names = l.req.setup?.shellKeys ?? [];
+    if (names.length) {
+      const got = await (o.shellVars ?? ((n: string[]) => loginShellVars(n)))(names);
+      if (!got) throw new ControlError(502, "Couldn't read your login shell's environment for the keys to pass.");
+      for (const n of names) {
+        const v = got[n]?.trim();
+        if (v && !/[\r\n\0]/.test(v)) out[n] = v;
+      }
+    }
+    return { ...out, ...(l.req.keys?.length ? ctx.keys.reveal(l.req.keys) : {}) };
+  }
+
+  /** "Bring my setup" into the place: a step of its own in the panel; what didn't make it is said there, never fatal. */
+  async function bring(l: Live, rp: RemotePlace, bundle: SetupBundle, keys: Record<string, string>): Promise<void> {
+    l.s.setup = { state: "running", summary: bundle.summary };
+    setStatus(l, "installing", "Copying your setup…");
+    if (!rp.bring) {
+      l.s.setup = { state: "failed", summary: bundle.summary, skipped: ["this place can't take files"] };
+      publish(l);
+      return;
+    }
+    // Only the value a merge needs there (Claude's key, for its approval); the rest stays in the launch.
+    const secrets: Record<string, string> = bundle.approveClaudeKey && keys.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: keys.ANTHROPIC_API_KEY } : {};
+    try {
+      const r = await rp.bring(bundle, secrets, (d) => setStatus(l, "installing", d));
+      // Left out on purpose here (hooks that run local files, big binaries) is still "done"; "partial" is what didn't land there.
+      const skipped = [...r.skipped, ...bundle.skipped];
+      l.s.setup = { state: r.skipped.length ? "partial" : "done", summary: bundle.summary, ...(skipped.length ? { skipped: skipped.slice(0, 30) } : {}) };
+      ctx.log(`set up ${name(l.s.agent)} in ${l.s.title}: ${bundle.summary}${skipped.length ? ` (${skipped.length} skipped)` : ""}`);
+    } catch (err) {
+      const why = setupError(err);
+      l.s.setup = { state: "failed", summary: bundle.summary, skipped: [why, ...bundle.skipped].slice(0, 30) };
+      ctx.log(`copying the setup for ${name(l.s.agent)} in ${l.s.title} failed: ${why}`, "warn");
+    }
+    publish(l);
+  }
+
   /* ----------------------------------------------------------- terminal */
 
   function wireTerm(l: Live, term: Term): void {
@@ -472,15 +591,31 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
     // A folder-trust question on screen while the transcript hasn't shown up yet: checked once the
     // screen settles (a TUI draws the dialog in several chunks, then goes quiet).
     let trustTimer: ReturnType<typeof setTimeout> | undefined;
+    const device = l.s.agent === "codex" && l.req.setup?.login === "device";
     const checkTrust = () => {
       trustTimer = undefined;
       void buf.screen().then((text) => {
         if (l.finished || l.linked) return;
+        if (device) {
+          const code = deviceCode(text);
+          if (code && (l.s.needs?.code !== code.code || l.s.needs.url !== code.url)) {
+            l.s.needs = { kind: "device-login", ...code };
+            setStatus(l, l.s.status, DEVICE_DETAIL);
+            pose(l, "waiting");
+            return;
+          }
+          if (!code && l.s.needs) {
+            delete l.s.needs;
+            setStatus(l, l.s.status, l.s.detail === DEVICE_DETAIL ? undefined : l.s.detail);
+          }
+          if (code) return;
+        }
         const asking = TRUST_RE.test(text);
         if (asking && l.s.detail !== TRUST_DETAIL) setStatus(l, l.s.status, TRUST_DETAIL);
         else if (!asking && l.s.detail === TRUST_DETAIL) setStatus(l, l.s.status);
       });
     };
+    const watchMs = device ? DEVICE_WATCH_MS : TRUST_WATCH_MS;
     l.subs.push(
       { dispose: () => trustTimer && clearTimeout(trustTimer) },
       term.onData((chunk) => {
@@ -491,7 +626,7 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
           else pose(l, "waiting");
           ctx.log(`${name(l.s.agent)} is running in ${l.s.title}`);
         }
-        if (!l.linked && ctx.now() - l.startedMs < TRUST_WATCH_MS) {
+        if (!l.linked && ctx.now() - l.startedMs < watchMs) {
           if (trustTimer) clearTimeout(trustTimer);
           trustTimer = setTimeout(checkTrust, 300);
           trustTimer.unref?.();
@@ -708,6 +843,7 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
     if (code !== null) l.s.exitCode = code;
     delete l.s.pendingApproval;
     delete l.s.detail;
+    delete l.s.needs;
     l.finished = true;
     l.buf?.exit(code);
     if (l.conn) chatItem(l, { id: "exit", kind: "system", text: `${name(l.s.agent)} exited${code !== null ? ` (${code})` : ""}.`, at: iso() });
@@ -742,6 +878,8 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
     l.s.error = msg;
     delete l.s.detail;
     delete l.s.pendingApproval;
+    delete l.s.needs;
+    if (l.s.setup?.state === "running") l.s.setup = { ...l.s.setup, state: "failed" };
     l.finished = true;
     l.buf?.exit(null);
     ctx.log(`${name(l.s.agent)} in ${l.s.title} failed to start: ${msg}`, "warn");
@@ -932,3 +1070,12 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
   };
 }
 
+/** The link and the one-time code on Codex's device sign-in screen. */
+export function deviceCode(screen: string): { url: string; code: string } | undefined {
+  if (!DEVICE_RE.test(screen)) return undefined;
+  const url = /https:\/\/\S+/.exec(screen.slice(0, screen.search(DEVICE_RE)))?.[0] ?? /https:\/\/\S+/.exec(screen)?.[0];
+  const after = screen.slice(screen.search(DEVICE_RE));
+  const code = /\b([A-Z0-9]{3,10}(?:-[A-Z0-9]{3,10})+)\b/.exec(after)?.[1];
+  if (!url || !code) return undefined;
+  return { url: url.replace(/[).,]+$/, ""), code };
+}

@@ -111,7 +111,7 @@ export function createToolbar(act: ToolbarActions): Toolbar {
   );
   sessions.addEventListener("click", () => act.sessions(sessions));
   sessions.dataset.tip = "Your agents";
-  const settings = button("settings", "gear", "Settings: keys, cloud, service", "", act.settings, true);
+  const settings = button("settings", "gear", "Settings: logins, keys, cloud, service", "", act.settings, true);
   settings.append(lockBadge());
   const crt = button("crt", "crt", "CRT scanlines", "C", act.crt, true);
   const shot = button("shot", "camera", "Screenshot (PNG)", "S", act.shot);
@@ -189,7 +189,7 @@ export function createToolbar(act: ToolbarActions): Toolbar {
       }
       hire.hidden = settings.hidden = state === "unknown" || state === "off";
       hire.dataset.tip = locked ? lockedTip : "Hire an agent";
-      settings.dataset.tip = locked ? lockedTip : "Settings: keys, cloud, service";
+      settings.dataset.tip = locked ? lockedTip : "Settings: logins, keys, cloud, service";
       hire.dataset.key = locked ? "" : "N";
       settings.dataset.key = "";
     },

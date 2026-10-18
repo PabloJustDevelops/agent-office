@@ -39,6 +39,11 @@
  *   POST   /api/control/service                 {startAtLogin: boolean} -> ServiceStatus
  *   GET    /api/control/install                 -> InstallPlan (the dry run)
  *   POST   /api/control/install                 {agents?: AgentKind[]} -> InstallPlan (applied)
+ *   GET    /api/control/setup?agent=&folder=    -> SetupInventory (names only)
+ *   POST   /api/control/logins/claude           -> LoginFlow: runs `claude setup-token` here
+ *   POST   /api/control/logins/claude/input     {data}  keystrokes (a pasted code) into it
+ *   DELETE /api/control/logins/claude           cancel it
+ *   (disconnect: DELETE /api/control/keys/CLAUDE_CODE_OAUTH_TOKEN)
  *
  * Live updates ride the existing /events stream as extra SSE events:
  *   `event: control`         ControlSession (created or changed)
@@ -74,6 +79,128 @@ export interface HireRequest {
   keys?: string[];
   /** For place.target === "new". */
   sandbox?: { name?: string; timeoutMin?: number };
+  /** "Bring my setup": what of this machine's setup to copy there. Remote places only; absent: nothing. */
+  setup?: SetupChoice;
+}
+
+/**
+ * What "Bring my setup" copies into a sandbox or ssh box, by name (GET
+ * /api/control/setup lists what there is). Values are read on this machine
+ * at hire time and go only to that one agent's process and its own 0600
+ * config files there.
+ */
+export interface SetupChoice {
+  /**
+   * How the agent signs in there. "subscription": the stored
+   * CLAUDE_CODE_OAUTH_TOKEN (Settings, Logins); "key": the agent's API key
+   * (stored or from the login shell), pre-approved for Claude; "device":
+   * Codex's device code, shown in the panel; "copy": this machine's Codex
+   * sign-in (~/.codex/auth.json); "none": it signs in by itself.
+   */
+  login?: SetupLoginKind;
+  /** Key names found in the login shell, read at hire time and never stored. */
+  shellKeys?: string[];
+  /** MCP server names (SetupInventory.mcp) to write into the agent's own config there. */
+  mcp?: string[];
+  /** SetupItem ids (SetupInventory.instructions) to copy. */
+  instructions?: string[];
+  /** A folder on this machine to upload into the working folder there. */
+  project?: { folder: string; git?: boolean; env?: boolean };
+}
+
+export type SetupLoginKind = "subscription" | "key" | "device" | "copy" | "none";
+
+/** GET /api/control/setup?agent=&folder= : what "Bring my setup" can copy for that agent. Names only, never a value. */
+export interface SetupInventory {
+  agent: AgentKind;
+  login: SetupLogin[];
+  /** Known key names set in the login shell (allowlisted, values never read for this). */
+  shellKeys: string[];
+  mcp: SetupMcp[];
+  instructions: SetupItem[];
+  project?: SetupProject;
+  /** Facts the form shows once ("claude.ai connectors don't come along with a setup-token login"). */
+  notes: string[];
+}
+
+export interface SetupLogin {
+  kind: SetupLoginKind;
+  label: string;
+  /** "expires ~Oct 2027", "ANTHROPIC_API_KEY from your shell". */
+  detail?: string;
+  available: boolean;
+  /** Why it isn't available ("Connect Claude in Settings, Logins"). */
+  why?: string;
+  /** The key names this choice hands over. */
+  keys?: string[];
+}
+
+export interface SetupMcp {
+  name: string;
+  transport: "stdio" | "http" | "sse" | "ws";
+  /** user: ~/.claude.json or ~/.codex/config.toml; local: this project's entry in ~/.claude.json; project: the project's .mcp.json (travels with the code). */
+  scope: "user" | "local" | "project";
+  /** Pre-ticked: an http/sse server, or a stdio one run through npx, uvx, bunx or docker. */
+  ok: boolean;
+  /** Why it isn't pre-ticked ("runs /Users/…/bin/server, which the sandbox won't have"). */
+  why?: string;
+  /** "npx -y @acme/mcp" or a host name: what it runs, never an env or header value. */
+  what?: string;
+  /** Env or header values it carries (written 0600 there, never shown). */
+  secrets?: number;
+}
+
+export interface SetupItem {
+  /** "CLAUDE.md", "rules", "skills", "agents", "commands", "settings.json", "AGENTS.md", "prompts". */
+  id: string;
+  label: string;
+  files: number;
+  bytes: number;
+  /** skills: how many. */
+  count?: number;
+  /** What was left out and why ("hooks: run files on this Mac", "big.bin: 40 MB binary"). */
+  skipped?: string[];
+}
+
+export interface SetupProject {
+  folder: string;
+  /** Home as "~". */
+  display: string;
+  files: number;
+  bytes: number;
+  git: { present: boolean; bytes: number; ok: boolean; why?: string };
+  /** .env* files there, by name; off unless ticked. */
+  envFiles: string[];
+  /** Over the size or file cap: nothing is uploaded. */
+  ok: boolean;
+  why?: string;
+  skipped?: string[];
+}
+
+/** "Bring my setup" on its way into a session's sandbox, for the starting steps. */
+export interface SetupProgress {
+  state: "running" | "done" | "partial" | "failed";
+  /** "Claude subscription · 4 MCP servers · CLAUDE.md + 12 skills · app (3.1 MB)". */
+  summary: string;
+  /** What didn't make it, and why. */
+  skipped?: string[];
+}
+
+/** A sign-in the office runs on this machine for the remote agents (Settings, Logins). */
+export interface LoginFlow {
+  agent: "claude";
+  /** idle: nothing stored; running: `claude setup-token` is open; connected: a token is stored. */
+  state: "idle" | "running" | "connected" | "failed";
+  /** The sign-in screen while it runs, with the token cut out; for the panel. */
+  screen?: string;
+  /** The sign-in page, when the screen shows one. */
+  url?: string;
+  /** It asks for a code pasted from the browser. */
+  wantsCode?: boolean;
+  error?: string;
+  /** When the stored token expires (setup-token: one year), approximate. */
+  expiresAt?: string;
+  connectedAt?: string;
 }
 
 export type SessionStatus = "creating" | "installing" | "starting" | "running" | "exited" | "failed";
@@ -96,6 +223,10 @@ export interface ControlSession {
   title: string;
   permission: PermissionMode;
   pendingApproval?: Approval;
+  /** "Bring my setup": where it is (a starting step of its own). */
+  setup?: SetupProgress;
+  /** Something only the user can do in the terminal now: Codex's device sign-in. */
+  needs?: { kind: "device-login"; url: string; code: string };
 }
 
 export interface Approval {
@@ -179,6 +310,8 @@ export interface KeyInfo {
   /** "sk-ant-…a1b2": the first 6 and last 4 characters at most. */
   preview: string;
   addedAt: string;
+  /** When it expires, if known (a Claude token from Connect Claude: a year after). */
+  expiresAt?: string;
 }
 
 export interface SandboxInfo {
@@ -254,6 +387,8 @@ export interface ControlInfo {
   sessions: ControlSession[];
   /** Project folders the office has seen agents work in, most recent first. */
   recentFolders: string[];
+  /** Sign-ins for remote agents (Settings, Logins). Absent: an office without them. */
+  logins?: LoginFlow[];
 }
 
 export const CONTROL_HEADER = "X-Agent-Office";

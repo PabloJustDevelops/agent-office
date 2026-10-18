@@ -19,12 +19,13 @@
  */
 import { randomBytes } from "node:crypto";
 import type { RemoteTarget } from "../../shared/events.ts";
-import { createSshTarget, parseSshDest } from "../../remote/ssh.ts";
+import { createSshTarget, maskAddresses, parseSshDest } from "../../remote/ssh.ts";
 import { which } from "../../remote/util.ts";
 import type { Place } from "../../shared/control.ts";
 import { ControlError, type Launch, type OpenOptions, type PipeProc, type PlacesContext, type Term } from "../types.ts";
-import { cleanupScript, cwdScript, envHeredocScript, launchLine, parseCwd, shWrap } from "./launch.ts";
-import { BasePlace, afterExit, asControlError, helperEnv, sid as newSid, spawnPipe } from "./place.ts";
+import { tgzOf, type TarEntry } from "../tar.ts";
+import { cleanupScript, cwdScript, envHeredocScript, envLines, launchLine, parseCwd, shWrap } from "./launch.ts";
+import { BasePlace, afterExit, asControlError, failed, helperEnv, sid as newSid, spawnPipe, untarScript } from "./place.ts";
 
 export interface SshDeps {
   /** ssh binary (tests). */
@@ -64,7 +65,7 @@ export async function openSsh(ctx: PlacesContext, place: Place, o: OpenOptions, 
   o.progress("starting", `Connecting to ${target.host.name}…`);
   let cwd: string;
   try {
-    cwd = parseCwd(await target.exec(cwdScript(place.cwd, false), { timeoutMs: 20_000 }), place.cwd, `ssh ${target.host.name}`);
+    cwd = parseCwd(await target.exec(cwdScript(place.cwd, !!o.createCwd), { timeoutMs: 20_000 }), place.cwd, `ssh ${target.host.name}`);
   } catch (err) {
     const e = asControlError(err);
     // The office never types a passphrase or accepts a host key for you.
@@ -89,6 +90,29 @@ export class SshPlace extends BasePlace {
 
   run(script: string, o: { timeoutMs: number }): Promise<string> {
     return this.target.exec(script, o);
+  }
+
+  /** The script travels on ssh's stdin (`sh -s`), the values as assignments ahead of it. */
+  protected runSecret(script: string, env: Record<string, string>, o: { timeoutMs: number }): Promise<string> {
+    return this.target.exec(`${envLines(env)}${script}`, o);
+  }
+
+  /** `ssh -T … tar xzf -` with the archive on stdin, on the shared connection. */
+  protected async upload(entries: TarEntry[], dir: string, o: { home: string; timeoutMs: number }): Promise<void> {
+    const tgz = await tgzOf(entries);
+    const p = spawnPipe(this.conn.bin, ["-T", ...this.opts(), "--", this.conn.dest, shWrap(untarScript(dir))], helperEnv(this.ctx.providerEnv(), false), this.ctx.userHome);
+    const err: Uint8Array[] = [];
+    p.onStderr((c) => {
+      if (err.length < 64) err.push(c);
+    });
+    const done = new Promise<number | null>((resolve) => p.onExit((e) => resolve(e.code)));
+    const t = setTimeout(() => p.kill("SIGKILL"), o.timeoutMs);
+    t.unref?.();
+    for (let i = 0; i < tgz.length; i += 64 << 10) p.write(tgz.subarray(i, i + (64 << 10)));
+    p.end();
+    const code = await done;
+    clearTimeout(t);
+    if (code !== 0) throw failed(`ssh ${this.host.name}`, code ?? "?", maskAddresses(Buffer.concat(err).toString("utf8")));
   }
 
   /** ssh options shared with the watcher's master. */

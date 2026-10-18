@@ -21,9 +21,13 @@
  * `secret`) on its way to one agent, and in that agent's environment. It is
  * never logged, never put on any argv, never sent to the browser, never
  * written anywhere but keys.json and, for milliseconds, a 0600 env file on a
- * remote that is sourced and deleted before the agent starts.
+ * remote that is sourced and deleted before the agent starts. "Bring my
+ * setup" (SetupBundle) adds the agent's own 0600 config files there (MCP env
+ * and header values, the key's approval, auth.json, .env files), written by
+ * one command that carries them in its environment (ssh: its stdin).
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { TarEntry } from "./tar.ts";
 import type { AgentKind, Host, RawEvent, RemoteTarget } from "../shared/events.ts";
 import type {
   AgentAvailability, Approval, ApprovalAnswer, ChatItem, ControlInfo, ControlSession, HireRequest,
@@ -268,8 +272,8 @@ export interface LinkExpectation {
 export interface KeyStore {
   /** What the page sees: never a value. */
   list(): KeyInfo[];
-  /** Add or replace. Throws ControlError(400) for a bad name or empty value. */
-  put(k: KeyInput): KeyInfo;
+  /** Add or replace. Throws ControlError(400) for a bad name or empty value. `meta.expiresAt`: shown as KeyInfo.expiresAt. */
+  put(k: KeyInput, meta?: { expiresAt?: string }): KeyInfo;
   remove(name: string): boolean;
   /** Known key names (AGENT_FACTS keyNames + PLATFORM_KEY_NAMES) found in a fresh login shell; returns the names stored. */
   importFromShell(): Promise<string[]>;
@@ -379,6 +383,51 @@ export interface OpenOptions {
   /** Feeds ControlSession.status / detail ("Creating Daytona sandbox…"). */
   progress(status: Extract<SessionStatus, "creating" | "installing" | "starting">, detail: string): void;
   signal?: AbortSignal;
+  /** Create place.cwd there when it's missing, also outside office sandboxes (a project is being uploaded into it). */
+  createCwd?: boolean;
+}
+
+/**
+ * "Bring my setup", collected on this machine at hire time (src/control/setup.ts)
+ * for one remote place to apply (RemotePlace.bring). Plain files travel as
+ * tar.gz archives through the platform's file upload (or a tar stream on the
+ * exec channel); everything that holds a secret (MCP env and header values,
+ * the API key's approval, auth.json, .env files) is merged into the agent's
+ * own config there and written 0600 by one command that carries it in its
+ * own environment, never on a command line.
+ */
+export interface SetupBundle {
+  agent: AgentKind;
+  /** Files under the remote home (instructions, skills, prompts): names relative to $HOME, modes 0600/0700. */
+  home?: { entries: TarEntry[]; files: number; bytes: number };
+  /** The project, relative to the working folder there. */
+  project?: { entries: TarEntry[]; files: number; bytes: number; display: string };
+  /** Claude Code: merged into ~/.claude.json and ~/.claude/settings.json there. */
+  claude?: {
+    /** User-scope servers (name -> config, secrets included). */
+    mcpServers: Record<string, unknown>;
+    /** Local-scope servers of the chosen project, for projects[<cwd there>]. */
+    projectMcpServers: Record<string, unknown>;
+    /** The project's own .mcp.json choices (enabledMcpjsonServers and friends), for projects[<cwd there>]. */
+    projectFlags: Record<string, unknown>;
+    onboarding: boolean;
+    /** Sanitized settings.json (hooks, statusLine, apiKeyHelper that run local files removed). */
+    settings?: Record<string, unknown>;
+  };
+  /** Codex: `[mcp_servers.<name>]` sections appended to ~/.codex/config.toml; auth.json when asked. */
+  codex?: { mcp: { name: string; toml: string }[]; authJson?: string };
+  /** .env files of the project (relative paths), written 0600 into the working folder. */
+  envFiles?: { path: string; content: string }[];
+  /** Approve this API key in Claude's "use this key?" dialog ahead of time (the key itself rides the launch env). */
+  approveClaudeKey?: boolean;
+  summary: string;
+  /** Left out on this machine already (shown in the session's setup step). */
+  skipped: string[];
+}
+
+export interface SetupApplied {
+  /** What didn't make it there ("~/app there isn't empty: the project wasn't uploaded"). */
+  skipped: string[];
 }
 
 /** A sandbox or ssh box a session runs in. */
@@ -394,6 +443,13 @@ export interface RemotePlace {
   ensureAgent(agent: AgentKind, progress: OpenOptions["progress"]): Promise<{ bin: string; version?: string; path?: string[] }>;
   /** Office-created sandboxes only (no-op otherwise): pre-answer first-run and trust screens for cwd there. */
   firstRun(agent: AgentKind, cwd: string): Promise<void>;
+  /**
+   * "Bring my setup": copy what was collected into this place (into cwd for
+   * the project). `secrets` are values the merge needs (the API key, for its
+   * approval); never logged. Only missing entries are written outside office
+   * sandboxes. Resolves with what was skipped; throws only when nothing could be done.
+   */
+  bring?(bundle: SetupBundle, secrets: Record<string, string>, progress: (detail: string) => void): Promise<SetupApplied>;
   /** The agent's TUI on a TTY of this size. Secret env goes the least persistent way the platform has. */
   attach(launch: Launch, size: { cols: number; rows: number }): Promise<Term>;
   /** The agent on plain pipes, for chat mode. Absent: chat mode isn't available here. */
