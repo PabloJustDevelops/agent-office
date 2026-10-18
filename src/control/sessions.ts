@@ -272,10 +272,7 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
     } else {
       if (!places) throw new ControlError(503, "Sandboxes and ssh boxes aren't available in this office.");
       if (r.agent === "opencode") throw new ControlError(400, "opencode runs on this machine only for now.");
-      if (r.mode === "chat") {
-        if (!AGENT_FACTS[r.agent].chat) throw new ControlError(400, `${name(r.agent)} has no chat mode. Use terminal mode.`);
-        if (r.place.kind !== "ssh" && r.place.kind !== "railway") throw new ControlError(400, "Use terminal mode in Daytona and Vercel sandboxes for now.");
-      }
+      if (r.mode === "chat" && !AGENT_FACTS[r.agent].chat) throw new ControlError(400, `${name(r.agent)} has no chat mode. Use terminal mode.`);
       if (r.setup) {
         r.setup = normalizeSetup(r.agent, r.mode, r.setup, r.keys);
         if (r.setup.project) {

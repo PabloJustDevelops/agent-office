@@ -330,7 +330,7 @@ export interface PtyBackend {
   spawn(spec: PtySpawn): Term;
 }
 
-/** A child with plain pipes (chat mode): local child_process, `ssh -T`, a Railway exec. */
+/** A child with plain pipes (chat mode): local child_process, `ssh -T`, a Railway exec, a Daytona session command, a Vercel command with its stdin attached. */
 export interface PipeProc {
   readonly pid?: number;
   write(data: string | Uint8Array): void;

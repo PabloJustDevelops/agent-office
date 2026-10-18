@@ -64,8 +64,10 @@ function parseClient(buf) {
  * ({status, json} | {status, text}); `ws(conn, req, url)` gets each upgraded connection, unless
  * `reject(req, url)` returns a status to refuse the upgrade with. `protocol(offered)` picks the
  * subprotocol to answer (default: the first offered one, none when none was offered).
+ * `stream(req, res, url)` may take a request over and answer it as it likes (a long-lived
+ * stream): it returns true when it did.
  */
-export async function wsServe({ http, ws, reject, protocol, accept } = {}) {
+export async function wsServe({ http, ws, reject, protocol, accept, stream } = {}) {
   const requests = [];
   const conns = [];
   const server = createServer(async (req, res) => {
@@ -81,6 +83,7 @@ export async function wsServe({ http, ws, reject, protocol, accept } = {}) {
     }
     const url = new URL(req.url, "http://x");
     requests.push({ method: req.method, path: url.pathname, query: Object.fromEntries(url.searchParams), headers: req.headers, body });
+    if (stream?.(req, res, url, body)) return;
     try {
       // The raw bytes too, for uploads (an archive isn't text).
       const r = (await http?.(req, body, url, bytes)) ?? { status: 404, json: { message: "no route" } };
@@ -125,6 +128,8 @@ export async function wsServe({ http, ws, reject, protocol, accept } = {}) {
       new Promise((r) => {
         for (const c of conns) c.socket.destroy();
         server.close(r);
+        // A stream still being answered (a chat's log) would hold the close open.
+        server.closeAllConnections?.();
       }),
   };
 }
@@ -384,6 +389,16 @@ process.stdin.on("end", () => process.exit(0));
 process.on("SIGHUP", () => process.exit(129));
 process.on("SIGTERM", () => process.exit(143));
 `;
+
+/**
+ * AGENT_SCRIPT for chat transports, which keep stderr apart: each input line also comes back as
+ * "err:<line>" there, and "bye" prints "bye!" and exits 4 once that is written (a pipe's writes
+ * are asynchronous on macOS: process.exit right after one can lose it).
+ */
+export const CHAT_SCRIPT = AGENT_SCRIPT.replace(`process.stdout.write("got:" + l + "\\n");`, `process.stdout.write("got:" + l + "\\n"); process.stderr.write("err:" + l + "\\n");`).replace(
+  `if (l === "quit") process.exit(3);`,
+  `if (l === "quit") process.exit(3); if (l === "bye") return void process.stdout.write("bye!\\n", () => process.exit(4));`,
+);
 
 /** Run `sh` as if it were a sandbox's login shell: input in, output out, under `home` with `bin` first on PATH. */
 export function sandboxShell(home, bin, extraEnv = {}) {

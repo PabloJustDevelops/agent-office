@@ -20,22 +20,38 @@
  *            {type: "start", command, args, env, cwd, cols, rows}; resize frames; binary I/O;
  *            {type: "exit", code}. Fallback: `npx --yes sandbox@4.8.1 exec --interactive` under a
  *            local PTY (never a bare `sandbox`: another tool by that name is common).
+ *   chat     POST …/cmd {command: "sh", args: ["-c", line], env, attachStdin: true} (detached), as
+ *            the SDK's runCommand({stdin: true, detached: true}) does: stdin is a pipe written by
+ *            POST …/cmd/{id}/stdin {data: base64, offset} -> {bytesWritten}; with the offset a
+ *            resend is safe (the server skips what it has), {close: true} is EOF. Output is the
+ *            ndjson stream GET …/cmd/{id}/logs ({stream: "stdout" | "stderr", data}), which
+ *            replays from the start: one cut while the command runs (or as it finishes) is
+ *            opened again, skipping what was delivered. It is read over node:https on its own socket, never
+ *            fetch: with that stream open in Node 26's fetch, the stdin posts to the same host
+ *            hung until it closed. GET …/cmd/{id}?wait=true has the exit code, and then the
+ *            log is read once more to its end (a stream's end can't tell a cut from the
+ *            command's own). POST …/cmd/{id}/kill {signal} signals it. Checked against Vercel's
+ *            API on 2026-10-19.
  *
  * Keys: Vercel keeps every command's args (GET …/cmd lists them), so a key or a prompt is
- * never in args. On the WebSocket they ride the start frame's env, the process environment
- * of that one command: no file at all. The CLI fallback writes the 0600 env file with one
- * command whose per-command env holds the values. No chat mode here in v1.
+ * never in args. On the WebSocket they ride the start frame's env, and in chat mode the
+ * command's own env: the process environment of that one command, no file at all. The CLI
+ * fallback writes the 0600 env file with one command whose per-command env holds the values.
+ * Vercel keeps a command's output after it ends (…/logs still answers), so a chat's stream,
+ * the conversation itself, can be read back through the API afterwards.
  */
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import type { ProviderStatus, SandboxInfo } from "../../shared/control.ts";
 import type { RemoteTarget } from "../../shared/events.ts";
 import { VERCEL_API, VERCEL_DEFAULT_PROJECT, vercelLogin } from "../../remote/vercel.ts";
-import { RemoteError, displayName, http, jsonOf, scrubMessage, str, which } from "../../remote/util.ts";
-import { ControlError, type Launch, type OpenOptions, type PlacesContext, type Term } from "../types.ts";
+import { RemoteError, displayName, http, jsonOf, scrubMessage, str, which, type HttpResult } from "../../remote/util.ts";
+import { ControlError, type Launch, type OpenOptions, type PipeProc, type PlacesContext, type Term, type TermExit } from "../types.ts";
 import { connectWs, type Ws } from "../ws.ts";
 import { tgzOf, type TarEntry } from "../tar.ts";
 import { cleanupScript, cwdScript, envFromVarScript, envLines, launchLine, parseCwd, stopScript } from "./launch.ts";
 import {
-  BasePlace, StreamTerm, afterExit, failed, helperEnv, sandboxRow, sleep,
+  BasePlace, Listeners, Once, StreamTerm, afterExit, failed, helperEnv, sandboxRow, sid as newSid, sleep,
   type Cloud, type CloudDeps, type CreateOptions,
 } from "./place.ts";
 
@@ -44,6 +60,11 @@ const API_TIMEOUT_MS = 20_000;
 const START_WAIT_MS = 2 * 60_000;
 const HOBBY_MAX_MIN = 45;
 const TEAM_TTL_MS = 10 * 60_000;
+/** Per stdin request, as the SDK sends: the base64 body stays under the API's 1 MB. */
+const STDIN_CHUNK = 512 << 10;
+/** Reopen a chat's log stream this many times in a row (one that lasted a minute resets the count). */
+const CHAT_RECONNECTS = 3;
+const SIGNALS: Record<string, number> = { SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 };
 
 interface Scope {
   token: string;
@@ -448,4 +469,212 @@ export class VercelPlace extends BasePlace {
     }
     return afterExit(term, () => this.bg(cleanupScript(id)));
   }
+
+  /** Chat mode: a detached command with its stdin attached (see the top of this file). */
+  async pipe(launch: Launch): Promise<PipeProc> {
+    const l = this.prepare(launch);
+    const line = launchLine(l, { sid: newSid(), path: l.path?.length ? l.path : this.path });
+    const what = `Vercel ${this.box.name} chat`;
+    const base = `${this.api}/v2/sandboxes/sessions/${encodeURIComponent(this.box.session)}`;
+    const auth = { authorization: `Bearer ${this.token}` };
+    const url = (path: string) => `${base}${path}${path.includes("?") ? "&" : "?"}${this.q()}`;
+    const call = (path: string, o: { body?: unknown; timeoutMs?: number } = {}) =>
+      http(url(path), { headers: auth, body: o.body, timeoutMs: o.timeoutMs ?? API_TIMEOUT_MS, fetch: this.deps.fetch });
+    // The keys are this one command's environment, never its args (which Vercel keeps).
+    const env = Object.keys(l.env).length ? l.env : undefined;
+    const made = jsonOf(await call("/cmd", { body: { command: "sh", args: ["-c", line], cwd: this.cwd, ...(env ? { env } : {}), attachStdin: true } }), what);
+    const cmd = str(made?.command?.id);
+    if (!cmd) throw new RemoteError("failed", `${what}: no command id`);
+    const cPath = `/cmd/${encodeURIComponent(cmd)}`;
+
+    const out = new Listeners<Uint8Array>();
+    const err = new Listeners<Uint8Array>();
+    const exit = new Once<TermExit>();
+    /** Characters of each stream delivered so far, and what a reopened stream (a replay from the start) skips. */
+    const seen = { stdout: 0, stderr: 0 };
+    let skip = { ...seen };
+    let logs: { close(): void } | undefined;
+    let tries = 0;
+    /** The command has ended and its log is being read once more, to the end. */
+    let draining = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const end = (e: TermExit) => {
+      if (exit.fired) return;
+      if (killTimer) clearTimeout(killTimer);
+      logs?.close();
+      logs = undefined;
+      exit.fire(e);
+    };
+    const onLine = (text: string) => {
+      let j: any;
+      try {
+        j = JSON.parse(text);
+      } catch {
+        return;
+      }
+      const k = j?.stream;
+      if ((k !== "stdout" && k !== "stderr") || typeof j.data !== "string") return;
+      const n = Math.min(skip[k as "stdout"], j.data.length);
+      skip[k as "stdout"] -= n;
+      const d: string = n ? j.data.slice(n) : j.data;
+      if (!d) return;
+      seen[k as "stdout"] += d.length;
+      (k === "stderr" ? err : out).emit(Buffer.from(d, "utf8"));
+    };
+    const follow = () => {
+      skip = { ...seen };
+      const at = Date.now();
+      const s = streamLines(url(`${cPath}/logs`), auth, onLine, (why) => {
+        if (logs !== s) return;
+        logs = undefined;
+        if (Date.now() - at > 60_000) tries = 0;
+        void settle(why === "end");
+      });
+      logs = s;
+    };
+    // The stream ended: the command did (its exit code), or the stream was cut (open it again,
+    // and the replay skips what came already). A plain GET lags the end by a few seconds;
+    // ?wait=true answers at once for a finished command and holds for a running one, so a short
+    // deadline tells the two apart. A stream's end can't say whether it was cut just before the
+    // command ended, so once it has, the log is read once more, to its end: only a stream opened
+    // after the exit and read whole is known to hold the agent's last words.
+    const settle = async (clean: boolean): Promise<void> => {
+      if (exit.fired) return;
+      let code: number | undefined;
+      try {
+        const j = jsonOf(await call(`${cPath}?wait=true`, { timeoutMs: 3_000 }), what);
+        if (typeof j?.command?.exitCode === "number") code = j.command.exitCode;
+      } catch (e) {
+        const c = (e as RemoteError).code;
+        if (c === "gone" || c === "auth") return end({ code: null });
+        // "timeout": still running.
+      }
+      if (exit.fired) return;
+      if (code !== undefined) {
+        if (draining && (clean || tries++ >= CHAT_RECONNECTS)) return end({ code });
+        draining = true;
+        return follow();
+      }
+      if (tries++ >= CHAT_RECONNECTS) {
+        this.log(`${this.where}: the chat's connection kept dropping; stopping the agent`, "warn");
+        kill("SIGKILL");
+        return end({ code: null });
+      }
+      await sleep(500 * tries);
+      if (!exit.fired) follow();
+    };
+    const kill = (signal?: NodeJS.Signals) => {
+      if (exit.fired) return;
+      call(`${cPath}/kill`, { body: { signal: SIGNALS[signal ?? "SIGTERM"] ?? 15 } }).catch(() => {});
+      killTimer ??= setTimeout(() => end({ code: null }), 10_000);
+      killTimer.unref?.();
+    };
+    follow();
+
+    // In order, one request at a time; the offset makes a resend after a dropped request safe.
+    let offset = 0;
+    let offsets = true;
+    let queue: Promise<void> = Promise.resolve();
+    const stdin = async (data: Buffer | undefined, close: boolean): Promise<void> => {
+      for (let i = 0; ; i++) {
+        let r: HttpResult;
+        try {
+          r = await call(`${cPath}/stdin`, { body: { ...(data?.length ? { data: data.toString("base64") } : {}), ...(offsets ? { offset } : {}), ...(close ? { close: true } : {}) } });
+        } catch (e) {
+          if (!offsets || i >= 3 || exit.fired) throw e;
+          await sleep(400 * 2 ** i);
+          continue;
+        }
+        // 404: the command has ended, and the log stream is about to say how.
+        if (r.status === 404 || exit.fired) return;
+        if ((r.status === 429 || (offsets && r.status >= 502)) && i < 3) {
+          await sleep(400 * 2 ** i);
+          continue;
+        }
+        const j = jsonOf(r, what);
+        if (typeof j?.bytesWritten === "number") offset = j.bytesWritten;
+        else {
+          offsets = false;
+          offset += data?.length ?? 0;
+        }
+        return;
+      }
+    };
+    const send = (data: Buffer | undefined, close: boolean) => {
+      queue = queue
+        .then(async () => {
+          for (let i = 0; data && i < data.length; i += STDIN_CHUNK) await stdin(data.subarray(i, i + STDIN_CHUNK), false);
+          if (close) await stdin(undefined, true);
+        })
+        .catch((e) => {
+          if (exit.fired) return;
+          // A message lost on the way would leave the chat waiting for nothing: end it, and say why.
+          this.log(`${this.where}: a chat message didn't reach the agent (${scrubMessage((e as Error).message)}); stopping it`, "warn");
+          kill("SIGTERM");
+        });
+    };
+    return {
+      write(d) {
+        if (exit.fired) return;
+        const b = typeof d === "string" ? Buffer.from(d, "utf8") : Buffer.from(d);
+        if (b.length) send(b, false);
+      },
+      end: () => {
+        if (!exit.fired) send(undefined, true);
+      },
+      onStdout: (fn) => out.on(fn),
+      onStderr: (fn) => err.on(fn),
+      onExit: (fn) => exit.on(fn),
+      kill,
+    };
+  }
+}
+
+/**
+ * A GET read line by line as it arrives, on a socket of its own (node:http, not fetch: see the
+ * top of this file). `onEnd` runs once, however it ends; close() ends it without that.
+ */
+function streamLines(url: string, headers: Record<string, string>, onLine: (line: string) => void, onEnd: (why: string) => void): { close(): void } {
+  const u = new URL(url);
+  let done = false;
+  const finish = (why: string) => {
+    if (done) return;
+    done = true;
+    onEnd(why);
+  };
+  const req = (u.protocol === "https:" ? httpsRequest : httpRequest)(u, { headers: { accept: "application/x-ndjson", ...headers } }, (res) => {
+    if ((res.statusCode ?? 0) >= 400) {
+      res.resume();
+      return finish(String(res.statusCode));
+    }
+    let buf = "";
+    res.setEncoding("utf8");
+    res.on("data", (c: string) => {
+      buf += c;
+      let i: number;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (line && !done) onLine(line);
+      }
+      if (buf.length > 32 << 20) buf = "";
+    });
+    res.on("end", () => {
+      if (buf.trim() && !done) onLine(buf.trim());
+      finish("end");
+    });
+    res.on("error", () => finish("error"));
+    res.on("close", () => finish("closed"));
+  });
+  // A connection that died without a word would otherwise wait forever.
+  req.on("socket", (s) => s.setKeepAlive(true, 30_000));
+  req.on("error", (e) => finish(scrubMessage(e.message)));
+  req.end();
+  return {
+    close() {
+      done = true;
+      req.destroy();
+    },
+  };
 }

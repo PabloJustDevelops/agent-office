@@ -340,9 +340,13 @@ test("remote: the place is opened, the agent ensured, the TTY attached with bare
   assert.equal(kept, 0);
 });
 
-test("remote chat is refused where the transport can't pipe, and opencode stays local", async () => {
-  const t = setup({ places: { open: async () => { throw new Error("not reached"); } } });
-  await assert.rejects(t.mgr.hire({ agent: "claude", place: { kind: "vercel", target: "sbx" }, mode: "chat" }), (e) => e.status === 400 && /terminal mode/.test(e.message));
+test("remote chat is hired into any place, and fails with a reason where the place can't pipe; opencode stays local", async () => {
+  const host = { kind: "vercel", id: "vercel:sbx", name: "sbx" };
+  const noPipe = { host, cwd: "/vercel", ours: true, target: { host, exec: async () => "" }, ensureAgent: async () => ({ bin: "claude" }), firstRun: async () => {}, attach: async () => { throw new Error("not reached"); }, keepAlive: () => ({ dispose() {} }), close() {} };
+  const t = setup({ places: { open: async (place) => { if (place.kind === "vercel") return noPipe; throw new Error("not reached"); } } });
+  const chat = await t.mgr.hire({ agent: "claude", place: { kind: "vercel", target: "sbx" }, mode: "chat" });
+  await until(() => t.mgr.get(chat.id).status === "failed", 3000, "failed");
+  assert.match(t.mgr.get(chat.id).error, /Chat mode isn't available there/);
   await assert.rejects(t.mgr.hire({ agent: "opencode", place: { kind: "ssh", target: "box" }, mode: "terminal" }), (e) => e.status === 400);
   // A place that fails to open ends as failed with a short, scrubbed reason.
   const s = await t.mgr.hire({ agent: "codex", place: { kind: "ssh", target: "box" }, mode: "terminal" });

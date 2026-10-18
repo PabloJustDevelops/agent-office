@@ -235,7 +235,12 @@ export function createPlaces(ctx: PlacesContext, o: PlacesOptions = {}): Places 
         let place2: BasePlace;
         try {
           const { project, environment } = oo.sandbox ?? {};
-          place2 = await cloud.create({ name: sandboxName(oo.sandbox?.name), timeoutMin, cwd: place.cwd, ...(project ? { project } : {}), ...(environment ? { environment } : {}), onCreated: (id) => (made = id) }, oo);
+          const onCreated = (id: string) => {
+            made = id;
+            // A name used again (Vercel's ids are names) is a new sandbox, not the one deleted just now.
+            deleted.delete(`${kind}:${id}`);
+          };
+          place2 = await cloud.create({ name: sandboxName(oo.sandbox?.name), timeoutMin, cwd: place.cwd, ...(project ? { project } : {}), ...(environment ? { environment } : {}), onCreated }, oo);
         } catch (err) {
           // Stopped while it was being created, or it never came up: nobody will use it.
           if (!made) throw err;

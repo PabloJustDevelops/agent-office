@@ -349,10 +349,13 @@ class Conn implements Ws {
     this.done = { code, reason };
     if (this.closeTimer) clearTimeout(this.closeTimer);
     if (this.pinger) clearInterval(this.pinger);
-    // Hand over what arrived before anyone listened, then the close.
-    const q = this.queued;
-    this.queued = [];
-    for (const m of q) for (const fn of [...this.msgFns]) fn(m);
+    // What arrived before anyone listened stays queued for the first onMessage, which hands it
+    // over ahead of the close it registers for after (a server that sends and closes at once).
+    if (this.msgFns.size) {
+      const q = this.queued;
+      this.queued = [];
+      for (const m of q) for (const fn of [...this.msgFns]) fn(m);
+    }
     for (const fn of [...this.closeFns]) {
       try {
         fn(code, reason);
