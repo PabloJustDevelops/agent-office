@@ -1,7 +1,7 @@
 /*
  * What command each agent should launch for the MCP server. From an npx
  * cache the CLI's own path is temporary, so agents get `npx -y
- * agentoffice@<this exact version> mcp`; from a global install or a checkout
+ * agentsoffice@<this exact version> mcp`; from a global install or a checkout
  * they get the absolute node + dist/cli.js paths, which work before the
  * package is even published. Remote installs always use npx: our paths mean
  * nothing there. The npx form is pinned, never @latest, so a later release
@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentKind } from "../shared/events.ts";
 
 export const SERVER_NAME = "agentoffice";
-export const PACKAGE_NAME = "agentoffice";
+export const PACKAGE_NAME = "agentsoffice";
 
 /** The spec agents run with npx: this exact version. */
 export function npxPackage(version: string): string {
@@ -83,7 +83,7 @@ export function stableNode(execPath = process.execPath, path = process.env.PATH 
 }
 
 /**
- * Is agentoffice@<version> on the npm registry? null when the registry can't be asked. An npx
+ * Is agentsoffice@<version> on the npm registry? null when the registry can't be asked. An npx
  * command for a version that isn't there fails at every agent launch, and for an unclaimed
  * name it would run whatever someone publishes under it next.
  */

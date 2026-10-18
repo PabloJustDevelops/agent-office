@@ -12,7 +12,7 @@ export interface EmptyCard {
   hide(): void;
 }
 
-const DEMO_CMD = "npx agentoffice --demo";
+const DEMO_CMD = "npx agentsoffice --demo";
 
 export function createEmpty(): EmptyCard {
   const title = h("h1", { class: "empty-title" });

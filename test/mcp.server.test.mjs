@@ -371,7 +371,7 @@ test("office_peers flags same-repo agents and their files; politely handles a cl
   const closed = await s.request(2, "tools/call", { name: "office_peers", arguments: {} });
   assert.ok(Date.now() - started < 2500, "returns quickly when nothing is listening");
   assert.equal(closed.result.isError, false);
-  assert.match(text(closed), /isn't open on this machine[\s\S]*npx agentoffice/);
+  assert.match(text(closed), /isn't open on this machine[\s\S]*npx agentsoffice/);
   await s.close();
 });
 

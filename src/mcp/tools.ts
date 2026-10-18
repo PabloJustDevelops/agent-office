@@ -58,7 +58,7 @@ export const TOOLS: ToolDef[] = [
       "their project, what they are doing this second, their status line, the files they recently edited, and when they were last active. " +
       "Anyone in the same git repo as you is listed first with the files they touched. " +
       "Call it before editing files in a repo other agents may share, and before a big refactor, so you don't overwrite another agent's work. " +
-      "Read-only. Needs the office running on this machine (`npx agentoffice`).",
+      "Read-only. Needs the office running on this machine (`npx agentsoffice`).",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
@@ -202,7 +202,7 @@ export function createHandlers(ctx: ToolContext): Record<string, (args: Record<s
           text:
             "The office isn't open on this machine, so there's no one to list. " +
             "If you're in a remote sandbox, that's expected: the office runs on the developer's own machine and watches this sandbox from there. " +
-            "Locally, the user can open it with `npx agentoffice`. Your status, shouts and celebrations are still saved and show up once it's open.",
+            "Locally, the user can open it with `npx agentsoffice`. Your status, shouts and celebrations are still saved and show up once it's open.",
         };
       }
       const snap = await ctx.fetchSnapshot(port);

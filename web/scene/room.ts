@@ -31,7 +31,7 @@ export interface RoomPlan {
   elevator: { x: number; y: number; doorX: number };
   tv: Rect;
   clock: { x: number; y: number };
-  /** The neon "npx agentoffice" sign on the back wall, when the wall has room for it. */
+  /** The neon "npx agentsoffice" sign on the back wall, when the wall has room for it. */
   sign: Rect | null;
   rack: { x: number; y: number };
   coffee: { x: number; y: number };
@@ -688,10 +688,10 @@ export function drawLive(g: CanvasRenderingContext2D, p: RoomPlan, t: number, no
   tvScreen(g, p.tv, t, board);
 }
 
-/** Neon tubes: "AGENT OFFICE" over "npx agentoffice", with the odd flicker of a real sign. */
+/** Neon tubes: "AGENT OFFICE" over "npx agentsoffice", with the odd flicker of a real sign. */
 function neonSign(g: CanvasRenderingContext2D, s: Rect, t: number, ascii: boolean) {
   const f = FONT(), m = MICRO();
-  const cmd = "npx agentoffice";
+  const cmd = "npx agentsoffice";
   const head = "AGENT OFFICE";
   // a two-frame stutter every ~9s on the top line, like a tube on its way out
   const ph = t % 9_000;

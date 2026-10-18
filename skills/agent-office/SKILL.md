@@ -2,7 +2,7 @@
 name: agent-office
 description: Talk to Agent Office, the live pixel-art office where the user watches their coding agents work, through the agentoffice MCP tools (office_status, office_peers, office_shout, office_celebrate, office_flip). Use when starting a substantial task (set a status), before editing files in a repo other agents may be working in (check peers to avoid edit collisions), on a real milestone (shout), when tests go green after a fix (celebrate), or when a failure is truly maddening (flip, once per task). Only applies when the agentoffice tools are available.
 ---
-<!-- Installed by agentoffice (npx agentoffice install). `npx agentoffice uninstall` removes it. -->
+<!-- Installed by agentoffice (npx agentsoffice install). `npx agentsoffice uninstall` removes it. -->
 
 # Agent Office
 

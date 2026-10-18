@@ -1,5 +1,5 @@
 /*
- * `npx agentoffice`: parse flags, fill the state store from the transcript
+ * `npx agentsoffice`: parse flags, fill the state store from the transcript
  * watcher (or the demo), serve the office on localhost, print the banner and
  * open the browser. No dependencies: flags are parsed by hand and the colours
  * are raw ANSI, off for NO_COLOR and when stdout is not a terminal.
@@ -302,7 +302,7 @@ function logEvent(e: OfficeEvent): void {
 function readVersion(): string {
   try {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-    if (pkg && pkg.name === "agentoffice" && typeof pkg.version === "string") return pkg.version;
+    if (pkg && (pkg.name === "agentsoffice" || pkg.name === "agentoffice") && typeof pkg.version === "string") return pkg.version;
   } catch {
     // Fall through: running from somewhere without the package.json beside it.
   }
@@ -374,8 +374,8 @@ function help(version: string): string {
 ${bold("agent office")} ${dim(`v${version}`)}  a live pixel-art office for your coding agents
 
 ${bold("Usage")}
-  npx agentoffice [office] [options]     open the office (the default command)
-  npx agentoffice <command> [options]    install | uninstall | doctor | mcp
+  npx agentsoffice [office] [options]     open the office (the default command)
+  npx agentsoffice <command> [options]    install | uninstall | doctor | mcp
 
 ${bold("Office options")}
   --port <n>, -p    Port to serve on (default ${DEFAULT_PORT}; tries the next ${PORT_FALLBACK} if taken)

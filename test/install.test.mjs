@@ -414,13 +414,13 @@ function assertInstalledSubset(home) {
 }
 
 test("launch choice: npx cache -> npx; checkout -> absolute node + script; remote -> npx", () => {
-  assert.equal(M.chooseLaunch({ remote: false, script: "/Users/me/.npm/_npx/abc123/node_modules/agentoffice/dist/cli.js" }).how, "npx");
-  assert.equal(M.chooseLaunch({ remote: false, script: "/tmp/dlx-12345/node_modules/agentoffice/dist/cli.js" }).how, "npx");
+  assert.equal(M.chooseLaunch({ remote: false, script: "/Users/me/.npm/_npx/abc123/node_modules/agentsoffice/dist/cli.js" }).how, "npx");
+  assert.equal(M.chooseLaunch({ remote: false, script: "/tmp/dlx-12345/node_modules/agentsoffice/dist/cli.js" }).how, "npx");
   const local = M.chooseLaunch({ remote: false, script: "/Users/me/agent-office/dist/cli.js", node: "/opt/homebrew/bin/node" });
   assert.deepEqual(M.launchFor(local, "qwen"), { command: "/opt/homebrew/bin/node", args: ["/Users/me/agent-office/dist/cli.js", "mcp", "--agent", "qwen"] });
   // Pinned to the running version, never @latest.
-  assert.deepEqual(M.launchFor(M.chooseLaunch({ remote: true, version: "0.1.0" }), "codex"), { command: "npx", args: ["-y", "agentoffice@0.1.0", "mcp", "--agent", "codex"] });
-  assert.equal(M.npxPackage("1.2.3-beta.1"), "agentoffice@1.2.3-beta.1");
+  assert.deepEqual(M.launchFor(M.chooseLaunch({ remote: true, version: "0.1.0" }), "codex"), { command: "npx", args: ["-y", "agentsoffice@0.1.0", "mcp", "--agent", "codex"] });
+  assert.equal(M.npxPackage("1.2.3-beta.1"), "agentsoffice@1.2.3-beta.1");
 });
 
 test("stableNode never registers a node found through a relative PATH entry", () => {
@@ -441,7 +441,7 @@ test("stableNode never registers a node found through a relative PATH entry", ()
 
 test("npmHasVersion: published, missing, unreachable", async () => {
   const fake = (status, body) => async () => ({ status, ok: status < 300, json: async () => body });
-  assert.equal(await M.npmHasVersion("0.1.0", { fetch: fake(200, { name: "agentoffice", version: "0.1.0", dist: { tarball: "https://x/t.tgz" } }) }), true);
+  assert.equal(await M.npmHasVersion("0.1.0", { fetch: fake(200, { name: "agentsoffice", version: "0.1.0", dist: { tarball: "https://x/t.tgz" } }) }), true);
   assert.equal(await M.npmHasVersion("0.1.0", { fetch: fake(404, {}) }), false);
   assert.equal(await M.npmHasVersion("0.1.0", { fetch: fake(200, { name: "someone-else", version: "0.1.0", dist: { tarball: "x" } }) }), false);
   assert.equal(await M.npmHasVersion("0.1.0", { fetch: async () => { throw new Error("offline"); } }), null);
