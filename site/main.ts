@@ -17,6 +17,7 @@
  * prefers-reduced-motion it waits for a press of play and nothing animates.
  */
 import type { Moment, Office } from "./office.ts";
+import type { OfficeEvent } from "../src/shared/events.ts";
 
 const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T | null;
 const $$ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => [...root.querySelectorAll(sel)] as T[];
@@ -184,14 +185,91 @@ setInterval(() => {
   if (s) bump(hud.crew, s.workers);
 }, 1000);
 
+/* the activity feed: the office's own events, as the app's feed shows them (labels, never content) */
+const feedEl = $(".feed");
+const wide = matchMedia("(min-width: 1100px)");
+let feedAt = 0;
+function feedText(e: OfficeEvent, remote?: string): [string, string] | null {
+  switch (e.kind) {
+    case "session_start": return [remote ? `beamed into ${remote}` : "walked in", ""];
+    case "session_end": return ["went home", ""];
+    case "prompt": return ["got a prompt", ""];
+    case "tool_start": return e.summary ? [e.summary, ""] : null;
+    case "subagent_start": return [`intern: ${e.role ?? "subagent"}`, ""];
+    case "waiting": return ["needs you", "hot"];
+    case "test_fail": return [`${e.summary ?? "tests"} failed, table flipped`, "bad"];
+    case "test_pass": return [`${e.summary ?? "tests"} passed`, ""];
+    case "flip": return ["flipped its own table", "bad"];
+    case "shout": return e.summary ? [`on the TV: ${e.summary.replace(/\s*\p{Extended_Pictographic}.*$/u, "")}`, ""] : null;
+    case "celebrate": return ["confetti", ""];
+    default: return null;
+  }
+}
+function feed(e: OfficeEvent, w: { name: string; colour: string; remote?: string }) {
+  if (!feedEl || !wide.matches || !inView || e.parentId && e.kind !== "subagent_start") return;
+  const t = feedText(e, w.remote);
+  if (!t) return;
+  // a busy office emits a lot: a line at most every 0.9 s, and the big ones always
+  const now = performance.now();
+  if (!t[1] && now - feedAt < 900) return;
+  feedAt = now;
+  const li = document.createElement("li");
+  if (t[1]) li.className = t[1];
+  li.style.setProperty("--c", w.colour);
+  const dot = document.createElement("i");
+  dot.className = "fd-dot";
+  const name = document.createElement("span");
+  name.className = "fd-who";
+  name.textContent = w.name;
+  const what = document.createElement("span");
+  what.className = "fd-what";
+  what.textContent = `${e.project} · ${t[0]}`;
+  li.append(dot, name, what);
+  feedEl.append(li);
+  const live = [...feedEl.children].filter((x) => !x.classList.contains("out"));
+  for (const old of live.slice(0, Math.max(0, live.length - 4))) {
+    old.classList.add("out");
+    setTimeout(() => old.remove(), reduced.matches ? 0 : 360);
+  }
+}
+
+/* "needs you": an amber call when an agent in the demo finishes its turn, at most every 30 s */
+const toastEl = $(".toast");
+const pageAt = performance.now();
+let toastAt = -Infinity;
+let toastTimer = 0;
+let toastWorker = "";
+function toast(e: OfficeEvent, w: { name: string }) {
+  if (!toastEl || !inView) return;
+  const now = performance.now();
+  if (now - pageAt < 8_000 || now - toastAt < 30_000) return;
+  toastAt = now;
+  toastWorker = e.workerId;
+  const text = toastEl.querySelector(".toast-text");
+  if (text) text.textContent = `${w.name} on ${e.project} needs you`;
+  toastEl.classList.add("is-on");
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toastEl.classList.remove("is-on"), 5_200);
+}
+toastEl?.querySelector(".toast-go")?.addEventListener("click", async () => {
+  toastEl.classList.remove("is-on");
+  const o = await ready(true);
+  if (o && toastWorker) o.focus(toastWorker);
+});
+
 function load(): Promise<Office | null> {
   if (!mount || !win) return Promise.resolve(null);
-  loading ??= import("./office.ts")
-    .then(({ createOffice }) => {
+  loading ??= Promise.all([import("./office.ts"), import("../src/shared/events.ts")])
+    .then(([{ createOffice }, { BRAND, HOST_BRAND }]) => {
       const o = createOffice(mount, { fastForward: 10_000, hour: 21.5 });
+      const who = (e: OfficeEvent) => ({ name: BRAND[e.agent]?.name ?? e.agent, colour: BRAND[e.agent]?.color ?? "#8e75ff", remote: e.host && e.host.kind !== "local" ? HOST_BRAND[e.host.kind]?.name : undefined });
       o.onEvent((e) => {
         if (e.kind === "tool_start") bump(hud.tools, ++counts.tools);
         else if (e.kind === "test_fail" || e.kind === "flip") bump(hud.flips, ++counts.flips);
+        if (!office?.running) return;
+        const w = who(e);
+        feed(e, w);
+        if (e.kind === "waiting" && !e.parentId) toast(e, w);
         // the office's own big moments make the caption too, when nobody is driving it
         if (performance.now() - captionAt < 6_000) return;
         if (e.kind === "test_fail") say(`${e.project}: a test failed and the table flipped`, false);
@@ -584,6 +662,47 @@ if (!reduced.matches) {
       pointerQueued = true;
       requestAnimationFrame(pull);
     }
+  }, { passive: true });
+}
+
+/* ------------------------------------------------------------------ the night */
+
+const night = $(".night");
+if (night) {
+  night.classList.add("is-asleep");
+  new IntersectionObserver((es) => night.classList.toggle("is-asleep", !es.some((e) => e.isIntersecting)), { rootMargin: "80px 0px" }).observe(night);
+}
+
+/* ------------------------------------------------------------------ sparkles over the hero */
+
+const hero = $(".hero");
+if (hero && !reduced.matches) {
+  let last = { x: 0, y: 0, t: 0 };
+  let alive = 0;
+  hero.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse" || !fine.matches || alive > 28) return;
+    const now = performance.now();
+    if (now - last.t < 40 || Math.hypot(e.clientX - last.x, e.clientY - last.y) < 8) return;
+    last = { x: e.clientX, y: e.clientY, t: now };
+    const r = hero.getBoundingClientRect();
+    const b = document.createElement("i");
+    b.className = "spark";
+    const s = Math.random() < 0.3 ? 3 : 4;
+    b.style.cssText = `left:${Math.round(e.clientX - r.left)}px;top:${Math.round(e.clientY - r.top)}px;width:${s}px;height:${s}px;background:${CONFETTI[Math.floor(Math.random() * CONFETTI.length)]}`;
+    hero.append(b);
+    alive++;
+    const dx = (Math.random() - 0.5) * 24;
+    const a = b.animate(
+      [
+        { transform: "translate(0, 0)", opacity: 0.95 },
+        { transform: `translate(${dx}px, ${-18 - Math.random() * 18}px)`, opacity: 0 },
+      ],
+      { duration: 650 + Math.random() * 250, easing: "cubic-bezier(.2,.7,.3,1)" },
+    );
+    a.onfinish = () => {
+      b.remove();
+      alive--;
+    };
   }, { passive: true });
 }
 

@@ -40,6 +40,14 @@ const PORTS = [5040, 5049];
 // font.ts draws its glyph atlas into a canvas from util.ts, icons.ts builds SVG through dom.ts:
 // in node both get a stub that records the pixels instead.
 const STUBS = {
+  // for sprites.ts: the real helpers, with a bitmap whose putImageData keeps the pixels
+  spriteUtil: `
+    export * from ${JSON.stringify(join(ROOT, "web/scene/util.ts"))};
+    export function bitmap(w, h) {
+      let img = null;
+      const g = { createImageData: (W, H) => ({ width: W, height: H, data: new Uint8ClampedArray(W * H * 4) }), putImageData: (d) => { img = d; }, fillStyle: "", globalCompositeOperation: "", fillRect() {}, drawImage() {} };
+      return { w, h, c: { get img() { return img; } }, g };
+    }`,
   util: `
     export function bitmap(w, h) {
       const px = new Set();
@@ -50,7 +58,8 @@ const STUBS = {
 
 async function officeData() {
   const entry = `
-    export { FONT } from ${JSON.stringify(join(ROOT, "web/scene/font.ts"))};
+    export { FONT, MICRO } from ${JSON.stringify(join(ROOT, "web/scene/font.ts"))};
+    export { sprite, lookFor } from ${JSON.stringify(join(ROOT, "web/scene/sprites.ts"))};
     export { glyph, icon, mark } from ${JSON.stringify(join(ROOT, "web/ui/icons.ts"))};
     export { C } from ${JSON.stringify(join(ROOT, "web/scene/palette.ts"))};
     export { BRAND, HOST_BRAND } from ${JSON.stringify(join(ROOT, "src/shared/events.ts"))};`;
@@ -65,9 +74,9 @@ async function officeData() {
       {
         name: "stubs",
         setup(b) {
-          b.onResolve({ filter: /^\.\/util\.ts$/ }, (a) => (a.importer.endsWith("font.ts") ? { path: "util", namespace: "stub" } : undefined));
+          b.onResolve({ filter: /^\.\/util\.ts$/ }, (a) => (a.importer.endsWith("font.ts") ? { path: "util", namespace: "stub" } : a.importer.endsWith("sprites.ts") ? { path: "spriteUtil", namespace: "stub" } : undefined));
           b.onResolve({ filter: /^\.\/dom\.ts$/ }, (a) => (a.importer.endsWith("icons.ts") ? { path: "dom", namespace: "stub" } : undefined));
-          b.onLoad({ filter: /.*/, namespace: "stub" }, (a) => ({ contents: STUBS[a.path], loader: "js" }));
+          b.onLoad({ filter: /.*/, namespace: "stub" }, (a) => ({ contents: STUBS[a.path], loader: "js", resolveDir: ROOT }));
         },
       },
     ],
@@ -153,43 +162,173 @@ function rng(seed) {
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
 }
 
+/* ------------------------------------------------------------------ the night: city, moon, workers */
+
+/** An RGBA pixel buffer (a sprite from web/scene/sprites.ts) as an SVG at an integer scale, one path per colour. */
+function rgbaSvg(img, cls, scale = 2, attrs = "") {
+  const byColour = new Map();
+  for (let y = 0; y < img.height; y++)
+    for (let x = 0; x < img.width; x++) {
+      const i = (y * img.width + x) * 4;
+      if (!img.data[i + 3]) continue;
+      const hex = "#" + [img.data[i], img.data[i + 1], img.data[i + 2]].map((v) => v.toString(16).padStart(2, "0")).join("");
+      if (!byColour.has(hex)) byColour.set(hex, []);
+      byColour.get(hex).push([x, y]);
+    }
+  const paths = [...byColour].map(([c, pts]) => `<path fill="${c}" d="${runsPath(pts)}"/>`).join("");
+  return `<svg class="${cls}" viewBox="0 0 ${img.width} ${img.height}" width="${img.width * scale}" height="${img.height * scale}" shape-rendering="crispEdges" aria-hidden="true" focusable="false"${attrs}>${paths}</svg>`;
+}
+
+/** Several RGBA frames side by side in one SVG: a sprite strip that CSS steps through with a transform. */
+function stripSvg(frames, cls, scale = 2) {
+  const fw = frames[0].width, fh = frames[0].height;
+  const byColour = new Map();
+  frames.forEach((img, f) => {
+    for (let y = 0; y < fh; y++)
+      for (let x = 0; x < fw; x++) {
+        const i = (y * fw + x) * 4;
+        if (!img.data[i + 3]) continue;
+        const hex = "#" + [img.data[i], img.data[i + 1], img.data[i + 2]].map((v) => v.toString(16).padStart(2, "0")).join("");
+        if (!byColour.has(hex)) byColour.set(hex, []);
+        byColour.get(hex).push([f * fw + x, y]);
+      }
+  });
+  const paths = [...byColour].map(([c, pts]) => `<path fill="${c}" d="${runsPath(pts)}"/>`).join("");
+  const W = fw * frames.length;
+  return `<svg class="${cls}" viewBox="0 0 ${W} ${fh}" width="${W * scale}" height="${fh * scale}" style="--fw:${fw * scale}px;--frames:${frames.length}" shape-rendering="crispEdges" aria-hidden="true" focusable="false">${paths}</svg>`;
+}
+
+/** A pixel moon, 15 px across, with a few craters. */
+function moonSvg() {
+  const R = 7, pts = [], dark = [];
+  const craters = [[-2, -2, 1.6], [3, 1, 1.2], [-1, 3, 1]];
+  for (let y = -R; y <= R; y++)
+    for (let x = -R; x <= R; x++) {
+      if (x * x + y * y > R * R + 2) continue;
+      (craters.some(([cx, cy, r]) => (x - cx) ** 2 + (y - cy) ** 2 <= r * r) ? dark : pts).push([x + R, y + R]);
+    }
+  return `<svg class="moon-px" viewBox="0 0 15 15" width="15" height="15" shape-rendering="crispEdges" aria-hidden="true" focusable="false"><path class="m-lit" d="${runsPath(pts)}"/><path class="m-crater" d="${runsPath(dark)}"/></svg>`;
+}
+
 /**
- * The footer's night skyline, in the office's own sky colours: two rows of towers, sparse lit
- * windows (a few of them twinkle) and stars. 640 x 100 art pixels, drawn at an integer scale.
+ * The footer's city, in the office's own night colours, 640 x 150 art pixels drawn at an integer
+ * scale: a far and a near row of towers with lit windows (a few switch on and off, a few are
+ * screens in an agent's colour), street lamps, and in the middle the office's own building: one
+ * floor per agent with its colour on the sill, a lift going up and down its glass shaft, a beacon,
+ * and its neon NPX THEAGENTOFFICE sign. The far row goes behind the wordmark, the near row in
+ * front; a link over the building goes back to the top.
  */
-function skyline(C) {
-  const W = 640, H = 100, r = rng(42);
-  const layer = (base, minH, maxH, minW, maxW, fill, lit, cls) => {
-    const towers = [];
-    let x = -4;
-    while (x < W) {
+function city(d) {
+  const { C, BRAND } = d;
+  const micro = d.MICRO();
+  const W = 640, H = 150, r = rng(42);
+  const brands = Object.values(BRAND).map((b) => b.color);
+  // the office: centred, the tallest thing in town
+  const hw = 84, hh = 116, hx = Math.round(W / 2 - hw / 2), hy = H - hh;
+  const avoid = (x, w) => x + w > hx - 3 && x < hx + hw + 3;
+  const towers = (minH, maxH, minW, maxW, skipHQ) => {
+    const out = [];
+    for (let x = -6; x < W; ) {
       const w = Math.round(minW + r() * (maxW - minW));
       const h = Math.round(minH + r() * (maxH - minH));
-      towers.push({ x, w, h });
+      if (!(skipHQ && avoid(x, w))) out.push({ x, w, h });
       x += w + (r() < 0.3 ? 2 : 0);
     }
-    let d = "", win = "", tw = "";
-    for (const t of towers) {
-      const top = base - t.h;
-      d += `M${t.x} ${top}h${t.w}v${H - top}h${-t.w}z`;
-      if (r() < 0.25 && t.w > 8) d += `M${t.x + Math.floor(t.w / 2)} ${top - 4}h1v4h-1z`;
-      for (let wy = top + 3; wy < H - 4; wy += 3)
+    return out;
+  };
+  const rect = (x, y, w = 1, h = 1) => `M${x} ${y}h${w}v${h}h${-w}z`;
+  const flick = Array.from({ length: 6 }, () => "");
+  const layer = (list, fill, lit, cls) => {
+    let body = "", win = "", screen = "";
+    for (const t of list) {
+      const top = H - t.h;
+      body += rect(t.x, top, t.w, t.h);
+      if (r() < 0.22 && t.w > 8) body += rect(t.x + Math.floor(t.w / 2), top - 5, 1, 5);
+      for (let wy = top + 3; wy < H - 5; wy += 4)
         for (let wx = t.x + 2; wx < t.x + t.w - 2; wx += 3) {
           const p = r();
-          if (p < lit) {
-            const rect = `M${wx} ${wy}h1v1h-1z`;
-            if (p < lit * 0.12) tw += rect;
-            else win += rect;
-          }
+          if (p >= lit) continue;
+          if (p < lit * 0.14) flick[Math.floor(r() * 6)] += rect(wx, wy, 1, 2);
+          else if (p < lit * 0.2) screen += rect(wx, wy, 1, 2);
+          else win += rect(wx, wy, 1, 2);
         }
     }
-    return `<path class="${cls}" fill="${fill}" d="${d}"/><path class="win" d="${win}"/><path class="win tw" d="${tw}"/>`;
+    return `<path class="${cls}" fill="${fill}" d="${body}"/><path class="win" d="${win}"/><path class="win scr" d="${screen}"/>`;
   };
-  let stars = "";
-  for (let i = 0; i < 90; i++) stars += `M${Math.floor(r() * W)} ${Math.floor(r() * 46)}h1v1h-1z`;
-  const far = layer(H, 26, 62, 10, 26, C.blue2, 0.05, "far");
-  const near = layer(H, 10, 40, 12, 30, C.blue1, 0.09, "near");
-  return `<svg class="skyline" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="xMidYMax meet" shape-rendering="crispEdges" aria-hidden="true" focusable="false"><path class="stars" d="${stars}"/>${far}${near}</svg>`;
+  const far = layer(towers(34, 92, 10, 26, false), C.blue2, 0.07, "bld");
+  const near = layer(towers(14, 58, 12, 30, true), C.blue1, 0.1, "bld");
+  const flicker = flick.map((p, i) => `<path class="win fl fl${i}" d="${p}"/>`).join("");
+
+  // the office's building
+  const floorH = 9, top = hy + 6, shaftX = hx + hw - 11;
+  let body = rect(hx, hy, hw, hh), trim = rect(hx - 1, hy - 1, hw + 2, 2), lit = "", screens = "", sills = "", dim = "";
+  const floors = Math.floor((H - 16 - top) / floorH);
+  for (let f = 0; f < floors; f++) {
+    const y = top + f * floorH;
+    const colour = brands[f % brands.length];
+    // each floor is one agent's: its colour on the sill, a few of its screens, a dark stretch where nobody's in
+    sills += `<path fill="${colour}" d="${rect(hx + 4, y + 6, shaftX - hx - 6, 1)}"/>`;
+    const gapAt = Math.floor(r() * 12), gapLen = r() < 0.5 ? 2 + Math.floor(r() * 3) : 0;
+    let i = 0;
+    for (let x = hx + 5; x + 3 <= shaftX - 3; x += 5, i++) {
+      const p = r();
+      if ((i >= gapAt && i < gapAt + gapLen) || p < 0.12) dim += rect(x, y + 1, 3, 4);
+      else if (p < 0.3) screens += `<path fill="${colour}" d="${rect(x, y + 2, 3, 3)}"/>`;
+      else lit += rect(x, y + 1, 3, 4);
+    }
+  }
+  // depth: a lit left edge and a shaded right face
+  trim += rect(hx, hy + 1, 1, hh - 1);
+  const shade = rect(hx + hw - 4, hy + 1, 4, hh - 1);
+  const lobbyY = top + floors * floorH;
+  const shaft = rect(shaftX, hy + 4, 5, lobbyY - hy - 4);
+  const car = rect(shaftX + 1, lobbyY - floorH + 1, 3, 6);
+  const door = rect(hx + Math.round(hw / 2) - 6, H - 9, 5, 9) + rect(hx + Math.round(hw / 2) + 1, H - 9, 5, 9);
+  const awning = rect(hx + Math.round(hw / 2) - 9, H - 11, 18, 2);
+  // the sign: a plate on two posts, the text in the office's micro font
+  const text = "NPX THEAGENTOFFICE";
+  const tp = textPixels(micro, text);
+  const pw = Math.max(hw - 4, tp.w + 8), px = Math.round(W / 2 - pw / 2), py = hy - 14;
+  const posts = rect(px + 6, py + 11, 1, 3) + rect(px + pw - 7, py + 11, 1, 3);
+  const glyphs = runsPath(tp.pts.map(([x, y]) => [x + Math.round(W / 2 - tp.w / 2), y + py + 3]));
+  const antenna = rect(hx + 12, hy - 22, 1, 21);
+  const beacon = rect(hx + 11, hy - 24, 3, 2);
+  const hq = `<g class="hq">
+<path class="bld hq-body" fill="${mix(C.blue1, C.blue2, 0.5)}" d="${body}"/><path class="hq-trim" d="${trim}"/>
+<path class="hq-dim" d="${dim}"/><path class="win hq-lit" d="${lit}"/><g class="hq-screens">${screens}</g>${sills}
+<path class="hq-shade" d="${shade}"/><path class="hq-shaft" d="${shaft}"/><path class="hq-car" d="${car}"/><path class="hq-door" d="${door}"/><path class="hq-awning" d="${awning}"/>
+<path class="hq-post" d="${posts}${antenna}"/><path class="hq-beacon" d="${beacon}"/>
+<path class="hq-plate" d="${rect(px, py, pw, 11)}"/><path class="hq-sign" d="${glyphs}"/><path class="hq-sign hq-glow" d="${glyphs}"/>
+</g>`;
+
+  // street lamps along the kerb, clear of the office's door
+  let lamps = "", heads = "";
+  for (let x = 24; x < W; x += 58 + Math.floor(r() * 18)) {
+    if (Math.abs(x - W / 2) < 20) continue;
+    lamps += rect(x, H - 15, 1, 15) + rect(x, H - 15, 3, 1);
+    heads += rect(x + 2, H - 14, 2, 1);
+  }
+  let stars = "", twinkle = "";
+  for (let i = 0; i < 70; i++) {
+    const s = rect(Math.floor(r() * W), Math.floor(r() * 50));
+    if (i % 5 === 0) twinkle += s;
+    else stars += s;
+  }
+  const svg = (cls, inner) => `<svg class="${cls}" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" shape-rendering="crispEdges" aria-hidden="true" focusable="false">${inner}</svg>`;
+  const defs = `<defs><radialGradient id="lampglow"><stop offset="0" stop-color="#ffd36c" stop-opacity=".55"/><stop offset="1" stop-color="#ffd36c" stop-opacity="0"/></radialGradient></defs>`;
+  const glows = heads.match(/M(\d+) (\d+)/g).map((m) => { const [, x, y] = /M(\d+) (\d+)/.exec(m); return `<circle cx="${+x + 1}" cy="${+y + 2}" r="9" fill="url(#lampglow)"/>`; }).join("");
+  return `<div class="city" style="--W:${W};--H:${H};--hx:${hx};--hy:${py};--hw:${hw}">
+  ${svg("far", `<path class="stars" d="${stars}"/><path class="stars tw" d="${twinkle}"/>${far}`)}
+  ${svg("near", `${defs}${near}${flicker}${hq}<g class="lamps">${glows}<path class="lamp" d="${lamps}"/><path class="lamp-head" d="${heads}"/></g>`)}
+  <a class="hq-link" href="#top" aria-label="agent office: back to the top"></a>
+</div>`;
+}
+
+/** Hex colour blend, for the few build-time tints. */
+function mix(a, b, t) {
+  const p = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [x, y] = [p(a), p(b)];
+  return "#" + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, "0")).join("");
 }
 
 /** The brand mark as a standalone SVG file (the favicon): monochrome, one line in the accent. */
@@ -302,7 +441,20 @@ async function page(tour) {
       const sr = at.decorative ? "" : `<span class="sr-only">${esc(t)}</span>`;
       return `${sr}<span class="px${at.class ? ` ${at.class}` : ""}" aria-hidden="true">${pixelText(font, t, { grad: at.grad === true })}</span>`;
     })
-    .replace(/<i-skyline><\/i-skyline>/g, () => skyline(d.C))
+    .replace(/<i-city><\/i-city>/g, () => city(d))
+    .replace(/<i-moon><\/i-moon>/g, () => moonSvg())
+    .replace(/<i-worker([^>]*)><\/i-worker>/g, (_, a) => {
+      // the agent's own worker, as the office draws it: a look fixed per agent, cheering
+      const at = attrsOf(a);
+      const img = d.sprite(d.lookFor(`site-${at.n}`, at.n, false), at.pose ?? "cheer", "down", Number(at.frame ?? 0)).c.img;
+      return rgbaSvg(img, `worker${at.class ? ` ${at.class}` : ""}`, Number(at.scale ?? 2));
+    })
+    .replace(/<i-walker([^>]*)><\/i-walker>/g, (_, a) => {
+      const at = attrsOf(a);
+      const look = d.lookFor(`site-walker-${at.n}`, at.n, false);
+      const frames = [0, 1, 2, 3].map((f) => d.sprite(look, "walk", "right", f).c.img);
+      return stripSvg(frames, "walker-strip", 2);
+    })
     .replace(/<i-logo([^>]*)><\/i-logo>/g, (_, a) => {
       const at = attrsOf(a);
       usedLogos.add(at.n);

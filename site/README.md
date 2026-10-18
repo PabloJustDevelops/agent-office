@@ -13,16 +13,16 @@ npm run site:dev    # build, serve on http://127.0.0.1:5040 (or the next free po
 
 | | |
 | --- | --- |
-| `index.html` | the page, with a few build-time tags: `<px-text>` (text in the office's bitmap font), `<i-logo>`, `<i-glyph>`, `<i-icon>`, `<i-mark>`, `<i-skyline>` |
+| `index.html` | the page, with a few build-time tags: `<px-text>` (text in the office's bitmap font), `<i-logo>`, `<i-glyph>`, `<i-icon>`, `<i-mark>`, `<i-worker>` and `<i-walker>` (an agent's worker, drawn by `web/scene/sprites.ts`), `<i-city>` and `<i-moon>` (the footer's night) |
 | `styles.css` | the page: colour tokens for dark (the default) and light, then every section |
-| `main.ts` | the theme toggle, copy buttons, the boot, the pinned story, the live views, the redaction, F to flip a table, the tour player |
+| `main.ts` | the theme toggle, copy buttons, the boot, the pinned story, the live views, the activity feed and the "needs you" call, the redaction, the sparkles, F to flip a table, the tour player |
 | `office.ts` | the browser adapter: demo -> state -> scene on one virtual clock, plus `trigger(moment)` |
 | `shims/node.ts` | what `node:os`, `node:child_process` and `node:fs/promises` resolve to in the browser |
 | `assets/` | the office stills, the og:image, the favicons, the app screenshots (`shots/`) |
 | `tools/capture.mjs` | regenerates the images in `assets/` from the real page and the app's dev harness, in headless Chromium |
 | `../scripts/build-site.mjs` | the build and the dev server |
 
-The build reads the bitmap font (`web/scene/font.ts`), the glyphs and brand mark (`web/ui/icons.ts`), the palette (`web/scene/palette.ts`) and the agents' colours (`src/shared/events.ts`) straight from the app, so the page and the office stay one thing. Nothing in `web/` or `src/` is changed to build it, and the npm package doesn't include `site/`.
+The build reads the bitmap fonts (`web/scene/font.ts`), the workers (`web/scene/sprites.ts`), the glyphs and brand mark (`web/ui/icons.ts`), the palette (`web/scene/palette.ts`) and the agents' colours (`src/shared/events.ts`) straight from the app, so the page and the office stay one thing. Nothing in `web/` or `src/` is changed to build it, and the npm package doesn't include `site/`.
 
 ## The page
 
@@ -31,7 +31,9 @@ One accent, the office's own violet (`#8e75ff`), on a near-black page (light fol
 - **The hero.** `npx theagentoffice` types itself out, then the office boots in its window. The window stands tilted on a faint floor and straightens as you scroll to it; once it's in place it has no transform at all, so the canvas is drawn pixel for pixel. The status bar shows who's at work and counts tool calls and flips since the page opened.
 - **The story.** The office pins while seven cards scroll past it, and each one plays its moment in the office with the camera on it. On narrow screens the office pins at the top and the cards scroll under it; on short ones nothing pins.
 - **Live views.** The small views in the MCP and cloud-wing cells are copied from the one running scene's canvas while a moment holds the camera there. There is no second scene.
-- **The rest.** The app's own screens (captured from its dev harness), a transcript line scrubbed down to its label, a skyline and the wordmark in the office's font, a confetti puff when you copy the command, and F anywhere on the page flips a table.
+- **In and around the window.** The office's own activity feed runs in the window's corner on wide screens (labels only, as in the app), and when an agent in the demo finishes its turn an amber "needs you" call appears at the top of the window, at most every 30 seconds; "Show me" brings the camera to it.
+- **The rest.** The app's own screens (captured from its dev harness), a transcript line scrubbed down to its label, each agent's own worker standing in for its logo on hover, a running light on a bento cell's edge on hover, pixel sparkles under the cursor in the hero, a confetti puff when you copy the command, and F anywhere on the page flips a table.
+- **The footer is a night scene,** generated at build time in the office's colours: the closing line in the sky with the moon and a shooting star now and then, the wordmark over the city, the office's own building in the middle (one floor per agent, its lift going up and down, its neon sign; a click on it goes back to the top), windows switching on and off, and the links on the street, where a worker walks by. It stays a night scene in light mode, and holds still while it's off screen.
 
 Every animation moves `transform` and `opacity` only. With `prefers-reduced-motion` nothing animates: the office waits for a press of play, the command is simply there, and the live views don't start it.
 

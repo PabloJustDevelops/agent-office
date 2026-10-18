@@ -110,6 +110,8 @@
             <source media="(max-width: 639.98px)" srcset="assets/office-square.webp" width="1000" height="1000">
             <img class="poster" src="assets/office-wide.webp" alt="" width="2000" height="1250" decoding="async" fetchpriority="high">
           </picture>
+          <ol class="feed" aria-hidden="true"></ol>
+          <div class="toast"><span class="toast-dot" aria-hidden="true"></span><span class="toast-text"></span><button type="button" class="toast-go">Show me</button></div>
           <div id="office" class="office" role="img" aria-label="A live pixel-art office: coding agents as workers at desks, with a glass cloud wing for sandboxes. It runs the demo simulator in your browser."></div>
           <div class="boot" aria-hidden="true">
             <div class="boot-in">
@@ -201,14 +203,14 @@
     <h2 class="eyebrow" id="agents-title">Watches the agents you already run</h2>
     <div class="marquee">
       <ul class="marquee-track">
-        <li><i-logo n="claude"></i-logo><span>Claude Code</span></li>
-        <li><i-logo n="codex"></i-logo><span>Codex</span></li>
-        <li><i-logo n="commandcode"></i-logo><span>Command Code</span></li>
-        <li><i-logo n="opencode"></i-logo><span>opencode</span></li>
-        <li><i-logo n="cursor"></i-logo><span>Cursor</span></li>
-        <li><i-logo n="droid"></i-logo><span>Droid</span></li>
-        <li><i-logo n="qwen"></i-logo><span>Qwen Code</span></li>
-        <li><i-logo n="gemini"></i-logo><span>Gemini CLI</span></li>
+        <li><span class="peek"><i-worker n="claude"></i-worker></span><i-logo n="claude"></i-logo><span>Claude Code</span></li>
+        <li><span class="peek"><i-worker n="codex"></i-worker></span><i-logo n="codex"></i-logo><span>Codex</span></li>
+        <li><span class="peek"><i-worker n="commandcode"></i-worker></span><i-logo n="commandcode"></i-logo><span>Command Code</span></li>
+        <li><span class="peek"><i-worker n="opencode"></i-worker></span><i-logo n="opencode"></i-logo><span>opencode</span></li>
+        <li><span class="peek"><i-worker n="cursor"></i-worker></span><i-logo n="cursor"></i-logo><span>Cursor</span></li>
+        <li><span class="peek"><i-worker n="droid"></i-worker></span><i-logo n="droid"></i-logo><span>Droid</span></li>
+        <li><span class="peek"><i-worker n="qwen"></i-worker></span><i-logo n="qwen"></i-logo><span>Qwen Code</span></li>
+        <li><span class="peek"><i-worker n="gemini"></i-worker></span><i-logo n="gemini"></i-logo><span>Gemini CLI</span></li>
       </ul>
     </div>
   </section>
@@ -391,40 +393,44 @@
     </div>
   </section>
 
-  <section class="night" aria-labelledby="outro-title">
-    <div class="night-sky" aria-hidden="true"></div>
-    <div class="wrap night-in" data-reveal>
-      <h2 id="outro-title">Give your agents an office.</h2>
-      <div class="cmd">
-        <button class="cmd-btn magnetic" type="button" data-copy="npx theagentoffice" aria-label="Copy the command: npx theagentoffice">
-          <span class="cmd-p" aria-hidden="true">$</span><span class="cmd-t">npx theagentoffice</span><span class="cmd-i" aria-hidden="true"><i-icon n="copy" class="i-copy"></i-icon><i-icon n="check" class="i-check"></i-icon></span>
-        </button>
-        <span class="copied" role="status" aria-live="polite"></span>
-      </div>
-    </div>
-    <div class="horizon" aria-hidden="true">
-      <px-text decorative grad class="wordmark">agent office</px-text>
-      <i-skyline></i-skyline>
-    </div>
-  </section>
 </main>
 
-<footer class="foot">
-  <div class="wrap foot-in">
-    <div class="foot-brand">
-      <a class="brand" href="#top"><i-mark></i-mark><span>agent office</span></a>
-      <p>v{{version}} · MIT · by <a href="https://github.com/bas3line">@bas3line</a></p>
-      <p class="foot-hint">Psst: press <kbd>F</kbd> to flip a table.</p>
+<footer class="night" id="end" aria-labelledby="outro-title">
+  <div class="sky" aria-hidden="true">
+    <div class="moon"><i-moon></i-moon></div>
+    <i class="shoot"></i>
+  </div>
+  <div class="wrap night-in" data-reveal>
+    <h2 id="outro-title">Give your agents an office.</h2>
+    <div class="cmd">
+      <button class="cmd-btn magnetic" type="button" data-copy="npx theagentoffice" aria-label="Copy the command: npx theagentoffice">
+        <span class="cmd-p" aria-hidden="true">$</span><span class="cmd-t">npx theagentoffice</span><span class="cmd-i" aria-hidden="true"><i-icon n="copy" class="i-copy"></i-icon><i-icon n="check" class="i-check"></i-icon></span>
+      </button>
+      <span class="copied" role="status" aria-live="polite"></span>
     </div>
-    <nav class="foot-links" aria-label="Project">
-      <a href="https://github.com/bas3line/agent-office">GitHub</a>
-      <a href="https://www.npmjs.com/package/theagentoffice">npm</a>
-      <a href="https://github.com/bas3line/agent-office#readme">Docs</a>
-      <a href="https://github.com/bas3line/agent-office/blob/main/CONTRIBUTING.md">Contributing</a>
-      <a href="https://github.com/bas3line/agent-office/issues/new/choose">Report an issue</a>
-      <a href="https://github.com/sponsors/bas3line">Sponsor</a>
-    </nav>
-    <p class="tm"><span>Claude, Codex, Command Code, opencode, Cursor, Droid and Factory, Qwen, Gemini, Daytona, boat, Railway and Vercel are trademarks of their owners. Their logos appear only to name those products; agent office is not affiliated with or endorsed by any of them.</span></p>
+  </div>
+  <div class="horizon">
+    <div class="wordmark-wrap" aria-hidden="true"><i class="wm-glow"></i><px-text decorative grad class="wordmark">agent office</px-text></div>
+    <i-city></i-city>
+  </div>
+  <div class="street">
+    <div class="walkway" aria-hidden="true"><div class="walker"><div class="walker-win"><i-walker n="claude"></i-walker></div></div></div>
+    <div class="wrap street-in">
+      <div class="st-brand">
+        <a class="brand" href="#top"><i-mark></i-mark><span>agent office</span></a>
+        <p>v{{version}} · MIT · by <a href="https://github.com/bas3line">@bas3line</a></p>
+      </div>
+      <nav class="st-links" aria-label="Project">
+        <a href="https://github.com/bas3line/agent-office">GitHub</a>
+        <a href="https://www.npmjs.com/package/theagentoffice">npm</a>
+        <a href="https://github.com/bas3line/agent-office#readme">Docs</a>
+        <a href="https://github.com/bas3line/agent-office/blob/main/CONTRIBUTING.md">Contributing</a>
+        <a href="https://github.com/bas3line/agent-office/issues/new/choose">Report an issue</a>
+        <a href="https://github.com/sponsors/bas3line">Sponsor</a>
+      </nav>
+      <p class="st-hint">Psst: press <kbd>F</kbd> anywhere to flip a table.</p>
+      <p class="tm">Claude, Codex, Command Code, opencode, Cursor, Droid and Factory, Qwen, Gemini, Daytona, boat, Railway and Vercel are trademarks of their owners. Their logos appear only to name those products; agent office is not affiliated with or endorsed by any of them.</p>
+    </div>
   </div>
 </footer>
 

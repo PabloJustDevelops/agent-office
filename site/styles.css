@@ -662,11 +662,58 @@ html.js .boot { display: grid; }
   .beat-card { opacity: 1; transform: none; }
 }
 
+/* the office's activity feed, live, in the corner of the window (wide screens) */
+.feed { position: absolute; right: 12px; bottom: 12px; z-index: 3; display: none; width: min(320px, 40%); margin: 0; padding: 0; list-style: none; pointer-events: none; }
+@media (min-width: 1100px) { .feed { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; justify-items: end; } }
+.feed li { display: flex; align-items: center; gap: 8px; max-width: 100%; padding: 6px 10px; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 8px; background: rgba(9, 9, 14, 0.84); font: 400 11.5px/1.3 var(--mono); color: #cfcfd6; white-space: nowrap; animation: feed-in 0.45s var(--ease) both; }
+.feed li.out { animation: feed-out 0.35s var(--ease) both; }
+.fd-dot { flex: none; width: 6px; height: 6px; border-radius: 1px; background: var(--c); }
+.fd-who { flex: none; color: var(--c); }
+.fd-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.feed li.hot { border-color: rgba(255, 211, 108, 0.45); }
+.feed li.bad { border-color: rgba(242, 98, 90, 0.5); }
+@keyframes feed-in { from { opacity: 0; transform: translateY(10px); } }
+@keyframes feed-out { to { opacity: 0; transform: translateY(-8px); } }
+.window:not(.is-live) .feed, .window.is-paused .feed { display: none; }
+
+/* "needs you": the demo's own waiting events, as the office's amber call, at the top of the window like the app's */
+.toast {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 24px);
+  padding: 6px 6px 6px 14px;
+  border: 1px solid rgba(255, 211, 108, 0.42);
+  border-radius: 999px;
+  background: rgba(22, 17, 6, 0.94);
+  box-shadow: 0 16px 40px -14px rgba(255, 180, 60, 0.45);
+  color: #ffe9b0;
+  font: 500 13px/1.2 var(--sans);
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-50%, -12px);
+  transition: opacity 0.3s, transform 0.45s var(--ease), visibility 0s 0.45s;
+}
+.toast.is-on { opacity: 1; visibility: visible; transform: translate(-50%, 0); transition: opacity 0.3s, transform 0.45s var(--ease); }
+.toast-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #ffd36c; animation: needs 1.2s ease-in-out infinite; }
+@keyframes needs { 50% { transform: scale(0.6); opacity: 0.6; } }
+.toast-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast-go { flex: none; height: 28px; padding: 0 12px; border-radius: 999px; background: #ffd36c; color: #1d1505; font-size: 12.5px; font-weight: 600; }
+.toast-go:hover { background: #ffe08f; }
+
+/* a pixel sparkle where the cursor moves over the hero */
+.spark { position: absolute; z-index: 0; width: 4px; height: 4px; pointer-events: none; }
+
 /* ------------------------------------------------------------------ agents marquee */
 
 .agents { padding: 112px 0 0; text-align: center; }
 .marquee {
-  margin-top: 28px;
+  margin-top: 14px;
+  padding-top: 26px;
   overflow: hidden;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
@@ -676,7 +723,14 @@ html.js .marquee-track { animation: marquee 40s linear infinite; }
 html:not(.js) .marquee-track { flex-wrap: wrap; justify-content: center; width: auto; }
 .marquee:hover .marquee-track { animation-play-state: paused; }
 @keyframes marquee { to { transform: translateX(-50%); } }
-.marquee-track li { display: inline-flex; align-items: center; gap: 10px; padding: 10px 26px; font-size: 16px; font-weight: 500; letter-spacing: -0.01em; color: var(--fg-subtle); white-space: nowrap; transition: color 0.2s; }
+.marquee-track li { position: relative; display: inline-flex; align-items: center; gap: 10px; padding: 10px 26px; font-size: 16px; font-weight: 500; letter-spacing: -0.01em; color: var(--fg-subtle); white-space: nowrap; transition: color 0.2s; }
+/* hover a logo and the agent's own worker stands in its place */
+.peek { position: absolute; left: 19px; bottom: 6px; opacity: 0; transform: translateY(8px); transition: opacity 0.2s, transform 0.3s var(--ease); pointer-events: none; }
+.peek .worker { display: block; }
+.marquee-track li:hover .peek { opacity: 1; transform: none; }
+.marquee-track li:hover .peek .worker { animation: hop 0.5s var(--ease) 2; }
+.marquee-track li:hover .logo { opacity: 0; }
+@keyframes hop { 40% { transform: translateY(-6px); } }
 .marquee-track .logo { width: 22px; height: 22px; }
 .marquee-track li:hover { color: var(--fg); }
 .marquee-track li:hover .logo, .platforms li:hover .logo { color: var(--c); filter: drop-shadow(0 0 10px var(--c)); }
@@ -746,7 +800,14 @@ html:not(.js) .marquee-track { flex-wrap: wrap; justify-content: center; width: 
   border-radius: 14px;
   background: var(--border);
 }
-.cell { grid-column: span 12; display: flex; flex-direction: column; min-width: 0; padding: 28px; background: var(--bg); }
+.cell { position: relative; isolation: isolate; grid-column: span 12; display: flex; flex-direction: column; min-width: 0; padding: 28px; overflow: hidden; background: var(--bg); }
+/* hovered, a cell's edge carries a running light in the agents' colours */
+@media (hover: hover) and (pointer: fine) {
+  .cell::before { content: ""; position: absolute; inset: -100%; z-index: -2; background: conic-gradient(from 0deg, transparent 0 64%, #8e75ff 74%, #d97757 82%, #10a37f 89%, transparent 97%); opacity: 0; transition: opacity 0.5s; animation: ring 5s linear infinite paused; }
+  .cell::after { content: ""; position: absolute; inset: 1px; z-index: -1; background: var(--bg); }
+  .cell:hover::before { opacity: 1; animation-play-state: running; }
+}
+@keyframes ring { to { transform: rotate(1turn); } }
 @media (min-width: 900px) {
   .cell { padding: 32px; }
   .cell-mcp { grid-column: span 7; }
@@ -930,64 +991,181 @@ html:not(.js) .rd-label { opacity: 1; transform: none; }
 .faq summary:hover::after { color: var(--fg); }
 .faq details p { padding: 0 32px 20px 0; color: var(--fg-muted); }
 
-/* ------------------------------------------------------------------ the night: outro, wordmark, skyline */
+/* ------------------------------------------------------------------ the night: the whole footer */
 
+/*
+ * The footer is one night scene, in the office's own colours, in both themes: the closing line in
+ * the sky with the moon and now and then a shooting star, the wordmark over the city, the office's
+ * own building in the middle of it (its lift going up and down, its sign lit, a click takes you back
+ * up), and the links on the street, where a worker walks by. Everything in it is paused while it's
+ * off screen (.is-asleep) and under reduced motion.
+ */
 .night {
+  --k: 2;
+  --s: 4;
   position: relative;
   margin-top: 160px;
   overflow: hidden;
   isolation: isolate;
   color: #ededed;
-  background: linear-gradient(to bottom, var(--bg) 0%, var(--night-1) 22%, var(--night-2) 100%);
+  background: linear-gradient(to bottom, var(--bg) 0, #0b0a13 14%, #0b0d27 52%, #0e1436 100%);
 }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .night { background: linear-gradient(to bottom, var(--night-1), var(--night-2)); border-radius: 28px 28px 0 0; } }
-:root[data-theme="light"] .night { background: linear-gradient(to bottom, var(--night-1), var(--night-2)); border-radius: 28px 28px 0 0; }
-.night-sky {
+@media (min-width: 641px) { .night { --s: 8; } }
+@media (min-width: 1100px) { .night { --s: 11; } }
+@media (min-width: 1281px) { .night { --k: 3; --s: 13; } }
+@media (min-width: 1700px) { .night { --s: 15; } }
+@media (min-width: 1921px) { .night { --k: 4; --s: 17; } }
+/* on a light page the night is a band of its own, with rounded shoulders */
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .night { background: linear-gradient(to bottom, #0b0a13 0, #0b0d27 50%, #0e1436 100%); border-radius: 28px 28px 0 0; } }
+:root[data-theme="light"] .night { background: linear-gradient(to bottom, #0b0a13 0, #0b0d27 50%, #0e1436 100%); border-radius: 28px 28px 0 0; }
+
+.sky { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.sky::before {
+  /* a faint field of stars over the whole sky */
+  content: "";
   position: absolute;
   inset: 0;
-  z-index: -1;
-  background:
-    radial-gradient(60% 50% at 50% 100%, rgba(142, 117, 255, 0.22), transparent 70%),
-    radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1.4px) center / 24px 24px;
-  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 30%);
-  mask-image: linear-gradient(to bottom, transparent, #000 30%);
+  background-image: radial-gradient(rgba(255, 255, 255, 0.5) 0.6px, transparent 1px), radial-gradient(rgba(207, 199, 255, 0.4) 0.6px, transparent 1px);
+  background-size: 97px 89px, 61px 73px;
+  background-position: 13px 7px, 41px 29px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 6%, #000 30%, #000 60%, transparent 85%);
+  mask-image: linear-gradient(to bottom, transparent 6%, #000 30%, #000 60%, transparent 85%);
+  opacity: 0.7;
 }
-.night-in { display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 140px 0 64px; text-align: center; }
+.sky::after {
+  /* the city's glow on the low sky */
+  content: "";
+  position: absolute;
+  left: -10%;
+  right: -10%;
+  bottom: 18%;
+  height: 46%;
+  background: radial-gradient(50% 60% at 50% 100%, rgba(142, 117, 255, 0.26), transparent 70%);
+}
+.moon { position: absolute; top: 18%; z-index: 0; right: max(6%, calc(50% - 640px)); width: calc(15px * var(--k)); height: calc(15px * var(--k)); animation: moon 160s linear infinite alternate; }
+.moon::before { content: ""; position: absolute; inset: -150%; border-radius: 50%; background: radial-gradient(closest-side, rgba(232, 226, 255, 0.18), transparent); }
+.moon-px { position: relative; display: block; width: 100%; height: 100%; }
+.moon-px .m-lit { fill: #ece6ff; }
+.moon-px .m-crater { fill: #c9c0ee; }
+@keyframes moon { to { transform: translate(-60px, -14px); } }
+@media (max-width: 640px) { .moon { top: 5%; right: 8%; } }
+.shoot {
+  position: absolute;
+  top: 12%;
+  left: 12%;
+  width: 120px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9));
+  opacity: 0;
+  transform: rotate(18deg);
+  animation: shoot 17s linear infinite 4s;
+}
+@keyframes shoot {
+  0%, 93% { opacity: 0; transform: rotate(18deg) translateX(0); }
+  94% { opacity: 1; }
+  98% { opacity: 0; transform: rotate(18deg) translateX(420px); }
+  100% { opacity: 0; transform: rotate(18deg) translateX(420px); }
+}
+
+.night-in { display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 156px 0 72px; text-align: center; }
 .night h2 { color: #ededed; font-size: clamp(32px, 2.8vw + 16px, 56px); line-height: 1.05; letter-spacing: -0.045em; }
 .night .cmd-btn { background: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.16); color: #ededed; }
 .night .cmd-btn:hover { border-color: rgba(255, 255, 255, 0.4); }
 .night .cmd-p, .night .cmd-i { color: #8a8a96; }
 .night .cmd-btn:hover .cmd-i { background: rgba(255, 255, 255, 0.08); color: #ededed; }
 
-.horizon { --k: 1; --s: 4; position: relative; display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; }
-.horizon > * { justify-self: unsafe center; }
-@media (min-width: 641px) { .horizon { --k: 2; --s: 8; } }
-@media (min-width: 1100px) { .horizon { --s: 11; } }
-@media (min-width: 1281px) { .horizon { --k: 3; --s: 13; } }
-@media (min-width: 1700px) { .horizon { --s: 15; } }
-@media (min-width: 1921px) { .horizon { --k: 4; --s: 17; } }
-.wordmark { display: flex; gap: calc(var(--s) * 4px); position: relative; z-index: 1; margin-bottom: calc(var(--s) * -2px); line-height: 1; color: #8e75ff; white-space: nowrap; }
-.wordmark svg { display: block; width: calc(var(--w) * var(--s) * 1px); height: calc(var(--h) * var(--s) * 1px); filter: drop-shadow(0 0 calc(var(--s) * 2.5px) rgba(142, 117, 255, 0.5)); }
-.skyline { position: relative; z-index: 2; display: block; width: calc(640px * var(--k)); height: auto; max-width: none; }
+/* the wordmark, over the city, breathing */
+.horizon { position: relative; display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; }
+.wordmark-wrap { position: relative; z-index: 1; margin-bottom: calc(var(--s) * 1px); justify-self: unsafe center; }
+.wm-glow { position: absolute; inset: -40% -8%; border-radius: 50%; background: radial-gradient(closest-side, rgba(142, 117, 255, 0.34), transparent); animation: breathe-wm 7s ease-in-out infinite alternate; }
+@keyframes breathe-wm { from { opacity: 0.45; transform: scale(0.94); } to { opacity: 1; transform: scale(1.04); } }
+.wordmark { position: relative; display: flex; gap: calc(var(--s) * 4px); line-height: 1; color: #8e75ff; white-space: nowrap; }
+.wordmark svg { display: block; width: calc(var(--w) * var(--s) * 1px); height: calc(var(--h) * var(--s) * 1px); }
 .wordmark .ga { stop-color: #e6e0ff; }
 .wordmark .gb { stop-color: #8e75ff; }
-.skyline .stars { fill: #cfc7ff; opacity: 0.5; }
-.skyline .win { fill: #ffd36c; opacity: 0.75; }
-.skyline .tw { animation: twinkle 3.2s ease-in-out infinite alternate; }
-@keyframes twinkle { from { opacity: 0.15; } to { opacity: 0.9; } }
 
-/* footer */
-.foot { border-top: 1px solid var(--border); padding: 40px 0 48px; font-size: 14px; color: var(--fg-subtle); }
-.foot-in { display: grid; gap: 28px; }
-@media (min-width: 900px) { .foot-in { grid-template-columns: auto 1fr; align-items: start; } .foot-links { justify-content: flex-end; } .tm { grid-column: 1 / -1; } }
-.foot-brand { display: flex; flex-direction: column; gap: 10px; }
-.foot-brand .brand { color: var(--fg); }
-.foot-brand a:not(.brand), .foot-links a { color: var(--fg-muted); transition: color 0.15s; }
-.foot-brand a:not(.brand):hover, .foot-links a:hover { color: var(--fg); }
-.foot-hint { font-size: 13px; }
-.foot-links { display: flex; flex-wrap: wrap; gap: 10px 24px; }
-.tm { padding-top: 24px; border-top: 1px solid var(--border); font-size: 12.5px; line-height: 1.6; }
-.tm span { display: block; max-width: 760px; }
+/* the city: two rows of towers and the office, at an integer scale, centred and cropped by the page */
+.city { position: relative; width: 100%; height: calc(var(--H) * var(--k) * 1px); }
+.city svg { position: absolute; bottom: 0; left: 50%; width: calc(var(--W) * var(--k) * 1px); height: calc(var(--H) * var(--k) * 1px); margin-left: calc(var(--W) * var(--k) * -0.5px); max-width: none; }
+.city .far { z-index: 0; }
+.city .near { z-index: 2; }
+.city .stars { fill: #cfc7ff; opacity: 0.55; }
+.city .tw { animation: twinkle 3.2s ease-in-out infinite alternate; }
+@keyframes twinkle { from { opacity: 0.15; } to { opacity: 0.9; } }
+.city .win { fill: #ffd36c; opacity: 0.72; }
+.city .scr { fill: #93ccf2; opacity: 0.55; }
+.city .fl { animation: lights 13s steps(1) infinite; }
+.city .fl1 { animation-duration: 17s; animation-delay: -5s; }
+.city .fl2 { animation-duration: 11s; animation-delay: -2s; animation-direction: reverse; }
+.city .fl3 { animation-duration: 23s; animation-delay: -9s; }
+.city .fl4 { animation-duration: 19s; animation-delay: -14s; animation-direction: reverse; }
+.city .fl5 { animation-duration: 29s; animation-delay: -21s; }
+@keyframes lights { 0% { opacity: 0.8; } 38% { opacity: 0; } 61% { opacity: 0.8; } 83% { opacity: 0; } }
+.hq-trim { fill: #2b4f8e; }
+.hq-dim { fill: #1b2c5a; }
+.hq-lit { fill: #f7c75e; opacity: 0.8; animation: hq-hum 6s ease-in-out infinite alternate; }
+@keyframes hq-hum { from { opacity: 0.66; } to { opacity: 0.9; } }
+.hq-shade { fill: #0c1330; opacity: 0.55; }
+.hq-awning { fill: #2b4f8e; }
+.hq-screens { opacity: 0.9; }
+.hq-shaft { fill: #0a1029; }
+.hq-car { fill: #fff2c4; animation: lift 18s cubic-bezier(0.45, 0, 0.55, 1) infinite; }
+/* in art pixels: one floor is 9 */
+@keyframes lift {
+  0%, 10% { transform: translateY(0); }
+  20%, 30% { transform: translateY(-36px); }
+  42%, 52% { transform: translateY(-81px); }
+  62%, 70% { transform: translateY(-54px); }
+  82%, 90% { transform: translateY(-9px); }
+  100% { transform: translateY(0); }
+}
+.hq-door { fill: #ffd36c; opacity: 0.7; }
+.hq-post { fill: #2b4f8e; }
+.hq-beacon { fill: #f2625a; animation: beacon 2.4s steps(1) infinite; }
+@keyframes beacon { 50% { opacity: 0.15; } }
+.hq-plate { fill: #090b1f; stroke: rgba(147, 204, 242, 0.35); stroke-width: 0.5; }
+.hq-sign { fill: #93ccf2; filter: drop-shadow(0 0 1.5px rgba(147, 204, 242, 0.7)); }
+.hq-glow { fill: #c8e8ff; opacity: 0; transition: opacity 0.3s; }
+.lamp { fill: #2b4f8e; }
+.lamp-head { fill: #fff2c4; }
+.city .lamps circle { opacity: 0.9; }
+/* the office's building is a way back to the top */
+.hq-link { position: absolute; z-index: 3; top: calc(var(--hy) * var(--k) * 1px); bottom: 0; left: calc(50% + (var(--hx) - var(--W) / 2) * var(--k) * 1px); width: calc(var(--hw) * var(--k) * 1px); border-radius: 4px; }
+.city:has(.hq-link:hover) .hq-glow, .city:has(.hq-link:focus-visible) .hq-glow { opacity: 0.9; }
+.city:has(.hq-link:hover) .hq-lit { opacity: 1; animation: none; }
+.hq-link:focus-visible { outline: 2px solid #b3a3ff; outline-offset: 4px; }
+
+/* the street: the ground under the city, where the links live */
+.street { position: relative; z-index: 2; background: #06071a; border-top: 1px solid #2b2f5c; box-shadow: 0 -1px 0 rgba(255, 211, 108, 0.12); }
+.street::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 40px; background: linear-gradient(rgba(255, 211, 108, 0.05), transparent); pointer-events: none; }
+.walkway { position: absolute; left: 0; right: 0; bottom: 100%; height: 52px; overflow: hidden; pointer-events: none; }
+.walker { position: absolute; bottom: 0; left: -40px; animation: walk 42s linear infinite 2s; }
+@keyframes walk { 0% { transform: translateX(0); } 70%, 100% { transform: translateX(calc(100vw + 80px)); } }
+.walker-win { width: 36px; height: 52px; overflow: hidden; }
+.walker-strip { display: block; animation: stride 0.6s steps(4) infinite; }
+@keyframes stride { to { transform: translateX(calc(var(--fw) * -4)); } }
+.street-in { display: grid; gap: 22px; padding: 36px 0 40px; font-size: 14px; color: #a9a6c8; }
+@media (min-width: 900px) {
+  .street-in { grid-template-columns: auto 1fr; align-items: start; column-gap: 48px; }
+  .st-links { justify-content: flex-end; }
+  .st-hint { grid-column: 1; }
+  .tm { grid-column: 2; text-align: right; justify-self: end; }
+}
+.st-brand { display: flex; flex-direction: column; gap: 8px; }
+.st-brand .brand { color: #ededed; }
+.st-brand .mark { color: #ededed; }
+.st-brand .mark .px-a { fill: #8e75ff; }
+.st-brand .mark .px-b, .st-brand .mark .px-c, .st-brand .mark .px-x { fill: #8a87aa; }
+.street a:not(.brand) { color: #cfcce8; transition: color 0.15s; }
+.street a:not(.brand):hover { color: #ffffff; }
+.st-links { display: flex; flex-wrap: wrap; gap: 10px 24px; }
+.st-hint { font-size: 13px; color: #a9a6c8; }
+.st-hint kbd { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.2); color: #ededed; }
+.tm { max-width: 640px; font-size: 12px; line-height: 1.6; color: #8f8cb0; }
+
+/* off screen, the night holds still */
+.night.is-asleep *, .night.is-asleep *::before, .night.is-asleep *::after { animation-play-state: paused !important; }
 
 /* the tour */
 .tour-dlg { width: min(1100px, 92vw); max-width: none; padding: 0; border: 0; background: transparent; overflow: visible; }
@@ -1013,7 +1191,11 @@ html.js [data-reveal].is-in { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   html.js [data-reveal] { opacity: 1; transform: none; transition: none; }
-  .au, .glow, .floor-grid, .skyline .tw, html.js .marquee-track, .rec i, .buf-ticks { animation: none; }
+  .au, .glow, .floor-grid, html.js .marquee-track, .rec i, .buf-ticks { animation: none; }
+  .night *, .night *::before, .night *::after { animation: none !important; }
+  .feed li, .cell::before, .peek .worker, .toast-dot { animation: none !important; }
+  .walker { left: 12%; }
+  .shoot { display: none; }
   .marquee-track { flex-wrap: wrap; justify-content: center; width: auto; }
   .marquee { -webkit-mask-image: none; mask-image: none; }
   .window.is-live .live::after { animation: none; display: none; }
