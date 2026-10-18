@@ -11,6 +11,7 @@
  * worker's mood line, the others are passed through for the client to play.
  */
 import { homedir } from "node:os";
+import { foldPrivate } from "../ingest/presence.ts";
 import {
   GONE_MS,
   IDLE_MS,
@@ -49,6 +50,8 @@ const CATEGORIES = new Set<ToolCategory>([
  * turn ended while its interns work is supervising them, not waiting on its human.
  */
 const SUPERVISE_MS = 5 * 60_000;
+/** A local session with no agent process left goes home once it has been quiet this long. */
+export const PRESENCE_QUIET_MS = 15_000;
 /** Events that only describe an existing worker; never create one. */
 const ENDINGS = new Set<EventKind>(["session_end", "subagent_end", "idle"]);
 
@@ -164,6 +167,40 @@ export class OfficeState {
     w.heldWait = true;
     const n = this.busyInterns(w, now);
     return { ...this.base(w, ts), kind: "idle", summary: `supervising ${n} intern${n === 1 ? "" : "s"}` };
+  }
+
+  /**
+   * Send home local sessions whose agent has quit. Per agent and folder the
+   * office keeps as many sessions as there are running processes (the most
+   * recently active ones) and ends the rest once they have been quiet for
+   * PRESENCE_QUIET_MS. Remote workers are left to the quiet timer.
+   */
+  reconcileLocal(procs: { agent: AgentKind; cwd: string }[]): void {
+    const now = this.now();
+    const key = (agent: AgentKind, cwd: string) => `${agent}\0${foldPrivate(cwd)}`;
+    const running = new Map<string, number>();
+    for (const p of procs) {
+      const k = key(p.agent, this.tilde(p.cwd));
+      running.set(k, (running.get(k) ?? 0) + 1);
+    }
+    const groups = new Map<string, Worker[]>();
+    for (const w of this.workers.values()) {
+      const s = w.state;
+      if (s.parentId || s.host || !s.cwd || w.removeAt !== undefined) continue;
+      const k = key(s.agent, s.cwd);
+      const g = groups.get(k);
+      if (g) g.push(w);
+      else groups.set(k, [w]);
+    }
+    const ts = new Date(now).toISOString();
+    for (const [k, ws] of groups) {
+      const extra = ws.length - (running.get(k) ?? 0);
+      if (extra <= 0) continue;
+      ws.sort((a, b) => a.lastActive - b.lastActive);
+      for (const w of ws.slice(0, extra)) {
+        if (now - w.lastActive >= PRESENCE_QUIET_MS) this.remove(w, { ...this.base(w, ts), kind: "session_end" });
+      }
+    }
   }
 
   /** Emit idle / session_end for workers that went quiet. Called every second by start(). */

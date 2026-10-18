@@ -24,9 +24,10 @@ async function load(...entries) {
   }
 }
 
-const { OfficeState, editedFiles, IDLE_MS, GONE_MS, SUMMARY_MAX, INTERN_GRACE_MS } = await load(
+const { OfficeState, editedFiles, IDLE_MS, GONE_MS, SUMMARY_MAX, INTERN_GRACE_MS, PRESENCE_QUIET_MS, matchAgent } = await load(
   "src/server/state.ts",
   "src/shared/events.ts",
+  "src/ingest/presence.ts",
 );
 
 function office(opts = {}) {
@@ -164,6 +165,44 @@ test("interns showing up after the turn ended turn waiting into supervising", ()
   assert.match(boss.summary, /^supervising/);
   state.ingest(ev({ kind: "prompt" }));
   assert.equal(state.sessions()[0].status, "prompt", "new activity clears the held wait");
+});
+
+test("command lines map to agents; look-alikes don't", () => {
+  const cases = {
+    "claude": "claude",
+    "/Users/a/.local/bin/claude --resume x": "claude",
+    "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js": "claude",
+    "command-code ": "commandcode",
+    "/opt/homebrew/bin/codex exec": "codex",
+    "node --no-warnings /x/node_modules/@google/gemini-cli/dist/index.js": "gemini",
+    "node /x/bin/qwen": "qwen",
+    "cursor-agent": "cursor",
+    "/Applications/Claude.app/Contents/MacOS/Claude": null,
+    "/Applications/CodexBar.app/Contents/MacOS/CodexBar": null,
+    "node dist/cli.js --no-open": null,
+    "grep claude": null,
+  };
+  for (const [args, agent] of Object.entries(cases)) assert.equal(matchAgent(args), agent, args);
+});
+
+test("local sessions whose agent quit go home; running ones and remotes stay", () => {
+  const { state, seen, ev, advance } = office();
+  const cc = (id, cwd = "/Users/test/Codes/site") => ev({ workerId: id, agent: "commandcode", project: "site", cwd, kind: "waiting" });
+  state.ingest({ ...cc("a"), kind: "session_start" });
+  state.ingest({ ...cc("b"), kind: "session_start" });
+  state.ingest({ ...cc("c", "/private/tmp/x"), kind: "session_start" });
+  state.ingest(ev({ workerId: "r1", agent: "commandcode", cwd: "/home/u/site", kind: "session_start", host: { kind: "daytona", id: "daytona:1", name: "box" } }));
+  advance(1_000);
+  state.ingest(cc("b"));
+  // one process in ~/Codes/site and one in /tmp/x (lsof's /private spelling folds away)
+  const procs = [{ agent: "commandcode", cwd: "/Users/test/Codes/site" }, { agent: "commandcode", cwd: "/tmp/x" }];
+  state.reconcileLocal(procs);
+  assert.equal(state.sessions().length, 4, "nothing ends before it has been quiet a while");
+  advance(PRESENCE_QUIET_MS);
+  state.reconcileLocal(procs);
+  assert.deepEqual(seen.filter((e) => e.kind === "session_end").map((e) => e.workerId), ["a"], "the least recently active extra goes home");
+  state.reconcileLocal([]);
+  assert.deepEqual(state.sessions().map((w) => w.workerId).sort(), ["r1"], "with no processes left only the remote worker stays");
 });
 
 test("session_end after GONE_MS removes the worker and its interns", () => {
