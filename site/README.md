@@ -7,7 +7,7 @@ npm run site        # build into site/dist
 npm run site:dev    # build, serve on http://127.0.0.1:5040 (or the next free port) and rebuild + reload on every change
 ```
 
-`site/dist` is the whole site: upload that folder anywhere that serves static files. Every path in it is relative, so it also works from a subfolder (GitHub Pages' `/agent-office/`).
+`site/dist` is the whole site, deployed to https://theagentoffice.xyz on every push to main (see Deploying). Every path in it is relative, so it also works from a subfolder.
 
 ## What's here
 
@@ -64,53 +64,22 @@ The hero has a "Watch the N-second tour" button that opens the video in a player
 
 ## Deploying
 
-The owner picks the host; nothing here deploys itself. Set `SITE_URL` when building for production:
+The site lives at **https://theagentoffice.xyz**, on Cloudflare Workers as static assets only (`wrangler.jsonc` at the repository root; no Worker code). Every push to `main` that touches the page or the office it runs (`site/`, `web/`, `src/`, `assets/`, the build script, the lockfile) rebuilds it and deploys it through `.github/workflows/site.yml`. It can also be run by hand from the Actions tab.
+
+The workflow needs two repository secrets:
+
+- `CLOUDFLARE_ACCOUNT_ID`: the account the `theagentoffice.xyz` zone is in.
+- `CLOUDFLARE_API_TOKEN`: a token from Cloudflare's "Edit Cloudflare Workers" template, limited to that account and that zone.
+
+To deploy from a machine instead, after `npx wrangler login`:
 
 ```sh
-SITE_URL=https://agent-office.example npm run site
+SITE_URL=https://theagentoffice.xyz npm run site && npx wrangler@4.151.1 deploy
 ```
 
-**Vercel.** Import the repository and set: Framework preset "Other", Build command `SITE_URL=https://<your domain> npm run site`, Output directory `site/dist`, Install command `npm ci`. Or deploy a local build as-is: `npm run site && npx vercel deploy site/dist --prod`. The files in `site/dist/assets` with a hash in their name can be cached forever.
+A file in `site/dist` can be at most 25 MiB on Workers, so the tour video (`TOUR_VIDEO`) has to stay under that or be served from somewhere else (an R2 bucket, say) and pointed at by URL.
 
-**GitHub Pages.** Settings, Pages, Source: GitHub Actions, then add a workflow like this one (as `.github/workflows/site.yml`):
-
-```yaml
-name: site
-on:
-  push:
-    branches: [main]
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-      - run: npm ci
-      - run: npm run site
-        env:
-          SITE_URL: https://bas3line.github.io/agent-office
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: site/dist
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v5
-```
-
-A workflow deploy never runs Jekyll; the build also writes `site/dist/.nojekyll` for anyone who publishes the folder from a branch instead.
+The build works anywhere that serves static files: set `SITE_URL` to where it will live and upload `site/dist`. Every path in it is relative, so a subfolder works too.
 
 ## Regenerating the images
 

@@ -1,0 +1,18 @@
+// The landing page (site/) on Cloudflare Workers: static assets only, no Worker code.
+// `npm run site` builds site/dist; .github/workflows/site.yml deploys it on every push to main.
+{
+  "$schema": "https://unpkg.com/wrangler@4.151.1/config-schema.json",
+  "name": "theagentoffice-site",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./site/dist",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  },
+  "routes": [
+    { "pattern": "theagentoffice.xyz", "custom_domain": true },
+    { "pattern": "www.theagentoffice.xyz", "custom_domain": true }
+  ],
+  "workers_dev": false,
+  "preview_urls": false
+}
