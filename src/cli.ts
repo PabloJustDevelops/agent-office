@@ -3,13 +3,19 @@
  * watcher (or the demo), serve the office on localhost, print the banner and
  * open the browser. No dependencies: flags are parsed by hand and the colours
  * are raw ANSI, off for NO_COLOR and when stdout is not a terminal.
+ *
+ * With the control plane (src/control; off for --demo, --no-control, a
+ * non-loopback --host and Windows) the browser it opens is unlocked through
+ * a one-time link, and hiring from the page works. `--service` is how the
+ * background service starts it: login environment first, no browser, a log
+ * file instead of the terminal.
  */
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import type { AgentKind, OfficeEvent } from "./shared/events.ts";
 import { BRAND } from "./shared/events.ts";
 import { startIngest } from "./ingest/index.ts";
-import { scanAgentProcesses } from "./ingest/presence.ts";
+import { scanProcesses } from "./ingest/presence.ts";
 import { DEFAULT_SEED, startDemo } from "./demo/index.ts";
 import { DEFAULT_HOST, DEFAULT_PORT, isLoopback, isWildcard, startServer, type OfficeServer } from "./server/http.ts";
 import { OfficeState } from "./server/state.ts";
@@ -17,10 +23,24 @@ import { SUBCOMMANDS, runSubcommand } from "./install/index.ts";
 import { registerRemoteDetector, registerRemoteFactory } from "./install/remotes.ts";
 import { AGENT_KINDS, parseAgentKind } from "./mcp/clients.ts";
 import { clearOfficeFile, newOfficeSecret, officeFilePath, writeOfficeFile, type OfficeFile } from "./mcp/office.ts";
+import { officeHome } from "./mcp/outbox.ts";
+import { createControlPlane, type Plane } from "./control/index.ts";
+import { createSessionManager } from "./control/sessions.ts";
+import { createPlaces } from "./control/cloud/index.ts";
+import { loadPty } from "./control/pty.ts";
+import { adoptLoginEnv } from "./control/env.ts";
+import { createLinker, createOfficePort } from "./control/link.ts";
+import { claudeSessionOf, startPresence } from "./control/presence.ts";
+import { createInstallApi } from "./control/install-api.ts";
+import { appCurrent, installService, serviceLogger, serviceStatus, setStartAtLogin, startService } from "./control/service.ts";
+import { loginPath, openBrowser, serviceDeps, waitForOffice } from "./control/cli.ts";
+import type { ServiceControl } from "./control/api.ts";
+import { join } from "node:path";
 import {
   REMOTE_FACTORIES, REMOTE_KINDS, defaultProviders, mergeSelectors, readRemoteConfig, startRemotes,
   type RemoteSelector, type Remotes,
 } from "./remote/index.ts";
+import { RailwayBudget } from "./remote/railway.ts";
 
 const ALL_AGENTS: AgentKind[] = [...AGENT_KINDS];
 const PORT_FALLBACK = 20;
@@ -53,6 +73,10 @@ interface Options {
   cloud: boolean;
   /** --local-only: this machine and nothing else. */
   localOnly: boolean;
+  /** Hiring and driving agents from the page (--no-control turns it off). */
+  control: boolean;
+  /** Started by the background service (launchd / systemd): help-hidden. */
+  service: boolean;
 }
 
 class UsageError extends Error {}
@@ -72,6 +96,8 @@ function parseArgs(argv: string[]): Options {
     remotes: [],
     cloud: true,
     localOnly: false,
+    control: true,
+    service: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -165,6 +191,14 @@ function parseArgs(argv: string[]): Options {
       case "--local-only":
         o.localOnly = true;
         break;
+      case "--no-control":
+        o.control = false;
+        break;
+      case "--service":
+        o.service = true;
+        o.open = false;
+        o.quiet = true;
+        break;
       default:
         throw new UsageError(arg.startsWith("-") ? `unknown option ${flag}` : `unexpected argument "${arg}"`);
     }
@@ -231,7 +265,10 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-function banner(o: Options, server: OfficeServer, state: OfficeState, version: string, remotes?: Remotes): void {
+/** The banner's Controls line: never the unlock link itself, which must not end up in a recording. */
+type ControlsLine = "opened" | "locked" | "off" | "demo";
+
+function banner(o: Options, server: OfficeServer, state: OfficeState, version: string, remotes?: Remotes, controls: ControlsLine = "off"): void {
   const label = (s: string) => dim(s.padEnd(10));
   out();
   for (const line of title(version)) out(PAD + line);
@@ -265,6 +302,9 @@ function banner(o: Options, server: OfficeServer, state: OfficeState, version: s
       : `${dim("no live sessions yet. Start an agent and it walks in.")}`;
     out(`${PAD}   ${label("Live")}${live}`);
   }
+  if (controls === "opened") out(`${PAD}   ${label("Controls")}unlocked in the browser it opened ${dim("·")} ${dim("agentoffice open for another")}`);
+  else if (controls === "locked") out(`${PAD}   ${label("Controls")}locked ${dim("·")} ${dim("agentoffice open unlocks a browser")}`);
+  else if (controls === "off" && !o.service) out(`${PAD}   ${label("Controls")}${dim(o.control ? "off: watch-only (only on 127.0.0.1, macOS and Linux)" : "off (--no-control): watch-only")}`);
   if (remotes) {
     const { watching, problems } = remotes.summary();
     if (watching.length) out(`${PAD}   ${label("Remotes")}${watching.join(dim(" · "))}`);
@@ -289,7 +329,8 @@ function banner(o: Options, server: OfficeServer, state: OfficeState, version: s
 
 /** A line per arrival, departure and table flip, so the terminal tells the story too. */
 function logEvent(e: OfficeEvent): void {
-  if (e.parentId) return;
+  // A transcript taking over a hired or just-launched worker's desk isn't a second arrival.
+  if (e.parentId || e.replaces) return;
   const time = dim(new Date().toTimeString().slice(0, 5));
   const who = `${brand(e.agent)(GLYPH[e.agent])} ${e.project}${e.host ? dim(` @ ${e.host.name}`) : ""}`;
   if (e.kind === "session_start") out(`${PAD}${time}  ${who} ${dim("walked in")}`);
@@ -307,49 +348,6 @@ function readVersion(): string {
     // Fall through: running from somewhere without the package.json beside it.
   }
   return "0.0.0-dev";
-}
-
-function openBrowser(url: string): void {
-  const [cmd, args] =
-    process.platform === "darwin"
-      ? ["open", [url]]
-      : process.platform === "win32"
-        ? ["cmd", ["/c", "start", '""', url]]
-        : ["xdg-open", [url]];
-  try {
-    const child = spawn(cmd, args as string[], {
-      stdio: "ignore",
-      detached: true,
-      windowsHide: true,
-      // cmd.exe reads `start "" url` itself; libuv quoting would mangle the empty title.
-      windowsVerbatimArguments: process.platform === "win32",
-    });
-    child.on("error", () => {});
-    child.unref();
-  } catch {
-    // No opener on this system; the URL is in the banner.
-  }
-}
-
-/** Every few seconds, send home the local sessions whose agent process has quit. */
-function watchPresence(state: OfficeState, everyMs = 3_000): ReturnType<typeof setInterval> {
-  let busy = false;
-  const scan = async () => {
-    if (busy) return;
-    busy = true;
-    try {
-      const procs = await scanAgentProcesses();
-      if (procs) state.reconcileLocal(procs);
-    } catch {
-      // A failed scan just means no early goodbyes this round.
-    } finally {
-      busy = false;
-    }
-  };
-  void scan();
-  const timer = setInterval(scan, everyMs);
-  timer.unref?.();
-  return timer;
 }
 
 /** Resolve once the watcher's backfill has gone quiet (or after `max` ms). */
@@ -375,7 +373,7 @@ ${bold("agent office")} ${dim(`v${version}`)}  a live pixel-art office for your 
 
 ${bold("Usage")}
   npx theagentoffice [office] [options]     open the office (the default command)
-  npx theagentoffice <command> [options]    install | uninstall | doctor | mcp
+  npx theagentoffice <command> [options]    install | uninstall | doctor | mcp | open
 
 ${bold("Office options")}
   --port <n>, -p    Port to serve on (default ${DEFAULT_PORT}; tries the next ${PORT_FALLBACK} if taken)
@@ -397,6 +395,7 @@ ${bold("Remotes")}  agents in sandboxes and on other machines, in the same offic
   --boat [id]       boat VMs (never auto-detected: boat keeps every command's output for 90 days)
   --no-cloud        Don't auto-detect sandbox platforms you're logged in to
   --local-only      Only this machine (ignores the flags above and config.json)
+  --no-control      Watch-only: no hiring or driving agents from the page
   Without flags, platforms you're logged in to are watched in your own scope only: Daytona's
   personal organization, Railway's linked project and the sandboxes your railway CLI made,
   Vercel's default team. Nothing is installed on a remote: the office only reads transcripts
@@ -409,6 +408,8 @@ ${bold("Commands")}
   uninstall         Take exactly that back out, restoring each file
   doctor            Which agents have the tools, and whether the office is running
   mcp               The MCP server itself, on stdio (agents launch this)
+  open              Unlock the running office's controls in a browser (--print, --rotate)
+  install --service Run the office in the background from login; uninstall --service removes it
   Run ${bold("agentoffice <command> --help")} for a command's flags (--dry-run, --agents, --ssh, --vercel, ...).
 
 ${bold("Environment")}
@@ -444,6 +445,12 @@ async function main(): Promise<void> {
   if (o.help) return void out(help(version));
   if (o.version) return void out(version);
 
+  // The service starts with launchd's or systemd's bare environment: take a terminal's first, so
+  // transcript roots, provider logins and hired agents see what they would in a terminal.
+  const serviceLog = o.service ? serviceLogger(officeHome()) : undefined;
+  if (o.service && !(await adoptLoginEnv())) serviceLog?.("couldn't read the login shell's environment; running with the unit's PATH", "warn");
+  const controlOn = o.control && !o.demo && isLoopback(o.host) && (process.platform === "darwin" || process.platform === "linux");
+
   const state = new OfficeState({ demo: o.demo });
   const onEvent = (e: Parameters<typeof state.ingest>[0]) => state.ingest(e);
   let source: { stop(): void } = { stop() {} };
@@ -463,7 +470,11 @@ async function main(): Promise<void> {
       process.stderr.write(`${PAD}${yellow("⚠")}  Could not start the transcript watcher: ${(err as Error).message}\n`);
     }
   }
-  const remotes = o.demo || o.localOnly ? undefined : watchRemotes(o, onEvent);
+  // With controls on, a remotes manager exists even with nothing to watch yet: sessions hired into
+  // a sandbox or onto an ssh box are watched through it.
+  // One hourly Railway API budget for the watcher and the control plane's own Railway calls.
+  const railwayBudget = new RailwayBudget();
+  const remotes = o.demo || o.localOnly ? undefined : watchRemotes(o, onEvent, controlOn, railwayBudget, (id) => state.has(id));
   if (remotes) {
     const local = source;
     source = { stop: () => (local.stop(), remotes.stop()) };
@@ -475,8 +486,52 @@ async function main(): Promise<void> {
 
   // Agents' MCP servers trust only an office that can prove it knows this (see src/mcp/office.ts).
   const secret = newOfficeSecret();
-  let server: OfficeServer;
-  try {
+  const userHome = homedir();
+  const linker = o.demo ? undefined : createLinker(state, userHome);
+  const svc = serviceDeps(version);
+  let server!: OfficeServer;
+  let plane: Plane;
+  const time = () => dim(new Date().toTimeString().slice(0, 5));
+  const log = (msg: string, level?: "info" | "warn") => {
+    if (serviceLog) return serviceLog(msg, level);
+    if (!o.quiet || level === "warn") out(`${PAD}${time()}  ${level === "warn" ? yellow("⚠") : dim("·")} ${dim(msg)}`);
+  };
+  const service: ServiceControl = {
+    status: () => serviceStatus(svc, o.service),
+    async set(startAtLogin) {
+      const st = serviceStatus(svc, o.service);
+      if (st.installed) return { ...(await setStartAtLogin(svc, startAtLogin)), running: st.running };
+      if (!startAtLogin) return st;
+      // A foreground office installing the service: hand over now unless agents are running here.
+      const live = plane.liveSessions();
+      const installed = await installService(svc, { start: false, port: server.port, path: await loginPath() });
+      if (live > 0) {
+        log(`installed the background service; it starts at the next login (${live} agent${live === 1 ? "" : "s"} still run here)`);
+        return { ...installed, running: false };
+      }
+      setTimeout(() => void handOver(), 250).unref?.();
+      return { ...installed, running: true };
+    },
+  };
+  plane = createControlPlane({
+    state,
+    enabled: controlOn,
+    version,
+    host: o.host,
+    officeUrl: () => `http://127.0.0.1:${server.port}`,
+    userHome,
+    log,
+    linker,
+    pty: () => loadPty(),
+    places: o.localOnly ? undefined : (ctx) => createPlaces(ctx, { railwayBudget }),
+    sessions: (ctx, places) => createSessionManager(ctx, places ?? undefined),
+    watch: remotes ? (t) => remotes.watch(t) : undefined,
+    service,
+    // Under the service, agents register the stable app/current path, never the versioned one an upgrade prunes.
+    installer: createInstallApi({ version, script: o.service ? join(appCurrent(svc.home) ?? join(svc.home, "app", "current"), "dist", "cli.js") : undefined }),
+  });
+
+  const serve = async (port: number) => {
     const onViewer = demo
       ? (first: boolean) => {
           if (!first) return;
@@ -484,7 +539,10 @@ async function main(): Promise<void> {
           demo!.restart();
         }
       : undefined;
-    server = await startServer({ state, host: o.host, port: o.port, portFallback: PORT_FALLBACK, secret, onViewer });
+    return startServer({ state, host: o.host, port, portFallback: port === o.port ? PORT_FALLBACK : 0, secret, onViewer, control: plane });
+  };
+  try {
+    server = await serve(o.port);
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     const why =
@@ -501,22 +559,81 @@ async function main(): Promise<void> {
   }
 
   // Lets the MCP server inside each agent find this office on a non-default port.
-  const advertised = advertise(o, server, version, secret);
+  const advertised = advertise(o, server, version, secret, controlOn);
   if (!o.demo) await settle(state);
   if (remotes) await remotes.ready;
   state.tick();
-  const presence = o.demo ? undefined : watchPresence(state);
-  banner(o, server, state, version, remotes);
+  // Agents started in a terminal walk in at launch and leave when they quit (src/control/presence.ts).
+  const presence = o.demo || !linker
+    ? undefined
+    : startPresence({
+        state,
+        office: plane.office ?? createOfficePort(state, linker, { home: userHome }),
+        scan: () => scanProcesses(),
+        ownedPids: () => plane.ownedPids(),
+        startedAt: Date.parse(state.startedAt),
+        home: userHome,
+        agents: o.agents,
+        // Read per scan: the service adopts the login shell's environment after it starts.
+        sessionOf: (agent, pid, startedAt) => (agent === "claude" ? claudeSessionOf(env.CLAUDE_CONFIG_DIR?.trim() || join(userHome, ".claude"), pid, startedAt) : undefined),
+      });
+  const opening = o.open && env.BROWSER !== "none" && !env.CI;
+  const controls: ControlsLine = o.demo ? "demo" : !plane.enabled ? "off" : opening ? "opened" : "locked";
+  banner(o, server, state, version, remotes, controls);
+  if (o.service) serviceLog?.(`office running at ${server.url} (service)`);
   if (!o.quiet) state.subscribe(logEvent);
-  if (o.open && env.BROWSER !== "none" && !env.CI) openBrowser(server.url);
+  // The unlock code goes to the browser only, never into the banner.
+  if (opening) openBrowser(plane.enabled && plane.auth ? `${server.url}/unlock?t=${plane.auth.mintCode()}` : server.url);
+
+  /** Foreground office -> the background service on the same port; back to serving if it doesn't come up. */
+  async function handOver(): Promise<void> {
+    log("handing over to the background service");
+    const port = server.port;
+    await Promise.race([server.close(), new Promise((r) => setTimeout(r, 1_500))]);
+    try {
+      await startService(svc);
+      if ((await waitForOffice(10_000, { service: true, notPid: process.pid })) !== null) {
+        log("the background service has the office now; this one is closing");
+        presence?.stop();
+        source.stop();
+        state.stop();
+        process.exit(0);
+      }
+      log("the background service didn't answer within 10 seconds; this office keeps serving", "warn");
+    } catch (err) {
+      log(`couldn't start the background service: ${(err as Error).message}`, "warn");
+    }
+    server = await serve(port);
+    advertise(o, server, version, secret, controlOn);
+    plane.info({ service: service.status() });
+  }
 
   let closing = false;
+  // Another office on this home (a terminal one next to the service) took office.json and has quit since:
+  // take it back, so `agentoffice open` and the agents' MCP tools find this one again.
+  const readvertise = advertised
+    ? setInterval(() => {
+        if (closing) return;
+        try {
+          const cur = JSON.parse(readFileSync(officeFilePath(), "utf8")) as Partial<OfficeFile>;
+          if (cur.pid === process.pid || (typeof cur.pid === "number" && pidAlive(cur.pid))) return;
+        } catch {
+          // Missing or unreadable: ours to write.
+        }
+        advertise(o, server, version, secret, controlOn);
+      }, 5_000)
+    : undefined;
+  readvertise?.unref?.();
   const shutdown = async () => {
     if (closing) process.exit(0);
     closing = true;
-    out(`\n${PAD}${dim("Closing the office. Bye.")}`);
+    clearInterval(readvertise);
+    if (!o.service) out(`\n${PAD}${dim("Closing the office. Bye.")}`);
+    serviceLog?.("office closing");
+    // Agents first: their workers walk out while the stream is still up.
+    await Promise.race([plane.shutdown(), new Promise((r) => setTimeout(r, 4_000))]);
     if (advertised) clearOfficeFile();
-    if (presence) clearInterval(presence);
+    presence?.stop();
     source.stop();
     state.stop();
     await Promise.race([server.close(), new Promise((r) => setTimeout(r, 1_500))]);
@@ -527,8 +644,10 @@ async function main(): Promise<void> {
   process.on("SIGHUP", shutdown);
 }
 
+let exitHooked = false;
+
 /** Write $AGENT_OFFICE_HOME/office.json. A demo never displaces a real office that is still running. */
-function advertise(o: Options, server: OfficeServer, version: string, secret: string): boolean {
+function advertise(o: Options, server: OfficeServer, version: string, secret: string, control: boolean): boolean {
   if (o.demo) {
     try {
       const cur = JSON.parse(readFileSync(officeFilePath(), "utf8")) as Partial<OfficeFile>;
@@ -546,8 +665,11 @@ function advertise(o: Options, server: OfficeServer, version: string, secret: st
     version,
     demo: o.demo,
     secret,
+    ...(o.service ? { service: true } : {}),
+    control,
   });
-  process.on("exit", () => clearOfficeFile());
+  if (!exitHooked) process.on("exit", () => clearOfficeFile());
+  exitHooked = true;
   return true;
 }
 
@@ -561,18 +683,26 @@ function pidAlive(pid: number): boolean {
 }
 
 /** Remotes from flags, config.json and logged-in sandbox platforms; a broken one never stops the office. */
-function watchRemotes(o: Options, onEvent: (e: Parameters<OfficeState["ingest"]>[0]) => void): Remotes | undefined {
+function watchRemotes(
+  o: Options,
+  onEvent: (e: Parameters<OfficeState["ingest"]>[0]) => void,
+  always = false,
+  railwayBudget?: RailwayBudget,
+  inOffice?: (workerId: string) => boolean,
+): Remotes | undefined {
   const cfg = readRemoteConfig();
   for (const p of cfg.problems) process.stderr.write(`${PAD}${yellow("⚠")}  ${p}\n`);
   const selectors = mergeSelectors(o.remotes, cfg.selectors);
   const autoDetect = o.cloud && cfg.cloud !== false;
-  if (!selectors.length && !autoDetect) return undefined;
+  if (!selectors.length && !autoDetect && !always) return undefined;
   const time = () => dim(new Date().toTimeString().slice(0, 5));
   try {
     return startRemotes({
+      inOffice,
       agents: o.agents,
       selectors,
       autoDetect,
+      railwayBudget,
       onEvent,
       log: (msg, level) => {
         if (!o.quiet) out(`${PAD}${time()}  ${level === "warn" ? yellow("⚠") : dim("·")} ${dim(msg)}`);

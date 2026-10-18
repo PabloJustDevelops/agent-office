@@ -38,6 +38,22 @@ export interface RunOptions {
   confirm?: (question: string) => Promise<boolean>;
   /** Clock, for backup names in tests. */
   now?: () => Date;
+  /** Handed the plan, one row per agent, once it is computed (the office page's install view). */
+  report?: (rows: PlanRow[]) => void;
+}
+
+/** One agent's line of an install plan, as the office page shows it (src/shared/control.ts InstallPlan). */
+export interface PlanRow {
+  agent: AgentKind;
+  found: boolean;
+  mcp: "add" | "update" | "ok" | "skip";
+  skill: "add" | "update" | "ok" | "skip";
+  /** Files it would touch, as ~ paths. */
+  files: string[];
+  /** The same masked diff `--dry-run` prints. */
+  diff?: string;
+  /** Why something is skipped (a config that doesn't parse, someone else's skill). */
+  error?: string;
 }
 
 /* ------------------------------------------------------------- manifest */
@@ -239,6 +255,7 @@ export async function install(sys: Sys, opts: RunOptions): Promise<number> {
   for (const a of ADAPTERS) detections.set(a.id, await detect(sys, a));
   const chosen = selectAgents(opts, detections, out);
   if (!chosen.length) {
+    opts.report?.(planRows(sys, [], detections));
     out(`${PAD}${yellow("No supported agents found")} on ${sys.where}.`);
     out(`${PAD}${dim(`Looked for: ${ADAPTERS.map((a) => BRAND[a.id].name).join(", ")}.`)}`);
     return opts.agents?.length ? 1 : 0;
@@ -261,6 +278,7 @@ export async function install(sys: Sys, opts: RunOptions): Promise<number> {
     if (wantSkill) p.skill = await skillPlan(sys, a, true);
     plans.push(p);
   }
+  opts.report?.(planRows(sys, plans, detections));
 
   // The plan.
   const width = Math.max(...plans.map((p) => BRAND[p.adapter.id].name.length));
@@ -384,6 +402,47 @@ export async function install(sys: Sys, opts: RunOptions): Promise<number> {
   }
   out();
   return failed ? 1 : 0;
+}
+
+/** The plan as rows for the page: every agent, chosen or not. */
+function planRows(sys: Sys, plans: AgentPlan[], detections: Map<AgentKind, Detection>): PlanRow[] {
+  return ADAPTERS.map((a): PlanRow => {
+    const p = plans.find((x) => x.adapter.id === a.id);
+    const found = detections.get(a.id)?.installed ?? false;
+    if (!p) return { agent: a.id, found, mcp: "skip", skill: "skip", files: [] };
+    const row: PlanRow = { agent: a.id, found, mcp: "skip", skill: "skip", files: [] };
+    const errors: string[] = [];
+    const diffs: string[] = [];
+    const edits: FileEdit[] = [];
+    if (p.mcp) {
+      if (p.mcp.blocked) errors.push(p.mcp.blocked);
+      else if (p.mcp.noop) row.mcp = "ok";
+      else row.mcp = p.mcpBefore?.state === "registered" ? "update" : "add";
+      if (p.mcp.edit && !p.mcp.noop && !p.mcp.blocked) edits.push(p.mcp.edit);
+    }
+    if (p.skill) {
+      const s = p.skill;
+      if (s.conflict) errors.push(`${tilde(sys, s.file)} is someone else's agent-office skill; left alone`);
+      else if (s.before === s.after) row.skill = "ok";
+      else {
+        row.skill = s.before == null ? "add" : "update";
+        edits.push({ file: s.file, before: s.before, after: s.after });
+      }
+    }
+    for (const e of edits) {
+      row.files.push(tilde(sys, e.file));
+      if (e.file.endsWith("SKILL.md")) {
+        diffs.push(`${tilde(sys, e.file)} (${e.before == null ? "new file" : "update"}: the agent-office skill)`);
+        continue;
+      }
+      const h = diffHunk(e.before, e.after);
+      if (!h) continue;
+      diffs.push([`--- ${tilde(sys, e.file)}`, `+++ ${tilde(sys, e.file)}`, `@@ line ${h.line} @@`, ...h.lines.map((l) => `${l.op}${l.text}`)].join("\n"));
+    }
+    if (diffs.length) row.diff = diffs.join("\n\n");
+    if (errors.length) row.error = errors.join("; ");
+    return row;
+  });
 }
 
 function hasContainer(text: string | null, container: string[]): boolean {

@@ -12,6 +12,8 @@ await build({
   platform: "node",
   format: "esm",
   target: "node18",
+  // The PTY library is an optionalDependency with a native binary per platform: loaded at runtime, never inlined.
+  external: ["@lydell/node-pty"],
   banner: { js: "#!/usr/bin/env node" },
   logLevel: "warning",
 });

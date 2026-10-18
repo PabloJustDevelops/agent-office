@@ -9,6 +9,15 @@
  * carry their Host; the four kinds agents send through MCP (status, shout,
  * celebrate, flip) never create a worker or change its pose: status sets the
  * worker's mood line, the others are passed through for the client to play.
+ *
+ * The control plane (src/control) adds four things. A placeholder worker
+ * ("ctl:<id>" for a hired agent, "proc:<pid>" for one seen launching) is
+ * replaced in place by its real transcript's worker: a session_start with
+ * `replaces`, or the claimer saying so when ingest would create a new worker.
+ * A held worker belongs to a live process and never times out (idle still
+ * applies). end() sends a worker home now and tombstones its id for a
+ * minute, so a last transcript line read after its process exited doesn't
+ * walk it back in.
  */
 import { homedir } from "node:os";
 import { foldPrivate } from "../ingest/presence.ts";
@@ -54,6 +63,13 @@ const SUPERVISE_MS = 5 * 60_000;
 export const PRESENCE_QUIET_MS = 15_000;
 /** Events that only describe an existing worker; never create one. */
 const ENDINGS = new Set<EventKind>(["session_end", "subagent_end", "idle"]);
+/** After end(), that worker's transcript events are dropped this long. */
+export const TOMBSTONE_MS = 60_000;
+/** Placeholder workers the control plane creates; ingest and reconcileLocal never claim or end them. */
+export const isPlaceholder = (id: string) => id.startsWith("ctl:") || id.startsWith("proc:");
+
+/** Picks the placeholder a new top-level worker takes over, if any (src/control/link.ts). */
+export type Claimer = (e: RawEvent) => string | undefined;
 
 export interface StateOptions {
   demo?: boolean;
@@ -92,9 +108,14 @@ export class OfficeState {
   private ringHead = 0;
   private ringSize = 0;
   private seq = 0;
-  private readonly workers = new Map<string, Worker>();
+  private workers = new Map<string, Worker>();
   private readonly listeners = new Set<Listener>();
   private timer?: ReturnType<typeof setInterval>;
+  /** Workers whose process owns their lifetime: no session_end from the quiet timer or reconcileLocal. */
+  private readonly holds = new Set<string>();
+  /** Worker id -> clock ms until which its events are dropped (see end()). */
+  private readonly tombs = new Map<string, number>();
+  private claimer?: Claimer;
 
   constructor(opts: StateOptions = {}) {
     this.demo = opts.demo ?? false;
@@ -113,10 +134,16 @@ export class OfficeState {
     let e = this.sanitize(raw);
     if (!e) return null;
     const now = this.now();
+    if (this.buried(e.workerId, now) && !(e.kind === "session_start" && e.replaces)) return null;
+    if (e.parentId && this.buried(e.parentId, now)) return null;
     let w = this.workers.get(e.workerId);
 
     if (!w) {
       if (ENDINGS.has(e.kind) || SIGNALS.has(e.kind)) return null;
+      const from = e.parentId || isPlaceholder(e.workerId) ? undefined : e.replaces ?? this.claim(e);
+      const ph = from ? this.workers.get(from) : undefined;
+      if (ph && ph.removeAt === undefined && !ph.state.parentId) return this.rename(ph, e, now);
+      delete e.replaces;
       w = this.create(e, now);
       // A client can only animate a worker it has seen arrive.
       if (e.kind !== "session_start" && e.kind !== "subagent_start") {
@@ -124,6 +151,7 @@ export class OfficeState {
       }
     } else if ((e.kind === "session_start" || e.kind === "subagent_start") && w.removeAt === undefined) {
       // Re-sighting (backfill then live tail): refresh metadata, don't respawn.
+      delete e.replaces;
       this.merge(w, e);
       this.touch(w, e.ts, now);
       return null;
@@ -169,17 +197,106 @@ export class OfficeState {
     return { ...this.base(w, ts), kind: "idle", summary: `supervising ${n} intern${n === 1 ? "" : "s"}` };
   }
 
+  /** Let the control plane pick a placeholder for a new top-level worker (src/control/link.ts). */
+  setClaimer(fn: Claimer | undefined): void {
+    this.claimer = fn;
+  }
+
+  /** Is this worker in the office (and not on its way out)? */
+  has(workerId: string): boolean {
+    const w = this.workers.get(workerId);
+    return !!w && w.removeAt === undefined;
+  }
+
+  /** Exempt a worker from the quiet timer and reconcileLocal: its process owns its lifetime. Moves with a rename. */
+  hold(workerId: string): void {
+    this.holds.add(workerId);
+  }
+
+  release(workerId: string): void {
+    this.holds.delete(workerId);
+  }
+
+  isHeld(workerId: string): boolean {
+    return this.holds.has(workerId);
+  }
+
+  /**
+   * Send a worker home now (interns too), release its hold, and drop its
+   * transcript events for TOMBSTONE_MS, so a line read after its process
+   * exited doesn't walk it back in. A session_start that replaces a
+   * placeholder still gets through.
+   */
+  end(workerId: string): void {
+    const now = this.now();
+    this.holds.delete(workerId);
+    this.tombs.set(workerId, now + TOMBSTONE_MS);
+    const w = this.workers.get(workerId);
+    if (!w || w.removeAt !== undefined) return;
+    const ts = new Date(now).toISOString();
+    this.remove(w, { ...this.base(w, ts), kind: w.state.parentId ? "subagent_end" : "session_end" });
+  }
+
+  private buried(id: string, now: number): boolean {
+    const until = this.tombs.get(id);
+    if (until === undefined) return false;
+    if (now < until) return true;
+    this.tombs.delete(id);
+    return false;
+  }
+
+  private claim(e: RawEvent): string | undefined {
+    if (!this.claimer) return undefined;
+    try {
+      return this.claimer(e);
+    } catch {
+      return undefined; // a broken claimer just means a new desk
+    }
+  }
+
+  /**
+   * The placeholder takes the new id in place: same desk, counters, files,
+   * hold and mood, interns repointed. Published as one session_start with
+   * `replaces` (no session_end); a non-start event is folded right after.
+   */
+  private rename(ph: Worker, e: RawEvent, now: number): OfficeEvent {
+    const from = ph.state.workerId;
+    const to = e.workerId;
+    const order = [...this.workers];
+    this.workers = new Map(order.map(([k, v]) => [k === from ? to : k, v]));
+    ph.state.workerId = to;
+    this.merge(ph, e);
+    for (const c of this.workers.values()) if (c.state.parentId === from) c.state.parentId = to;
+    if (this.holds.delete(from)) this.holds.add(to);
+    this.touch(ph, e.ts, now);
+    ph.state.lastTs = e.ts;
+    const start = this.publish({ ...this.base(ph, e.ts), kind: "session_start", replaces: from });
+    if (e.kind === "session_start") return start;
+    delete e.replaces;
+    ph.heldWait = undefined;
+    this.fold(ph, e, now);
+    return this.publish(e);
+  }
+
   /**
    * Send home local sessions whose agent has quit. Per agent and folder the
    * office keeps as many sessions as there are running processes (the most
    * recently active ones) and ends the rest once they have been quiet for
-   * PRESENCE_QUIET_MS. Remote workers are left to the quiet timer.
+   * PRESENCE_QUIET_MS. Remote workers are left to the quiet timer, held and
+   * placeholder workers to their process. A process whose cwd couldn't be
+   * read (cwd null or empty) makes this round skip its agent entirely, since
+   * it may well be the one keeping a session alive.
    */
-  reconcileLocal(procs: { agent: AgentKind; cwd: string }[]): void {
+  reconcileLocal(procs: { agent: AgentKind; cwd?: string | null }[]): void {
     const now = this.now();
     const key = (agent: AgentKind, cwd: string) => `${agent}\0${foldPrivate(cwd)}`;
     const running = new Map<string, number>();
+    const blind = new Set<AgentKind>();
     for (const p of procs) {
+      if (!p.cwd) {
+        blind.add(p.agent);
+        continue;
+      }
       const k = key(p.agent, this.tilde(p.cwd));
       running.set(k, (running.get(k) ?? 0) + 1);
     }
@@ -187,6 +304,7 @@ export class OfficeState {
     for (const w of this.workers.values()) {
       const s = w.state;
       if (s.parentId || s.host || !s.cwd || w.removeAt !== undefined) continue;
+      if (blind.has(s.agent) || this.holds.has(s.workerId) || isPlaceholder(s.workerId)) continue;
       const k = key(s.agent, s.cwd);
       const g = groups.get(k);
       if (g) g.push(w);
@@ -206,6 +324,7 @@ export class OfficeState {
   /** Emit idle / session_end for workers that went quiet. Called every second by start(). */
   tick(): void {
     const now = this.now();
+    for (const [id, until] of this.tombs) if (now >= until) this.tombs.delete(id);
     for (const w of [...this.workers.values()]) {
       if (!this.workers.has(w.state.workerId)) continue; // removed with its parent
       if (w.removeAt !== undefined) {
@@ -223,7 +342,7 @@ export class OfficeState {
         this.publish(e);
         continue;
       }
-      if (quiet >= this.goneMs && !supervising) {
+      if (quiet >= this.goneMs && !supervising && !this.holds.has(w.state.workerId)) {
         this.remove(w, { ...this.base(w, ts), kind: w.state.parentId ? "subagent_end" : "session_end" });
       } else if (quiet >= this.idleMs && w.state.status !== "idle" && w.state.status !== "waiting") {
         // A worker waiting on its human still needs them however long it waits; it only goes home.
@@ -442,6 +561,10 @@ export class OfficeState {
     }
     const role = clean(raw.role, 48);
     if (role) e.role = role;
+    if (raw.kind === "session_start") {
+      const replaces = clean(raw.replaces, ID_MAX);
+      if (replaces && replaces !== workerId) e.replaces = replaces;
+    }
     return e;
   }
 

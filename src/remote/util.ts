@@ -311,6 +311,8 @@ export interface Discovered {
   activityAt?: number;
   /** How often its watcher may poll, when the platform's API has a tight rate limit. */
   pollMs?: number;
+  /** Platform ids the control plane needs to reach it again (Railway: projectId, environmentId). */
+  meta?: Record<string, string>;
 }
 
 export type Scope = "auto" | "all";
