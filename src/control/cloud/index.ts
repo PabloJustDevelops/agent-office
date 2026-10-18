@@ -3,9 +3,10 @@
  * Daytona, Vercel and Railway (created from the page, or already running),
  * and ssh boxes. One Cloud driver per platform, one ssh driver.
  *
- * Status is cached (30 s; Railway 2 min, its API quota is tight) and every
- * platform gets 3 s per answer: a slow one shows its last known row, or just
- * its login state, and the fresh row arrives later through onChange.
+ * Status is cached (30 s; Railway 2 min, its API quota is tight). A row past
+ * that is answered at once and refreshed behind it; a platform not seen yet
+ * gets 3 s (less when the caller says so), then shows just its login state.
+ * Either way the fresh row arrives later through onChange.
  *
  * Cost guard: a new sandbox lives 30 minutes by default (1 to 240), the
  * office keeps at most MAX_OFFICE_SANDBOXES of its own at once (the next
@@ -71,6 +72,8 @@ export function createPlaces(ctx: PlacesContext, o: PlacesOptions = {}): Places 
   };
   const cache = new Map<ProviderStatus["kind"], Cached>();
   const inflight = new Map<ProviderStatus["kind"], Promise<ProviderStatus>>();
+  /** When the look under way for a platform with no row yet was first waited on. */
+  const waitingSince = new Map<ProviderStatus["kind"], number>();
   const changes = new Listeners<ProviderStatus[]>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const watches = new Set<Disposable>();
@@ -137,13 +140,23 @@ export function createPlaces(ctx: PlacesContext, o: PlacesOptions = {}): Places 
     changes.emit(all);
   }
 
-  async function one(kind: ProviderStatus["kind"], fresh: boolean): Promise<ProviderStatus> {
+  async function one(kind: ProviderStatus["kind"], fresh: boolean, wait = deadline): Promise<ProviderStatus> {
     const hit = cache.get(kind);
     if (hit && !fresh && ctx.now() - hit.at < TTL_MS[kind]) return hit.value;
+    // Stale: the last known row now, the refresh behind it (refresh() emits when it differs).
+    if (hit && !fresh) {
+      refresh(kind).catch(() => {});
+      return hit.value;
+    }
+    const fresh0 = !inflight.has(kind);
     const p = refresh(kind);
+    // A look already under way since earlier: only what is left of its deadline (one wait, not one per caller).
+    if (fresh0) waitingSince.set(kind, ctx.now());
+    p.finally(() => waitingSince.delete(kind)).catch(() => {});
+    const left = wait - (ctx.now() - (waitingSince.get(kind) ?? ctx.now()));
     let t: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<undefined>((r) => {
-      t = setTimeout(() => r(undefined), deadline);
+      t = setTimeout(() => r(undefined), Math.max(0, left));
       t.unref?.();
     });
     const v = await Promise.race([p, late]);
@@ -154,8 +167,8 @@ export function createPlaces(ctx: PlacesContext, o: PlacesOptions = {}): Places 
     return hit?.value ?? (kind === "ssh" ? sshStatus() : offline(kind));
   }
 
-  async function status(so?: { fresh?: boolean }): Promise<ProviderStatus[]> {
-    return Promise.all(ORDER.map((k) => one(k, !!so?.fresh)));
+  async function status(so?: { fresh?: boolean; deadlineMs?: number }): Promise<ProviderStatus[]> {
+    return Promise.all(ORDER.map((k) => one(k, !!so?.fresh, Math.min(deadline, so?.deadlineMs ?? deadline))));
   }
 
   /** Office sandboxes alive right now, from a fresh look at every platform. */
@@ -221,7 +234,8 @@ export function createPlaces(ctx: PlacesContext, o: PlacesOptions = {}): Places 
         let made: string | undefined;
         let place2: BasePlace;
         try {
-          place2 = await cloud.create({ name: sandboxName(oo.sandbox?.name), timeoutMin, cwd: place.cwd, onCreated: (id) => (made = id) }, oo);
+          const { project, environment } = oo.sandbox ?? {};
+          place2 = await cloud.create({ name: sandboxName(oo.sandbox?.name), timeoutMin, cwd: place.cwd, ...(project ? { project } : {}), ...(environment ? { environment } : {}), onCreated: (id) => (made = id) }, oo);
         } catch (err) {
           // Stopped while it was being created, or it never came up: nobody will use it.
           if (!made) throw err;

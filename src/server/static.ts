@@ -3,8 +3,14 @@
  * anything with a dot segment, a backslash, a null byte, double encoding or
  * a dotfile is refused before it touches the filesystem, and the resolved
  * real path must still sit inside the web root (no symlink escapes).
+ *
+ * Files are answered from memory once read (re-read when their size or mtime
+ * changes), and a script's precompressed copy (<name>.br, <name>.gz, written
+ * by the build) is sent instead when the browser accepts it. Names with a
+ * content hash (app-3FQ2K7ZD.js) never change, so they may be cached for good
+ * (HASHED, IMMUTABLE); the rest revalidate by ETag.
  */
-import { createReadStream, existsSync, realpathSync, statSync, type Stats } from "node:fs";
+import { existsSync, readFileSync, realpathSync, statSync, type Stats } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,8 +88,57 @@ export interface ServeOptions {
   headers: Record<string, string>;
 }
 
+/** A build output named with esbuild's content hash: its content never changes under that name. */
+export const HASHED = /-[A-Z0-9]{8}\.(?:js|css)$/;
+export const IMMUTABLE = "public, max-age=31536000, immutable";
+
+/** The encodings we keep copies in that the browser accepts (q > 0), best first: br, then gzip. */
+function accepted(req: IncomingMessage): ("br" | "gzip")[] {
+  const ok = new Set<string>();
+  for (const part of String(req.headers["accept-encoding"] ?? "").toLowerCase().split(",")) {
+    const [name, ...params] = part.split(";").map((x) => x.trim());
+    const q = params.find((p) => p.startsWith("q="));
+    if (name && (!q || Number(q.slice(2)) > 0)) ok.add(name);
+  }
+  return (["br", "gzip"] as const).filter((e) => ok.has(e));
+}
+
+interface Cached {
+  size: number;
+  mtimeMs: number;
+  data: Buffer;
+}
+const memo = new Map<string, Cached>();
+/** Small files only: the web app is a few MB in all. */
+const MEMO_MAX_BYTES = 8 << 20;
+
+/** The file's bytes, from memory when it hasn't changed since. */
+function contents(file: string, st: Stats): Buffer {
+  const hit = memo.get(file);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.data;
+  const data = readFileSync(file);
+  if (data.length <= MEMO_MAX_BYTES) memo.set(file, { size: st.size, mtimeMs: st.mtimeMs, data });
+  return data;
+}
+
+/** <file>.br or <file>.gz when the browser takes it and the build wrote one (a regular file inside root). */
+function encoded(req: IncomingMessage, file: string, realRoot: string): { enc: "br" | "gzip"; file: string; st: Stats } | null {
+  if (!/\.(?:js|css|svg)$/.test(file)) return null;
+  for (const enc of accepted(req)) {
+    const alt = `${file}.${enc === "br" ? "br" : "gz"}`;
+    try {
+      const st = statSync(alt);
+      if (!st.isFile() || !realpathSync(alt).startsWith(realRoot + sep)) continue;
+      return { enc, file: alt, st };
+    } catch {
+      // No copy in that encoding.
+    }
+  }
+  return null;
+}
+
 /**
- * Stream one file that safeResolve already vetted. Returns false (and writes
+ * Send one file that safeResolve already vetted. Returns false (and writes
  * nothing) when it is not a regular file inside root, so the caller can 404.
  */
 export function serveFile(
@@ -94,17 +149,21 @@ export function serveFile(
   opts: ServeOptions,
 ): boolean {
   let st: Stats;
+  let realRoot: string;
   try {
     st = statSync(file);
     if (!st.isFile()) return false;
-    const realRoot = realpathSync(root);
+    realRoot = realpathSync(root);
     const real = realpathSync(file);
     if (!real.startsWith(realRoot + sep)) return false;
   } catch {
     return false;
   }
 
-  const etag = `W/"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
+  const alt = encoded(req, file, realRoot);
+  const body = alt ?? { file, st };
+  const tag = `${body.st.size.toString(16)}-${Math.floor(body.st.mtimeMs).toString(16)}${alt ? `-${alt.enc}` : ""}`;
+  const etag = `W/"${tag}"`;
   const headers: Record<string, string> = {
     ...opts.headers,
     "Content-Type": contentType(file),
@@ -112,19 +171,21 @@ export function serveFile(
     ETag: etag,
     "Last-Modified": st.mtime.toUTCString(),
   };
+  if (/\.(?:js|css|svg)$/.test(file)) headers.Vary = "Accept-Encoding";
+  if (alt) headers["Content-Encoding"] = alt.enc;
   if (req.headers["if-none-match"] === etag) {
     res.writeHead(304, headers);
     res.end();
     return true;
   }
-  headers["Content-Length"] = String(st.size);
-  res.writeHead(200, headers);
-  if (req.method === "HEAD") {
-    res.end();
-    return true;
+  let data: Buffer;
+  try {
+    data = contents(body.file, body.st);
+  } catch {
+    return false;
   }
-  const stream = createReadStream(file);
-  stream.on("error", () => res.destroy());
-  stream.pipe(res);
+  headers["Content-Length"] = String(data.length);
+  res.writeHead(200, headers);
+  res.end(req.method === "HEAD" ? undefined : data);
   return true;
 }

@@ -11,6 +11,11 @@
  * shows them where the agent asked. Either way the whole request is shown
  * (Approval.detail), not just its label.
  * A side panel on desktop that can be maximised, a full-screen sheet on a phone.
+ *
+ * The panel itself is in the page from the start and opens at once; the
+ * terminal (xterm.js) and the chat are chunks of their own, fetched ahead of
+ * time (prefetchViews: on hover, on idle) or on first open, with a skeleton
+ * where they go until they're here.
  */
 import type { ApprovalAnswer, ControlSession } from "../../../src/shared/control.ts";
 import type { OfficeEvent } from "../../../src/shared/events.ts";
@@ -18,11 +23,53 @@ import { h, setText } from "../dom.ts";
 import { glyph, glyphFor, icon } from "../icons.ts";
 import { agentColor, agentName, logo } from "../logos.ts";
 import { api, ControlError, type StreamState } from "./api.ts";
-import { createChat, type ChatActivity, type ChatView } from "./chat.ts";
+import type { ChatActivity, ChatView } from "./chat.ts";
 import { avatar, seedFor } from "./chat/avatar.ts";
 import { PERMISSIONS, placeBadge, statusWord } from "./format.ts";
 import type { ControlStore } from "./store.ts";
-import { createTerminal, type TermView } from "./terminal.ts";
+import type { TermView } from "./terminal.ts";
+
+type TerminalModule = typeof import("./terminal.ts");
+type ChatModule = typeof import("./chat.ts");
+type ViewKind = "terminal" | "chat";
+
+const loaded: { terminal?: TerminalModule; chat?: ChatModule } = {};
+const loading: { terminal?: Promise<TerminalModule>; chat?: Promise<ChatModule> } = {};
+
+/** A session view's code: at once when it's here, else its chunk (fetched once; a failed fetch is tried again next time). */
+function loadView(kind: "terminal"): Promise<TerminalModule>;
+function loadView(kind: "chat"): Promise<ChatModule>;
+function loadView(kind: ViewKind): Promise<TerminalModule | ChatModule> {
+  if (kind === "terminal") {
+    return (loading.terminal ??= import("./terminal.ts").then(
+      (m) => (loaded.terminal = m),
+      (err: unknown) => {
+        loading.terminal = undefined;
+        throw err;
+      },
+    ));
+  }
+  return (loading.chat ??= import("./chat.ts").then(
+    (m) => (loaded.chat = m),
+    (err: unknown) => {
+      loading.chat = undefined;
+      throw err;
+    },
+  ));
+}
+
+/**
+ * Fetch the session views' code before it is needed: a worker or a "Your agents" row under the
+ * pointer, or the page idle after its first frame. `warm` also builds the terminal's xterm ahead
+ * (idle only: it takes a few milliseconds of layout).
+ */
+export function prefetchViews(kinds: ViewKind[] = ["terminal", "chat"], o: { warm?: boolean } = {}): void {
+  for (const k of kinds) {
+    if (k === "terminal") {
+      loadView("terminal").then((m) => o.warm && m.prewarmTerminal(), () => {});
+    } else void loadView("chat").catch(() => {});
+  }
+}
 
 export interface SessionPanel {
   el: HTMLElement;
@@ -167,7 +214,8 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
   );
 
   let id: string | null = null;
-  let view: { kind: "terminal" | "chat"; term?: TermView; chat?: ChatView; deadAt?: number } | null = null;
+  /** The mounted view; `loading` while its chunk is on the way (a skeleton shows meanwhile). */
+  let view: { kind: ViewKind; term?: TermView; chat?: ChatView; deadAt?: number; loading?: boolean } | null = null;
   let max = false;
   let stopArmed = 0;
   let answered = "";
@@ -233,17 +281,65 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
     body.dataset.wait = `${s.status}|${s.detail ?? ""}|${s.setup?.state ?? ""}`;
   }
 
+  /** A placeholder in the view's shape while its chunk loads: lines for a terminal, bubbles for a chat. */
+  function skeleton(kind: ViewKind): HTMLElement {
+    const lines = kind === "terminal" ? [62, 48, 71, 36, 55, 28] : [70, 46, 58];
+    return h(
+      "div",
+      { class: `ses-skel is-${kind}`, attrs: { "aria-hidden": "true" } },
+      ...lines.map((w) => h("span", { class: "ses-skel-line", attrs: { style: `width:${w}%` } })),
+    );
+  }
+
   function mount(s: ControlSession): void {
     unmount();
-    const mine = { kind: s.mode === "chat" ? "chat" : "terminal" } as NonNullable<typeof view>;
+    const kind: ViewKind = s.mode === "chat" ? "chat" : "terminal";
+    const mine = { kind } as NonNullable<typeof view>;
+    view = mine;
+    delete body.dataset.wait;
+    el.dataset.mode = kind;
+    termTab.setAttribute("aria-selected", String(kind === "terminal"));
+    chatTab.setAttribute("aria-selected", String(kind === "chat"));
+    for (const t of [termTab, chatTab]) {
+      const own = t.dataset.mode === kind;
+      t.disabled = !own;
+      t.title = own ? "" : s.mode === "chat" ? "This agent was hired in chat mode" : "This agent was hired in terminal mode";
+    }
+    const mod = kind === "chat" ? loaded.chat : loaded.terminal;
+    if (mod) return build(mine, s.id, mod);
+    mine.loading = true;
+    body.replaceChildren(skeleton(kind));
+    const p = kind === "chat" ? loadView("chat") : loadView("terminal");
+    p.then(
+      (m) => {
+        if (view !== mine || id !== s.id) return;
+        mine.loading = false;
+        build(mine, s.id, m);
+        if (!el.hidden && kind === "terminal" && (!document.activeElement || document.activeElement === document.body || el.contains(document.activeElement))) {
+          requestAnimationFrame(() => view === mine && mine.term?.focus());
+        }
+      },
+      () => {
+        if (view !== mine) return;
+        // nothing to show: the next sync() (a store change) tries again
+        mine.loading = false;
+        mine.deadAt = Date.now();
+        showNotice(`Couldn't load the ${kind}. Check the office is still running, then reopen the panel.`);
+      },
+    );
+  }
+
+  function build(mine: NonNullable<typeof view>, sid: string, mod: TerminalModule | ChatModule): void {
+    const s = store.get(sid);
+    if (!s) return;
     const onState = (st: StreamState, err?: string) => {
       if (st === "ended" && err === "locked") showNotice("Controls are locked in this browser.");
       else if (st === "ended") mine.deadAt = Date.now(); // not there (yet): sync() tries again
       else if (st === "retrying" && !ended(cur())) showNotice("Reconnecting to the agent…", true);
       else if (st === "open") hideNotice();
     };
-    if (s.mode === "chat") {
-      const chat = createChat(s.id, {
+    if (mine.kind === "chat") {
+      const chat = (mod as ChatModule).createChat(s.id, {
         onState,
         onActivity: (a) => {
           activity = a;
@@ -263,9 +359,9 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
       });
       body.replaceChildren(chat.el);
       mine.chat = chat;
-      view = mine;
+      chat.sync();
     } else {
-      const term = createTerminal(s.id, {
+      const term = (mod as TerminalModule).createTerminal(s.id, {
         onState,
         onExit: (code) => {
           exitCode = code;
@@ -275,17 +371,7 @@ export function createSessionPanel(store: ControlStore, opts: SessionPanelOpts):
       });
       body.replaceChildren(term.el);
       mine.term = term;
-      view = mine;
       requestAnimationFrame(() => term.fit());
-    }
-    delete body.dataset.wait;
-    el.dataset.mode = mine.kind;
-    termTab.setAttribute("aria-selected", String(s.mode !== "chat"));
-    chatTab.setAttribute("aria-selected", String(s.mode === "chat"));
-    for (const t of [termTab, chatTab]) {
-      const mine = t.dataset.mode === (s.mode === "chat" ? "chat" : "terminal");
-      t.disabled = !mine;
-      t.title = mine ? "" : s.mode === "chat" ? "This agent was hired in chat mode" : "This agent was hired in terminal mode";
     }
   }
 

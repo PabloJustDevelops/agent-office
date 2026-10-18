@@ -183,8 +183,9 @@ export function createControlPlane(o: ControlPlaneOptions): Plane {
   let logins: Logins | null = null;
   if (sessions) logins = createLogins({ ctx, keys, pty: o.pty ?? (async () => null) });
 
-  // Probe the agents now, so the first page's GET /api/control (and its Hire button) doesn't wait on it.
-  sessions?.availability().catch(() => {});
+  // Probe the agents now, so the first page's GET /api/control (and its Hire button) doesn't wait on
+  // it. A page that got there first (the agents on PATH, without versions) hears the answer as control_info.
+  sessions?.availability().then((agents) => info({ agents }), () => {});
 
   const subs: Disposable[] = [];
   subs.push(keys.onChange(() => info({ keys: keys.list(), ...(logins ? { logins: logins.status() } : {}) })));

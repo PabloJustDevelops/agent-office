@@ -30,14 +30,22 @@
  *
  * Scope: `--railway all` (or an id) looks in every workspace the token sees.
  * Auto-detection only looks where this user works: the project and
- * environment `railway link` tied to the current folder, plus the sandboxes
- * the user's own CLI created (its config records them). Nothing here
- * creates, forks or destroys a sandbox. Tokens are read, never printed or
- * written.
+ * environment `railway link` tied to the current folder, the one the office
+ * puts its sandboxes in (picked when hiring, or set in config.json), the
+ * sandboxes the office created (sandboxes.json) and the ones the user's own
+ * CLI created (its config records them). Nothing here creates, forks or
+ * destroys a sandbox. Tokens are read, never printed or written.
+ *
+ * Where a new sandbox goes (railwayDest, for the control plane): the CLI
+ * wants ids (`-p <project id>`; a name is "Project not found"), and a
+ * `railway link` can point at a project that was deleted since, so every
+ * project and environment is looked up in the account's own list (ids or
+ * names in, ids out) before anything uses it.
  */
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import type { RemoteTarget } from "../shared/events.ts";
+import { agentOfficeHome, configPath } from "./config.ts";
 import { shQuote, type TunedTarget } from "./source.ts";
 import {
   RemoteError, displayName, homeOf, http, jsonOf, lastLine, pick, readJson, run, str, which,
@@ -72,11 +80,52 @@ interface Env {
   projectId: string;
   projectName: string;
   environmentId: string;
+  /** "" when the token can't say (a project token). */
+  environmentName: string;
+  workspace?: string;
 }
 
 interface Box extends Env {
   id: string;
   name: string;
+}
+
+/** A project a new sandbox can go in, with its environments. */
+export interface RailwayProject {
+  id: string;
+  name: string;
+  /** Its workspace's name, when the login sees more than one workspace. */
+  workspace?: string;
+  environments: { id: string; name: string }[];
+}
+
+/** Where a new sandbox goes: ids the CLI and the API accept, names for people, and why there. */
+export interface RailwayDest {
+  projectId: string;
+  projectName: string;
+  environmentId: string;
+  environmentName: string;
+  why: string;
+}
+
+/** An id pair, as the office stores it. */
+export interface RailwayIds {
+  projectId: string;
+  environmentId: string;
+}
+
+/** What railwayDest goes by, most deliberate first. */
+export interface DestHints {
+  /** What this hire picked: ids, or names. */
+  asked?: { project?: string; environment?: string };
+  /** The office's last pick (control-state.json). */
+  remembered?: RailwayIds;
+  /** config.json's {"control": {"railway": {"project", "environment"}}}: ids, or names. */
+  config?: { project?: string; environment?: string };
+  /** Where the office's recorded sandboxes are, newest first. */
+  office?: RailwayIds[];
+  /** The `railway link` of the office's folder. */
+  linked?: RailwayIds;
 }
 
 /** A usable API token, or why not (no network). */
@@ -152,7 +201,16 @@ export interface RailwaySandboxRef {
   name: string;
 }
 
-export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBudget } = {}): Provider & { targetFor(box: RailwaySandboxRef): RemoteTarget } {
+export interface RailwayProvider extends Provider {
+  targetFor(box: RailwaySandboxRef): RemoteTarget;
+  /**
+   * The projects and environments the login sees (cached 5 min; `refresh` asks again). From the
+   * API while a token works, else `railway list --json`, which also refreshes the CLI's login.
+   */
+  projects(o?: { refresh?: boolean }): Promise<RailwayProject[]>;
+}
+
+export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBudget } = {}): RailwayProvider {
   const env = o.env ?? process.env;
   const budget = o.budget ?? new RailwayBudget(o.now);
   const timeoutMs = o.timeoutMs ?? 20_000;
@@ -200,21 +258,23 @@ export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBud
     if (t.project) {
       const d = await gql(t, "query { projectToken { projectId environmentId project { name } } }", {});
       const p = d.projectToken;
-      return p?.environmentId ? [{ projectId: p.projectId, projectName: p.project?.name ?? "project", environmentId: p.environmentId }] : [];
+      return p?.environmentId ? [{ projectId: p.projectId, projectName: p.project?.name ?? "project", environmentId: p.environmentId, environmentName: "" }] : [];
     }
-    const me = await gql(t, "query { me { workspaces { id } } }", {});
+    const me = await gql(t, "query { me { workspaces { id name } } }", {});
     // Workspaces in parallel: discovery is on the startup path.
-    const per = await Promise.all((me.me?.workspaces ?? []).map(async (w: { id: string }) => {
+    const per = await Promise.all((me.me?.workspaces ?? []).map(async (w: { id: string; name?: string }) => {
       const out: Env[] = [];
       let after: string | undefined;
       for (let page = 0; page < 10; page++) {
         const d = await gql(
           t,
-          "query($w: String!, $after: String) { projects(workspaceId: $w, first: 100, after: $after) { edges { node { id name environments { edges { node { id } } } } } pageInfo { hasNextPage endCursor } } }",
+          "query($w: String!, $after: String) { projects(workspaceId: $w, first: 100, after: $after) { edges { node { id name environments { edges { node { id name } } } } } pageInfo { hasNextPage endCursor } } }",
           { w: w.id, after },
         );
         for (const { node } of d.projects?.edges ?? []) {
-          for (const { node: e } of node.environments?.edges ?? []) out.push({ projectId: node.id, projectName: node.name, environmentId: e.id });
+          for (const { node: e } of node.environments?.edges ?? []) {
+            out.push({ projectId: node.id, projectName: node.name, environmentId: e.id, environmentName: str(e.name) ?? "", workspace: str(w.name) });
+          }
         }
         if (!d.projects?.pageInfo?.hasNextPage) break;
         after = d.projects.pageInfo.endCursor;
@@ -228,17 +288,20 @@ export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBud
     const j = JSON.parse(await railwayCli(["list", "--json"]));
     const out: Env[] = [];
     for (const p of Array.isArray(j) ? j : []) {
+      if (p?.deletedAt) continue;
       for (const e of p?.environments?.edges ?? []) {
-        if (str(p.id) && str(e?.node?.id) && e.node.canAccess !== false) out.push({ projectId: p.id, projectName: p.name ?? "project", environmentId: e.node.id });
+        if (str(p.id) && str(e?.node?.id) && e.node.canAccess !== false) {
+          out.push({ projectId: p.id, projectName: p.name ?? "project", environmentId: e.node.id, environmentName: str(e.node.name) ?? "", workspace: str(p.workspace?.name) });
+        }
       }
     }
     return out;
   }
 
-  async function environments(t: Token | undefined): Promise<Env[]> {
+  async function environments(t: Token | undefined, refresh = false): Promise<Env[]> {
     const key = t ? (t.project ? "p:" : "a:") + t.via : "cli";
     const now = (o.now ?? Date.now)();
-    if (envsCache && envsCache.key === key && now - envsCache.at < ENVS_TTL_MS) return envsCache.envs;
+    if (!refresh && envsCache && envsCache.key === key && now - envsCache.at < ENVS_TTL_MS) return envsCache.envs;
     const envs = t ? await envsViaApi(t) : await envsViaCli();
     envsCache = { at: now, key, envs };
     return envs;
@@ -380,12 +443,16 @@ export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBud
   }
 
   return {
-    targetFor: (box: RailwaySandboxRef) => targetFor({ ...box, projectName: box.name }),
+    targetFor: (box: RailwaySandboxRef) => targetFor({ ...box, projectName: box.name, environmentName: "" }),
+    async projects(po = {}) {
+      const t = transport();
+      return groupProjects(await environments(t === "cli" ? undefined : t, po.refresh));
+    },
     kind: "railway",
     label: "Railway",
     keepsAwake: true,
     discoverMs: DISCOVER_MS,
-    autoScope: "the linked project and the sandboxes your railway CLI created",
+    autoScope: "the linked project, the office's project, and the sandboxes the office and your railway CLI created",
     available(): Availability {
       const t = railwayToken(o);
       if (!("why" in t)) return { ok: true, via: t.via };
@@ -396,7 +463,7 @@ export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBud
       const t = transport();
       const tok = t === "cli" ? undefined : t;
       const all = await environments(tok);
-      const mine = scope === "auto" ? ownScope(env, o.cwd ?? process.cwd()) : undefined;
+      const mine = scope === "auto" ? ownScope(env, o.cwd ?? process.cwd(), groupProjects(all)) : undefined;
       const envs = mine ? all.filter((e) => mine.envs.has(e.environmentId) || mine.boxes.has(e.environmentId)) : all;
       const rows = (await sandboxes(tok, envs)).filter(({ s, e }) => {
         if (!mine || mine.envs.has(e.environmentId)) return true;
@@ -428,27 +495,152 @@ export function createRailwayProvider(o: ProviderOptions & { budget?: RailwayBud
 }
 
 /**
- * Where this user works, from the railway CLI's own config: the environment `railway link` tied
- * to `cwd` (or a folder above it), and the sandboxes the CLI created (by environment). Empty when
- * there is no CLI config: auto-detection then watches nothing on Railway.
+ * Where this user works: the environment `railway link` tied to `cwd` (or a folder above it), the
+ * one the office puts its sandboxes in once it has been picked or set (see officeHints), and the
+ * sandboxes the office and the railway CLI created (by environment). Ids that aren't in the
+ * account's environments any more simply match nothing.
  */
-export function ownScope(env: NodeJS.ProcessEnv, cwd: string): { envs: Set<string>; boxes: Map<string, Set<string>> } {
+export function ownScope(env: NodeJS.ProcessEnv, cwd: string, projects: RailwayProject[] = []): { envs: Set<string>; boxes: Map<string, Set<string>> } {
   const cfg = readJson(join(homeOf(env), ".railway", "config.json"));
   const envs = new Set<string>();
   const boxes = new Map<string, Set<string>>();
-  const linked = cfg?.projects && typeof cfg.projects === "object" ? cfg.projects : {};
-  let best = "";
-  for (const [dir, p] of Object.entries<any>(linked)) {
-    const d = dir.replace(/\/+$/, "");
-    if ((cwd === d || cwd.startsWith(d + "/")) && d.length > best.length && str(p?.environment)) best = d;
-  }
-  if (best) envs.add(str((linked as any)[best].environment)!);
-  const made = cfg?.sandboxes && typeof cfg.sandboxes === "object" ? cfg.sandboxes : {};
-  for (const sb of Object.values<any>(made)) {
-    const e = str(sb?.environmentId), id = str(sb?.id);
+  const add = (e: string | undefined, id: string | undefined) => {
     if (e && id) (boxes.get(e) ?? boxes.set(e, new Set()).get(e)!).add(id);
+  };
+  const linked = linkedTo(env, cwd);
+  if (linked) envs.add(linked.environmentId);
+  const office = officeHints(env);
+  if (office.remembered) envs.add(office.remembered.environmentId);
+  else if (office.config?.project && projects.length) {
+    const w = railwayDest(projects, { asked: office.config }).dest;
+    if (w) envs.add(w.environmentId);
   }
+  for (const r of office.boxes) add(r.environmentId, r.id);
+  const made = cfg?.sandboxes && typeof cfg.sandboxes === "object" ? cfg.sandboxes : {};
+  for (const sb of Object.values<any>(made)) add(str(sb?.environmentId), str(sb?.id));
   return { envs, boxes };
+}
+
+/** The project and environment `railway link` tied to `cwd` or the nearest folder above it (ids, unchecked). */
+export function linkedTo(env: NodeJS.ProcessEnv, cwd: string): (RailwayIds & { dir: string }) | undefined {
+  const linked = readJson(join(homeOf(env), ".railway", "config.json"))?.projects;
+  let best = "";
+  for (const [dir, p] of Object.entries<any>(linked && typeof linked === "object" ? linked : {})) {
+    const d = dir.replace(/\/+$/, "");
+    if ((cwd === d || cwd.startsWith(d + "/")) && d.length > best.length && str(p?.project) && str(p?.environment)) best = d;
+  }
+  return best ? { projectId: str(linked[best].project)!, environmentId: str(linked[best].environment)!, dir: best } : undefined;
+}
+
+/** Files of $AGENT_OFFICE_HOME (src/control/types.ts FILES) that say where the office keeps its Railway sandboxes. */
+const STATE_FILE = "control-state.json";
+const REGISTRY_FILE = "sandboxes.json";
+
+/**
+ * What the office knows without asking Railway: its last pick (control-state.json "railway"),
+ * config.json's "control": {"railway": {...}}, and the sandboxes it recorded (sandboxes.json).
+ */
+export function officeHints(env: NodeJS.ProcessEnv): { remembered?: RailwayIds; config?: { project?: string; environment?: string }; boxes: (RailwayIds & { id: string })[] } {
+  const home = agentOfficeHome(env);
+  const st = readJson(join(home, STATE_FILE))?.railway;
+  const remembered = str(st?.projectId) && str(st?.environmentId) ? { projectId: str(st.projectId)!, environmentId: str(st.environmentId)! } : undefined;
+  const c = readJson(configPath(env))?.control?.railway;
+  const config = str(c?.project) ? { project: str(c.project), environment: str(c?.environment) } : undefined;
+  const rows: any[] = readJson(join(home, REGISTRY_FILE))?.sandboxes;
+  const boxes = (Array.isArray(rows) ? rows : [])
+    .filter((r) => r?.provider === "railway" && str(r.id) && str(r.environmentId) && str(r.projectId))
+    .sort((a, b) => String(b.createdAt ?? "").localeCompare(String(a.createdAt ?? "")))
+    .map((r) => ({ id: str(r.id)!, projectId: str(r.projectId)!, environmentId: str(r.environmentId)! }));
+  return { ...(remembered ? { remembered } : {}), ...(config ? { config } : {}), boxes };
+}
+
+/** Environments grouped by project, in listing order; workspaces named only when there are several. */
+function groupProjects(envs: Env[]): RailwayProject[] {
+  const byId = new Map<string, RailwayProject>();
+  const spaces = new Set(envs.map((e) => e.workspace ?? ""));
+  for (const e of envs) {
+    let p = byId.get(e.projectId);
+    if (!p) byId.set(e.projectId, (p = { id: e.projectId, name: e.projectName, ...(spaces.size > 1 && e.workspace ? { workspace: e.workspace } : {}), environments: [] }));
+    if (!p.environments.some((x) => x.id === e.environmentId)) p.environments.push({ id: e.environmentId, name: e.environmentName });
+  }
+  return [...byId.values()];
+}
+
+const OFFICE_NAME = /^agent-?office/i;
+const names = (xs: { name: string }[]) => xs.slice(0, 6).map((x) => x.name || "(unnamed)").join(", ") + (xs.length > 6 ? ", …" : "");
+
+/** A project by id, else by name (exact, then any case). A string is the problem. */
+function findProject(projects: RailwayProject[], s: string): RailwayProject | string {
+  const byId = projects.find((p) => p.id === s);
+  if (byId) return byId;
+  let hits = projects.filter((p) => p.name === s);
+  if (!hits.length) hits = projects.filter((p) => p.name.toLowerCase() === s.toLowerCase());
+  if (hits.length === 1) return hits[0]!;
+  if (hits.length > 1) return `${hits.length} Railway projects are called "${s}": pick one by its id`;
+  return `No project "${s}" in your Railway account (it has ${names(projects)})`;
+}
+
+function findEnv(p: RailwayProject, s: string): RailwayProject["environments"][number] | string {
+  const hit = p.environments.find((e) => e.id === s) ?? p.environments.find((e) => e.name === s) ?? p.environments.find((e) => e.name.toLowerCase() === s.toLowerCase());
+  return hit ?? `Railway project "${p.name}" has no environment "${s}" (it has ${names(p.environments)})`;
+}
+
+export const NO_RAILWAY_PROJECT =
+  "Your Railway account has no project to put a sandbox in. Create an empty one (railway.com/new, or `railway init` in any folder), then hire again";
+
+/**
+ * Where a new sandbox goes: what the hire asked for (ids or names), else a default, in this
+ * order: the office's last pick, config.json, a project the office's sandboxes are in, the one
+ * project named for the office (agentoffice…), the `railway link` of the office's folder, the
+ * account's only project. Every candidate is looked up in `projects`, so a stale link or a
+ * deleted project is skipped, never passed on. No dest: `problem` says why, plainly; `note` is a
+ * config.json entry that didn't match, worth showing even when another default was found.
+ */
+export function railwayDest(projects: RailwayProject[], h: DestHints): { dest?: RailwayDest; problem?: string; note?: string } {
+  const usable = projects.filter((p) => p.environments.length);
+  if (!usable.length) return { problem: NO_RAILWAY_PROJECT };
+  const make = (p: RailwayProject, e: RailwayProject["environments"][number], why: string): RailwayDest => ({ projectId: p.id, projectName: p.name, environmentId: e.id, environmentName: e.name, why });
+  /** An environment of `p` when nothing names one: one the office or the link already used there, else production, else the first. */
+  const envOf = (p: RailwayProject) => {
+    for (const ids of [h.remembered, h.linked, ...(h.office ?? [])]) {
+      const e = ids?.projectId === p.id ? p.environments.find((x) => x.id === ids.environmentId) : undefined;
+      if (e) return e;
+    }
+    return p.environments.find((e) => e.name === "production") ?? p.environments[0]!;
+  };
+  const byIds = (ids: RailwayIds | undefined, why: string) => {
+    const p = ids && usable.find((x) => x.id === ids.projectId);
+    return p ? make(p, p.environments.find((e) => e.id === ids!.environmentId) ?? envOf(p), why) : undefined;
+  };
+
+  if (h.asked?.project) {
+    const p = findProject(usable, h.asked.project);
+    if (typeof p === "string") return { problem: p };
+    const e = h.asked.environment ? findEnv(p, h.asked.environment) : envOf(p);
+    if (typeof e === "string") return { problem: e };
+    return { dest: make(p, e, "picked") };
+  }
+
+  let note: string | undefined;
+  const last = byIds(h.remembered, "last used");
+  if (last) return { dest: last };
+  if (h.config?.project) {
+    const p = findProject(usable, h.config.project);
+    const e = typeof p === "string" ? p : h.config.environment ? findEnv(p, h.config.environment) : envOf(p);
+    if (typeof p !== "string" && typeof e !== "string") return { dest: make(p, e, "config.json") };
+    note = `config.json's control.railway doesn't match: ${typeof p === "string" ? p : e}`;
+  }
+  const out = (dest: RailwayDest) => ({ dest, ...(note ? { note } : {}) });
+  for (const r of h.office ?? []) {
+    const w = byIds(r, "has the office's sandboxes");
+    if (w) return out(w);
+  }
+  const named = usable.filter((p) => OFFICE_NAME.test(p.name));
+  if (named.length === 1) return out(make(named[0]!, envOf(named[0]!), "named for the office"));
+  const link = byIds(h.linked, "linked to the office's folder");
+  if (link) return out(link);
+  if (usable.length === 1) return out(make(usable[0]!, envOf(usable[0]!), "your only project"));
+  return { problem: `Pick the Railway project for the new sandbox: your account has ${usable.length} (${names(usable)})`, ...(note ? { note } : {}) };
 }
 
 const PAGED = /^@@agentoffice-paged (\/tmp\/\.agentoffice-[A-Za-z0-9._-]+) (\d+) (gz|raw)\n?$/;

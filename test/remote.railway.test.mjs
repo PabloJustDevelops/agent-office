@@ -13,10 +13,11 @@ const M = await load("src/remote/railway.ts", "src/ingest/index.ts");
 
 const WORLD = {
   workspaces: [
-    { id: "w1", projects: [{ id: "p1", name: "agentoffice-test", envs: ["e1"] }] },
-    { id: "w2", projects: [{ id: "p2", name: "api", envs: ["e2", "e3"] }] },
+    { id: "w1", name: "Kira", projects: [{ id: "p1", name: "agentoffice-test", envs: ["e1"] }] },
+    { id: "w2", name: "Team", projects: [{ id: "p2", name: "api", envs: ["e2", "e3"] }] },
   ],
 };
+const ENV_NAMES = { e1: "production", e2: "production", e3: "staging" };
 
 /** sandboxes: [{id, env, status, idle, home}] */
 async function fakeRailway(sandboxes, { cap = 16_000, pathPrefix } = {}) {
@@ -27,10 +28,10 @@ async function fakeRailway(sandboxes, { cap = 16_000, pathPrefix } = {}) {
     const project = req.headers["project-access-token"] === "ptok";
     if (!bearer && !project) return { json: { errors: [{ message: "Not Authorized" }] } };
     if (q.includes("projectToken")) return { json: { data: { projectToken: { projectId: "p2", environmentId: "e3", project: { name: "api" } } } } };
-    if (q.includes("me { workspaces")) return { json: { data: { me: { workspaces: WORLD.workspaces.map((w) => ({ id: w.id })) } } } };
+    if (q.includes("me { workspaces")) return { json: { data: { me: { workspaces: WORLD.workspaces.map((w) => ({ id: w.id, name: w.name })) } } } };
     if (q.includes("projects(workspaceId")) {
       const w = WORLD.workspaces.find((x) => x.id === v.w);
-      return { json: { data: { projects: { edges: (w?.projects ?? []).map((p) => ({ node: { id: p.id, name: p.name, environments: { edges: p.envs.map((id) => ({ node: { id } })) } } })), pageInfo: { hasNextPage: false } } } } };
+      return { json: { data: { projects: { edges: (w?.projects ?? []).map((p) => ({ node: { id: p.id, name: p.name, environments: { edges: p.envs.map((id) => ({ node: { id, name: ENV_NAMES[id] } })) } } })), pageInfo: { hasNextPage: false } } } } };
     }
     if (q.includes("sandboxes(environmentId")) {
       const data = {};
@@ -255,4 +256,80 @@ test("the API budget: under half the hourly quota, sized from RateLimit-Policy, 
   assert.ok(found[0].pollMs > 15_000);
   assert.ok(budget.used >= 4);
   await srv.close();
+});
+
+test("auto scope also covers the office: its project (the last pick) and the sandboxes it recorded; a stale link matches nothing", async () => {
+  const sbx = SBX();
+  sbx[1].status = "RUNNING";
+  sbx.push({ id: "cccccccc-0000-4000-8000-000000000000", env: "e3", status: "RUNNING", idle: 30, home: tmp() });
+  const srv = await fakeRailway(sbx);
+  const home = tmp();
+  const office = join(home, "office");
+  mkdirSync(join(home, ".railway"), { recursive: true });
+  mkdirSync(office);
+  // The office runs from a folder whose link points at a project that was deleted since.
+  writeFileSync(join(home, ".railway", "config.json"), JSON.stringify({ projects: { [home]: { project: "p-deleted", environment: "e-deleted" } }, user: {} }));
+  writeFileSync(join(office, "control-state.json"), JSON.stringify({ v: 1, recentFolders: [], railway: { projectId: "p1", environmentId: "e1" } }));
+  writeFileSync(join(office, "sandboxes.json"), JSON.stringify({ v: 1, sandboxes: [{ provider: "railway", id: "cccccccc-0000-4000-8000-000000000000", name: "agentoffice-x", environmentId: "e3", projectId: "p2", createdAt: "2026-10-18T00:00:00Z" }] }));
+  const env = { HOME: home, AGENT_OFFICE_HOME: office, RAILWAY_API_TOKEN: "rtok", RAILWAY_GRAPHQL_ENDPOINT: srv.url, PATH: "" };
+  const p = M.createRailwayProvider({ env, cwd: join(home, "code") });
+  // e1 whole (the office's project), in e3 only the office's own cccccccc: not bbbbbbbb, not e2's aaaaaaaa.
+  assert.deepEqual((await p.list("auto")).map((d) => d.host.id).sort(), ["railway:5c1e0a47-3d2b-4f6e-9a81-7b04c2d9e316", "railway:cccccccc-0000-4000-8000-000000000000"]);
+  // config.json names (no pick yet) are looked up too.
+  writeFileSync(join(office, "control-state.json"), JSON.stringify({ v: 1, recentFolders: [] }));
+  writeFileSync(join(office, "config.json"), JSON.stringify({ control: { railway: { project: "api", environment: "e2" } } }));
+  const p2 = M.createRailwayProvider({ env, cwd: join(home, "code") });
+  assert.deepEqual((await p2.list("auto")).map((d) => d.host.id).sort(), ["railway:aaaaaaaa-0000-4000-8000-000000000000", "railway:cccccccc-0000-4000-8000-000000000000"]);
+  await srv.close();
+});
+
+test("projects(): ids and names from the API, workspaces named when there are several", async () => {
+  const srv = await fakeRailway(SBX());
+  const p = M.createRailwayProvider({ env: { HOME: tmp(), RAILWAY_API_TOKEN: "rtok", RAILWAY_GRAPHQL_ENDPOINT: srv.url, PATH: "" } });
+  assert.deepEqual(await p.projects(), [
+    { id: "p1", name: "agentoffice-test", workspace: "Kira", environments: [{ id: "e1", name: "production" }] },
+    { id: "p2", name: "api", workspace: "Team", environments: [{ id: "e2", name: "production" }, { id: "e3", name: "staging" }] },
+  ]);
+  const n = srv.requests.length;
+  await p.projects();
+  assert.equal(srv.requests.length, n, "cached");
+  await p.projects({ refresh: true });
+  assert.ok(srv.requests.length > n);
+  await srv.close();
+});
+
+const P = [
+  { id: "p1", name: "app", environments: [{ id: "e1", name: "production" }, { id: "e2", name: "staging" }] },
+  { id: "p2", name: "web", environments: [{ id: "e3", name: "production" }] },
+  { id: "p3", name: "Web", environments: [{ id: "e4", name: "production" }] },
+  { id: "p4", name: "empty", environments: [] },
+];
+const W = (h, ps = P) => M.railwayDest(ps, h);
+const ids = (r) => (r.dest ? [r.dest.projectId, r.dest.environmentId, r.dest.why] : r.problem);
+
+test("railwayDest: names or ids in, ids out; the default's order; nothing stale or ambiguous gets through", () => {
+  // What the hire asked for, by id or by name (exact name first, then any case).
+  assert.deepEqual(ids(W({ asked: { project: "p1", environment: "e2" } })), ["p1", "e2", "picked"]);
+  assert.deepEqual(ids(W({ asked: { project: "app", environment: "STAGING" } })), ["p1", "e2", "picked"]);
+  assert.deepEqual(ids(W({ asked: { project: "web" } })), ["p2", "e3", "picked"]);
+  assert.match(ids(W({ asked: { project: "WEB" } })), /^2 Railway projects are called "WEB": pick one by its id$/);
+  assert.match(ids(W({ asked: { project: "agentoffice-test" } })), /^No project "agentoffice-test" in your Railway account \(it has app, web, Web\)$/);
+  assert.match(ids(W({ asked: { project: "empty" } })), /^No project "empty"/, "a project without environments can't take one");
+  assert.match(ids(W({ asked: { project: "p1", environment: "qa" } })), /has no environment "qa" \(it has production, staging\)/);
+  // The default, in order.
+  const all = { remembered: { projectId: "p2", environmentId: "e3" }, config: { project: "app" }, office: [{ projectId: "p3", environmentId: "e4" }], linked: { projectId: "p1", environmentId: "e2" } };
+  assert.deepEqual(ids(W(all)), ["p2", "e3", "last used"]);
+  assert.deepEqual(ids(W({ ...all, remembered: { projectId: "p-gone", environmentId: "x" } })), ["p1", "e2", "config.json"], "the env the link names in that project");
+  assert.deepEqual(ids(W({ ...all, remembered: undefined, config: undefined })), ["p3", "e4", "has the office's sandboxes"]);
+  assert.deepEqual(ids(W({ linked: { projectId: "p1", environmentId: "e2" } })), ["p1", "e2", "linked to the office's folder"]);
+  assert.deepEqual(ids(W({ linked: { projectId: "p1", environmentId: "e2" } }, [...P, { id: "p9", name: "agentoffice", environments: [{ id: "e9", name: "production" }] }])), ["p9", "e9", "named for the office"]);
+  assert.deepEqual(ids(W({ linked: { projectId: "p-deleted", environmentId: "e-deleted" } }, [P[1]])), ["p2", "e3", "your only project"]);
+  assert.deepEqual(ids(W({}, [P[0]])), ["p1", "e1", "your only project"], "production when nothing names an environment");
+  assert.match(ids(W({ linked: { projectId: "p-deleted", environmentId: "e-deleted" } })), /^Pick the Railway project for the new sandbox: your account has 3 \(app, web, Web\)$/);
+  assert.match(ids(W({}, [])), /^Your Railway account has no project to put a sandbox in\./);
+  assert.match(ids(W({}, [P[3]])), /no project to put a sandbox in/);
+  // A config.json entry that matches nothing: noted, and the next default still applies.
+  const r = W({ config: { project: "agentoffice-test", environment: "production" } }, [P[1]]);
+  assert.deepEqual(ids(r), ["p2", "e3", "your only project"]);
+  assert.match(r.note, /config\.json's control\.railway doesn't match: No project "agentoffice-test"/);
 });

@@ -5,6 +5,11 @@
  * instructions and skills, the project, and one summary line. Only names
  * reach the page (GET /api/control/setup); the values are read by the office
  * at hire time. Choices are remembered per agent in this browser.
+ *
+ * What the page last heard for an agent and folder is shown at once (on open,
+ * on switching back), while the office is asked again; the office answers
+ * from its own cache too, and when that may be stale (`refreshing`) a second
+ * request waits for its fresh look. The dialog never waits on it.
  */
 import type {
   ControlMode, HireRequest, KeyInfo, SetupInventory, SetupLogin, SetupLoginKind, SetupMcp,
@@ -30,7 +35,7 @@ export interface SetupSection {
   summary(): string;
   /** Where the project goes there when "Folder there" is empty: "~/app". */
   cwdHint(): string | undefined;
-  /** The dialog opened again: read the setup afresh (a key stored or Claude connected meanwhile). */
+  /** The dialog opened again: ask again (a key stored or Claude connected meanwhile), showing what we had until then. */
   refresh(): void;
 }
 
@@ -89,6 +94,11 @@ export function createSetupSection(store: ControlStore, opts: { openSettings(tab
   let invKey = "";
   let loading = false;
   let loadErr = "";
+  /** The dialog reopened: the next load asks again even for the same agent and folder. */
+  let stale = false;
+  let gen = 0;
+  /** Agent|folder -> what the office last said: shown at once next time while it is asked again. */
+  const seen = new Map<string, SetupInventory>();
   const open = new Set<string>();
 
   const mem = (): Memory => (all[agent] ??= fresh());
@@ -125,32 +135,49 @@ export function createSetupSection(store: ControlStore, opts: { openSettings(tab
   async function load(): Promise<void> {
     const folder = folderOf();
     const key = `${agent}|${folder ?? ""}`;
-    if (key === invKey && (inv || loading || loadErr)) return;
+    if (key === invKey && !stale && (inv || loading || loadErr)) return;
+    stale = false;
+    const my = ++gen;
+    const switched = key !== invKey;
     invKey = key;
-    loading = true;
+    // what we had for it, until the office answers
+    if (switched) inv = seen.get(key) ?? null;
+    loading = !inv;
     loadErr = "";
     render();
+    if (inv) opts.changed();
+    const take = (got: SetupInventory) => {
+      seen.set(key, got);
+      if (my !== gen) return false;
+      inv = got;
+      loading = false;
+      render();
+      opts.changed();
+      return true;
+    };
     try {
       const got = await api.setup(agent, folder);
-      if (invKey !== key) return;
-      inv = got;
+      // from the office's cache: shown now, and the fresh look follows
+      if (take(got) && got.refreshing) take(await api.setup(agent, folder, true));
     } catch (e) {
-      if (invKey !== key) return;
-      inv = null;
-      loadErr = e instanceof ControlError ? e.message : "Couldn't read your setup.";
-      // A folder that went away: forget it and fall back to none.
+      if (my !== gen) return;
+      loading = false;
+      // A folder that went away: forget it (and what was shown for it) and fall back to none.
       if (folder && e instanceof ControlError && (e.status === 404 || e.status === 403)) {
+        seen.delete(key);
+        inv = null;
         mem().project = null;
         save();
         invKey = "";
         void load();
         return;
       }
-    } finally {
-      if (invKey === key) loading = false;
+      // a hiccup with something on screen already: keep showing it
+      if (inv) return;
+      loadErr = e instanceof ControlError ? e.message : "Couldn't read your setup.";
+      render();
+      opts.changed();
     }
-    render();
-    opts.changed();
   }
 
   const logins = (): SetupLogin[] => (inv?.agent === agent ? inv.login : []).filter((l) => !(l.kind === "device" && mode !== "terminal"));
@@ -391,7 +418,8 @@ export function createSetupSection(store: ControlStore, opts: { openSettings(tab
       agent = o.agent;
       remote = o.remote;
       mode = o.mode;
-      if (remote && mem().on) void load();
+      // asked for while the place is still this Mac too, so switching to a sandbox finds it ready
+      if (mem().on) void load();
       render();
     },
     get on() {
@@ -433,8 +461,7 @@ export function createSetupSection(store: ControlStore, opts: { openSettings(tab
     summary,
     cwdHint,
     refresh() {
-      invKey = "";
-      inv = null;
+      stale = true;
     },
   };
 }

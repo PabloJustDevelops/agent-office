@@ -20,6 +20,10 @@ export class ControlStore {
   readonly sessions = new Map<string, ControlSession>();
   private subs = new Set<(what: "info" | "sessions") => void>();
   private loading: Promise<void> | null = null;
+  /** When GET /api/control last answered (ms): the first snapshot right after doesn't ask again. */
+  private loadedAt = 0;
+  /** A control frame came in while GET /api/control was out: its answer may be older than that frame. */
+  private overtaken = false;
 
   get enabled(): boolean {
     return this.state === "enabled";
@@ -62,24 +66,40 @@ export class ControlStore {
       this.expected = "enabled";
       this.emit("info");
     }
+    // asked a moment ago (the page primed it while /events connected): that answer stands
+    if (control === "enabled" && this.state === "enabled" && Date.now() - this.loadedAt < 5_000) return Promise.resolve();
     return this.refresh();
   }
 
-  refresh(): Promise<void> {
+  /**
+   * GET /api/control. `keepSessions`: only the rest (agents, platforms, keys, logins), for a dialog
+   * that opens; the sessions stay as their events left them, which may be newer than this answer.
+   * A control frame that arrives while it is out (before the first answer the store drops them)
+   * may be newer than the answer, so the store asks once more then (twice at most).
+   */
+  refresh(o: { keepSessions?: boolean } = {}): Promise<void> {
     if (this.loading) return this.loading;
     this.loading = (async () => {
       try {
-        const info = await api.info();
-        if (!info || info.enabled === false) {
-          this.setLocked();
-          return;
+        for (let round = 0; round < 3; round++) {
+          this.overtaken = false;
+          const keep = !!o.keepSessions && this.state === "enabled";
+          const info = await api.info();
+          if (!info || info.enabled === false) {
+            this.setLocked();
+            return;
+          }
+          this.info = keep ? { ...info, sessions: this.info?.sessions ?? [] } : info;
+          this.state = "enabled";
+          this.loadedAt = Date.now();
+          if (!keep) {
+            this.sessions.clear();
+            for (const s of info.sessions ?? []) this.sessions.set(s.id, s);
+          }
+          this.emit("info");
+          if (!keep) this.emit("sessions");
+          if (!this.overtaken) break;
         }
-        this.info = info;
-        this.state = "enabled";
-        this.sessions.clear();
-        for (const s of info.sessions ?? []) this.sessions.set(s.id, s);
-        this.emit("info");
-        this.emit("sessions");
       } catch (err) {
         if (err instanceof ControlError && err.status === 401) this.setLocked();
         else if (err instanceof ControlError && (err.status === 404 || err.status === 405 || err.status === 501)) this.setState("off");
@@ -106,6 +126,7 @@ export class ControlStore {
 
   /** One of the control events riding /events. */
   onEvent(name: string, data: unknown): void {
+    if (this.loading && (name === "control" || name === "control_gone" || name === "control_info")) this.overtaken = true;
     if (!this.enabled || !data || typeof data !== "object") return;
     if (name === "control") {
       const s = data as ControlSession;

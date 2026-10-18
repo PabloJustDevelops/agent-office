@@ -3,10 +3,17 @@
  * (src/remote/railway.ts), its exec bridge over a WebSocket, and the
  * `railway` CLI for the terminal.
  *
- *   where    a new sandbox needs a project environment: a RAILWAY_TOKEN project token's,
- *            else {"control": {"railway": {"project", "environment"}}} in
- *            ~/.agentoffice/config.json, else the `railway link` of the office's folder,
- *            else the account's only environment
+ *   where    a new sandbox needs a project environment, as ids (the CLI's -p takes no name):
+ *            a RAILWAY_TOKEN project token's own, else what the hire picked, else the
+ *            default railwayDest finds (the last pick, which control-state.json remembers;
+ *            config.json's {"control": {"railway": {"project", "environment"}}}; a project
+ *            with the office's sandboxes; the one named agentoffice…; the office folder's
+ *            `railway link`; the only project), each looked up in the account's projects
+ *            (the API, or `railway list --json`), so a name becomes an id and a link to a
+ *            deleted project is skipped. The page gets the projects and that default with
+ *            the status row, for the hire form's picker
+ *   login    the CLI's stored access token while it's fresh; once it has expired, one
+ *            `railway list --json` (which refreshes it) before giving up on the API
  *   create   sandboxCreate {environmentId, idleTimeoutMinutes (1..120), networkIsolation:
  *            ISOLATED}; destroyed by Railway once idle that long. Railway sandboxes have no
  *            names or labels, so every one the office makes is recorded in sandboxes.json
@@ -29,12 +36,16 @@
  * ssh` reading the lines on stdin (UNVERIFIED that it forwards stdin). Railway's relay keeps
  * about 8 MiB of a terminal's scrollback for its durable sessions.
  */
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { ProviderStatus, SandboxInfo } from "../../shared/control.ts";
-import { configPath } from "../../remote/config.ts";
-import { RAILWAY_GQL, RailwayBudget, createRailwayProvider, railwayToken } from "../../remote/railway.ts";
-import { RemoteError, displayName, homeOf, http, jsonOf, readJson, run, str, which } from "../../remote/util.ts";
-import { ControlError, type Launch, type OpenOptions, type PipeProc, type PlacesContext, type Term, type TermExit } from "../types.ts";
+import {
+  RAILWAY_GQL, RailwayBudget, createRailwayProvider, linkedTo, officeHints, railwayDest, railwayToken,
+  type DestHints, type RailwayDest, type RailwayProject, type RailwayProvider,
+} from "../../remote/railway.ts";
+import { RemoteError, displayName, http, jsonOf, readJson, run, str, which } from "../../remote/util.ts";
+import { privateDir, writePrivate } from "../auth.ts";
+import { ControlError, FILES, type Launch, type OpenOptions, type PipeProc, type PlacesContext, type Term, type TermExit } from "../types.ts";
 import { connectWs } from "../ws.ts";
 import { tgzOf, type TarEntry } from "../tar.ts";
 import { cleanupScript, cwdScript, envFromStdinScript, envFromVarScript, envLines, launchLine, parseCwd, shWrap } from "./launch.ts";
@@ -46,7 +57,6 @@ import {
 export const RAILWAY_EXEC_WS = "wss://ssh.railway.com:2226/ws/exec";
 const API_TIMEOUT_MS = 20_000;
 const START_WAIT_MS = 2 * 60_000;
-const ENV_TTL_MS = 5 * 60_000;
 const NO_CLI = "Install the railway CLI to open terminals in Railway sandboxes";
 
 type Token = { token: string; project: boolean; via: string };
@@ -71,9 +81,14 @@ export function railwayCloud(d: CloudDeps): Cloud {
   const budget = d.railwayBudget ?? new RailwayBudget(ctx.now);
   const pollMs = d.pollMs ?? 3_000;
   const cli = () => d.bins?.railway ?? which("railway", env());
-  let envCache: { at: number; key: string; where?: { projectId: string; environmentId: string; how: string } } | undefined;
   /** id -> where, from the last auto listing. */
   const seen = new Map<string, RailwayBox>();
+  /**
+   * One provider per login, so its project list (5 min) and the watcher's budget are shared across
+   * calls. The provider keeps the environment it was made with, so a token replaced in Settings
+   * (same name, new value) makes a new one: the key carries a fingerprint of the value, never the value.
+   */
+  let prov: { key: string; p: RailwayProvider } | undefined;
 
   const gqlOf = (t: Token) => async (query: string, variables: Record<string, unknown>): Promise<any> => {
     const headers: Record<string, string> = t.project ? { "project-access-token": t.token } : { authorization: `Bearer ${t.token}` };
@@ -93,43 +108,54 @@ export function railwayCloud(d: CloudDeps): Cloud {
     return "why" in t ? undefined : t;
   };
 
-  /** The project environment a new sandbox goes in, and how it was found. */
-  async function where(t: Token): Promise<{ projectId: string; environmentId: string; how: string } | undefined> {
-    const key = `${t.via}:${t.project}`;
-    if (envCache && envCache.key === key && ctx.now() - envCache.at < ENV_TTL_MS) return envCache.where;
-    const gql = gqlOf(t);
-    let w: { projectId: string; environmentId: string; how: string } | undefined;
-    if (t.project) {
-      const p = (await gql("query { projectToken { projectId environmentId } }", {})).projectToken;
-      if (str(p?.projectId) && str(p?.environmentId)) w = { projectId: p.projectId, environmentId: p.environmentId, how: "RAILWAY_TOKEN" };
-    }
-    const cfg = readJson(configPath(env()))?.control?.railway;
-    if (!w && str(cfg?.project) && str(cfg?.environment)) w = { projectId: cfg.project, environmentId: cfg.environment, how: "config.json" };
-    if (!w) {
-      const linked = readJson(join(homeOf(env()), ".railway", "config.json"))?.projects;
-      const cwd = process.cwd();
-      let best = "";
-      for (const [dir, p] of Object.entries<any>(linked && typeof linked === "object" ? linked : {})) {
-        const dd = dir.replace(/\/+$/, "");
-        if ((cwd === dd || cwd.startsWith(dd + "/")) && dd.length > best.length && str(p?.project) && str(p?.environment)) best = dd;
-      }
-      if (best) w = { projectId: linked[best].project, environmentId: linked[best].environment, how: "railway link" };
-    }
-    if (!w && !t.project) {
-      const all: { projectId: string; environmentId: string }[] = [];
-      const me = await gql("query { me { workspaces { id } } }", {});
-      for (const ws of me.me?.workspaces ?? []) {
-        const p = await gql("query($w: String!) { projects(workspaceId: $w, first: 50) { edges { node { id environments { edges { node { id } } } } } } }", { w: ws.id });
-        for (const { node } of p.projects?.edges ?? []) for (const { node: e } of node.environments?.edges ?? []) all.push({ projectId: node.id, environmentId: e.id });
-        if (all.length > 1) break;
-      }
-      if (all.length === 1) w = { ...all[0]!, how: "your only environment" };
-    }
-    envCache = { at: ctx.now(), key, where: w };
-    return w;
+  function provider(): RailwayProvider {
+    const e = env();
+    const t = railwayToken({ env: e });
+    const login = "why" in t ? "cli" : `${t.via}:${t.project}:${createHash("sha256").update(t.token).digest("hex").slice(0, 16)}`;
+    const key = `${login}\0${str(e.RAILWAY_GRAPHQL_ENDPOINT) ?? ""}`;
+    if (!prov || prov.key !== key) prov = { key, p: createRailwayProvider({ env: e, fetch: d.fetch, budget, timeoutMs: API_TIMEOUT_MS, bin: d.bins?.railway }) };
+    return prov.p;
   }
 
-  const NEED_ENV = `Railway needs a project environment for new sandboxes: set "control": {"railway": {"project": "<id>", "environment": "<id>"}} in ${configPath(env()).replace(homeOf(env()), "~")}`;
+  /** A token for the API; an expired CLI login is refreshed by running the CLI once (`railway list --json`). */
+  async function freshToken(): Promise<Token | undefined> {
+    const t = token();
+    if (t || !cli()) return t;
+    await provider().projects({ refresh: true }).catch(() => {});
+    return token();
+  }
+
+  function hints(asked?: DestHints["asked"]): DestHints {
+    const h = officeHints(env());
+    const office = d.registry.list("railway").filter((r) => r.projectId && r.environmentId).reverse().map((r) => ({ projectId: r.projectId!, environmentId: r.environmentId! }));
+    const linked = linkedTo(env(), process.cwd());
+    return { ...(asked ? { asked } : {}), ...(h.remembered ? { remembered: h.remembered } : {}), ...(h.config ? { config: h.config } : {}), office, ...(linked ? { linked } : {}) };
+  }
+
+  /** The account's projects and where a new sandbox goes; a project token has exactly one place. */
+  async function where(t: Token, asked?: DestHints["asked"], refresh = false): Promise<{ projects: RailwayProject[]; dest?: RailwayDest; problem?: string; note?: string }> {
+    const projects = await provider().projects({ refresh });
+    if (t.project) {
+      const p = projects[0];
+      const e = p?.environments[0];
+      if (!p || !e) return { projects, problem: "This RAILWAY_TOKEN project token sees no environment" };
+      if (asked?.project && asked.project !== p.id && asked.project !== p.name) return { projects, problem: `RAILWAY_TOKEN only reaches Railway project "${p.name}"` };
+      return { projects, dest: { projectId: p.id, projectName: p.name, environmentId: e.id, environmentName: e.name, why: "RAILWAY_TOKEN" } };
+    }
+    return { projects, ...railwayDest(projects, hints(asked)) };
+  }
+
+  /** The last place a sandbox went, for the next hire's default (control-state.json "railway"). */
+  function remember(w: RailwayDest): void {
+    const file = join(ctx.home, FILES.state);
+    try {
+      const j = readJson(file);
+      privateDir(ctx.home);
+      writePrivate(file, JSON.stringify({ v: 1, ...(j && typeof j === "object" && !Array.isArray(j) ? j : {}), railway: { projectId: w.projectId, environmentId: w.environmentId } }, null, 2) + "\n");
+    } catch {
+      // Only a default for next time.
+    }
+  }
 
   async function ready(t: Token | undefined, box: RailwayBox, asked: string | undefined, ours: boolean, o: OpenOptions): Promise<RailwayPlace> {
     const probe = new RailwayPlace(ctx, d, budget, t, box, "/", ours, o.agent);
@@ -151,14 +177,14 @@ export function railwayCloud(d: CloudDeps): Cloud {
       const row: ProviderStatus = { kind: "railway", name: "Railway", ready: false, canCreate: false, sandboxes: [] };
       const lg = this.login();
       if (!lg.ready) return { ...row, note: lg.why };
-      const t = token();
-      const out: ProviderStatus = { ...row, ready: true, via: lg.via };
+      const t = await freshToken();
+      const out: ProviderStatus = { ...row, ready: true, via: t?.via ?? lg.via };
       const rows = new Map<string, SandboxInfo>();
       for (const r of d.registry.list("railway")) {
         rows.set(r.id, sandboxRow(ctx, "railway", { id: r.id, name: r.name, status: "unknown", ours: true, createdAt: r.createdAt }, `railway:${r.id}`));
       }
       if (!t) {
-        out.note = "Railway's stored login has expired: run any railway command to refresh it";
+        out.note = "Railway's stored login has expired and the railway CLI couldn't refresh it: run `railway login`";
         return { ...out, sandboxes: [...rows.values()] };
       }
       const gql = gqlOf(t);
@@ -178,8 +204,7 @@ export function railwayCloud(d: CloudDeps): Cloud {
           }
           rows.set(r.id, sandboxRow(ctx, "railway", { id: r.id, name: r.name, status: stateOf(s.status), ours: true, createdAt: str(s.createdAt) ?? r.createdAt }, `railway:${r.id}`));
         }
-        const p = createRailwayProvider({ env: env(), fetch: d.fetch, budget, timeoutMs: API_TIMEOUT_MS });
-        for (const x of await p.list("auto")) {
+        for (const x of await provider().list("auto")) {
           const id = x.host.id.slice("railway:".length);
           if (x.meta?.projectId && x.meta.environmentId) seen.set(id, { id, projectId: x.meta.projectId, environmentId: x.meta.environmentId, name: x.host.name });
           if (rows.has(id)) continue;
@@ -190,25 +215,33 @@ export function railwayCloud(d: CloudDeps): Cloud {
         if (code === "auth") return { ...out, ready: false, note: (err as Error).message };
         // "throttled" or a hiccup: show what we have.
       }
-      let w;
+      const sandboxes = [...rows.values()];
+      let w: Awaited<ReturnType<typeof where>> | undefined;
       try {
         w = await where(t);
       } catch {
         w = undefined;
       }
-      if (!cli()) return { ...out, note: NO_CLI, sandboxes: [...rows.values()] };
-      if (!w) return { ...out, note: NEED_ENV, sandboxes: [...rows.values()] };
-      return { ...out, canCreate: true, sandboxes: [...rows.values()] };
+      if (!cli()) return { ...out, note: NO_CLI, sandboxes };
+      if (!w) return { ...out, note: "Railway didn't list your projects just now", sandboxes };
+      const projects = w.projects.filter((p) => p.environments.length).map((p) => ({ id: p.id, name: p.name, ...(p.workspace ? { workspace: p.workspace } : {}), environments: p.environments }));
+      const dest = w.dest ? { project: w.dest.projectId, environment: w.dest.environmentId, why: w.dest.why } : undefined;
+      const note = !projects.length ? w.problem : w.note;
+      return { ...out, canCreate: projects.length > 0, projects, ...(dest ? { dest } : {}), ...(note ? { note } : {}), sandboxes };
     },
 
     async create(c: CreateOptions, o: OpenOptions): Promise<BasePlace> {
-      const t = token();
-      if (!t) throw new ControlError(502, "Railway: creating a sandbox needs an API token (RAILWAY_API_TOKEN) or a fresh railway login");
+      const t = await freshToken();
+      if (!t) throw new ControlError(502, "Railway: creating a sandbox needs an API token (RAILWAY_API_TOKEN) or a railway CLI login (`railway login`)");
       if (!cli()) throw new ControlError(503, NO_CLI);
-      const w = await where(t);
-      if (!w) throw new ControlError(409, NEED_ENV);
+      const asked = c.project ? { project: c.project, ...(c.environment ? { environment: c.environment } : {}) } : undefined;
+      let r = await where(t, asked);
+      // A project made since the last listing: look once more before saying it isn't there.
+      if (!r.dest) r = await where(t, asked, true);
+      const w = r.dest;
+      if (!w) throw new ControlError(409, r.problem ?? "Railway: no project to put the sandbox in");
       const gql = gqlOf(t);
-      o.progress("creating", "Creating Railway sandbox…");
+      o.progress("creating", `Creating Railway sandbox in ${w.projectName}${w.environmentName ? ` · ${w.environmentName}` : ""}…`);
       const idle = Math.min(120, Math.max(1, c.timeoutMin));
       const made = (await gql(
         "mutation($input: SandboxCreateInput!) { sandboxCreate(input: $input) { id status environmentId createdAt idleTimeoutMinutes } }",
@@ -218,6 +251,7 @@ export function railwayCloud(d: CloudDeps): Cloud {
       if (!id) throw new ControlError(502, "Railway: create answered without a sandbox id");
       const box: RailwayBox = { id, environmentId: w.environmentId, projectId: w.projectId, name: c.name };
       d.registry.add({ provider: "railway", ...box, createdAt: str(made.createdAt) ?? new Date(ctx.now()).toISOString() });
+      if (!t.project) remember(w);
       c.onCreated?.(id);
       let status = made.status;
       const t0 = Date.now();
@@ -237,15 +271,15 @@ export function railwayCloud(d: CloudDeps): Cloud {
         await this.status().catch(() => {});
         box = seen.get(id);
       }
-      if (!box) throw new ControlError(404, "No such Railway sandbox in your linked project or the office's own");
-      return ready(token(), box, cwd, !!rec, o);
+      if (!box) throw new ControlError(404, "No such Railway sandbox in the office's project, your linked project or the office's own");
+      return ready(await freshToken(), box, cwd, !!rec, o);
     },
 
     async remove(id: string): Promise<void> {
-      const t = token();
+      const t = await freshToken();
       const rec = d.registry.get("railway", id);
       const e = rec?.environmentId ?? seen.get(id)?.environmentId;
-      if (!t) throw new ControlError(502, "Railway: deleting a sandbox needs an API token or a fresh railway login");
+      if (!t) throw new ControlError(502, "Railway: deleting a sandbox needs an API token or a railway CLI login (`railway login`)");
       if (!e) throw new ControlError(404, "No such Railway sandbox");
       try {
         await gqlOf(t)("mutation($id: String!, $e: String!) { sandboxDestroy(id: $id, environmentId: $e) { id status } }", { id, e });

@@ -18,9 +18,12 @@
  *   GET    /api/control                         -> ControlInfo
  *   POST   /api/control/hire                    HireRequest -> ControlSession
  *   GET    /api/control/fs?path=<dir>           -> FsListing (folders only, under $HOME)
- *   GET    /api/control/sessions/:id/term       SSE: `event: data` {d: base64 bytes} (the
- *                                               scrollback is replayed first), `event: exit`
- *                                               {code}. Terminal-mode sessions only.
+ *   GET    /api/control/sessions/:id/term       SSE: `event: screen` {d} (the visible screen,
+ *                                               at once), then `event: data` {d: base64 bytes,
+ *                                               full: 1} (the whole replay with the scrollback;
+ *                                               both drawn from a reset terminal), then live
+ *                                               `event: data` {d}; `event: exit` {code}.
+ *                                               Terminal-mode sessions only.
  *   POST   /api/control/sessions/:id/input      {data: string}   raw keystrokes into the PTY
  *   POST   /api/control/sessions/:id/resize     {cols, rows}
  *   POST   /api/control/sessions/:id/prompt     {text}  terminal: bracketed paste + Enter;
@@ -39,7 +42,9 @@
  *   POST   /api/control/service                 {startAtLogin: boolean} -> ServiceStatus
  *   GET    /api/control/install                 -> InstallPlan (the dry run)
  *   POST   /api/control/install                 {agents?: AgentKind[]} -> InstallPlan (applied)
- *   GET    /api/control/setup?agent=&folder=    -> SetupInventory (names only)
+ *   GET    /api/control/setup?agent=&folder=    -> SetupInventory (names only; from a cache,
+ *                                               `refreshing` when that may be stale: &wait=1
+ *                                               answers with the fresh look)
  *   POST   /api/control/logins/claude           -> LoginFlow: runs `claude setup-token` here
  *   POST   /api/control/logins/claude/input     {data}  keystrokes (a pasted code) into it
  *   DELETE /api/control/logins/claude           cancel it
@@ -48,7 +53,8 @@
  * Live updates ride the existing /events stream as extra SSE events:
  *   `event: control`         ControlSession (created or changed)
  *   `event: control_gone`    {id}
- *   `event: control_info`    Partial<ControlInfo> (keys, providers, service changed)
+ *   `event: control_info`    Partial<ControlInfo> (keys, providers, service changed; the
+ *                            agents' versions once probed, when GET /api/control came first)
  * A hired agent is a worker at once (workerId "ctl:<id>"); when its real
  * transcript shows up the worker is renamed through OfficeEvent.replaces, and
  * ControlSession.workerId follows. Always look a session's worker up by it.
@@ -77,8 +83,8 @@ export interface HireRequest {
   permission?: PermissionMode;
   /** Names of stored keys to hand to a remote agent. Ignored for local. */
   keys?: string[];
-  /** For place.target === "new". */
-  sandbox?: { name?: string; timeoutMin?: number };
+  /** For place.target === "new". Railway: `project` and `environment` (ids, or names) say where it goes; absent, ProviderStatus.dest. */
+  sandbox?: { name?: string; timeoutMin?: number; project?: string; environment?: string };
   /** "Bring my setup": what of this machine's setup to copy there. Remote places only; absent: nothing. */
   setup?: SetupChoice;
 }
@@ -121,6 +127,11 @@ export interface SetupInventory {
   project?: SetupProject;
   /** Facts the form shows once ("claude.ai connectors don't come along with a setup-token login"). */
   notes: string[];
+  /**
+   * Part of this came from the office's cache and may be out of date: a fresh look is under way,
+   * and GET /setup?...&wait=1 answers with it once it's done.
+   */
+  refreshing?: boolean;
 }
 
 export interface SetupLogin {
@@ -339,6 +350,18 @@ export interface ProviderStatus {
   hosts?: string[];
   /** Why canCreate is false, or what creating will do ("creates vercel-sandbox-default-project first"). */
   note?: string;
+  /** Railway: the projects (and their environments) a new sandbox can go in. */
+  projects?: CloudProject[];
+  /** Railway: where a new sandbox goes when the hire doesn't pick (ids), and why there ("last used"). Absent: the hire has to pick. */
+  dest?: { project: string; environment: string; why: string };
+}
+
+export interface CloudProject {
+  id: string;
+  name: string;
+  /** Named when the login sees more than one workspace. */
+  workspace?: string;
+  environments: { id: string; name: string }[];
 }
 
 export interface AgentAvailability {

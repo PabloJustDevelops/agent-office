@@ -152,7 +152,13 @@ export function createSessionManager(ctx: ControlContext, places: Places | undef
       }
     })());
   }
-  async function availability(opts: { fresh?: boolean } = {}): Promise<AgentAvailability[]> {
+  let quickList: Promise<AgentAvailability[]> | undefined;
+  async function availability(opts: { fresh?: boolean; quick?: boolean } = {}): Promise<AgentAvailability[]> {
+    if (opts.quick && !avail && !opts.fresh) {
+      // Not probed yet (the office just started): what's on PATH now, the versions when the probe is done.
+      probe().catch(() => {});
+      return (quickList ??= (async () => (await probeAgents({ env: ctx.agentEnv(), home: ctx.userHome, pty: await pty(), version: async () => undefined })).agents)());
+    }
     if (opts.fresh || !avail) return (await probe()).agents;
     if (ctx.now() - avail.at > AVAILABILITY_TTL_MS) void probe().catch(() => {});
     return avail.agents;

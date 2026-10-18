@@ -955,7 +955,10 @@ class Watcher {
       const sessions = rows.map(asSession).filter((s): s is OcSession => !!s);
       for (const s of sessions) this.ocCursor = Math.max(this.ocCursor ?? since, s.time_updated);
       this.ocCursor ??= since;
-      const changed = sessions.filter((s) => (this.oc.get(s.id)?.updated ?? -1) < s.time_updated || !this.oc.has(s.id));
+      // The database changed (sig above), and opencode stamps in ms: a second write in the same ms as
+      // the last one seen leaves time_updated equal, so equal counts as changed. Rows already folded in
+      // say nothing when read again.
+      const changed = sessions.filter((s) => (this.oc.get(s.id)?.updated ?? -1) <= s.time_updated || !this.oc.has(s.id));
       if (!changed.length) return;
       const known = changed.filter((s) => this.oc.has(s.id));
       const fresh = changed.filter((s) => !this.oc.has(s.id)).sort((a, b) => Number(!!a.parent_id) - Number(!!b.parent_id));

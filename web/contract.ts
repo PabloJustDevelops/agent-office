@@ -19,6 +19,8 @@ export interface OfficeScene {
   setCrt(on: boolean): void;
   /** Called when the user clicks a worker (null when clicking empty floor). */
   onSelect(cb: (workerId: string | null) => void): void;
+  /** Called when the pointer moves onto a worker (or off one: null), so the chrome can get ready for a click. */
+  onHover?(cb: (workerId: string | null) => void): void;
   /** Highlight a worker (from the feed or inspector), null clears. */
   select(workerId: string | null): void;
   /** Pan/zoom the camera so this worker is centred. */

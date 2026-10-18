@@ -62,7 +62,7 @@ export const FILES = {
   sandboxes: "sandboxes.json",
   /** {v:1, version, node, installedAt, startAtLogin}. */
   service: "service.json",
-  /** {v:1, recentFolders: string[]}. */
+  /** {v:1, recentFolders: string[], railway?: {projectId, environmentId}} (the last Railway project a sandbox went in). */
   state: "control-state.json",
   /** The service's stable copy of the package: app/<version>/, app/current -> it. */
   app: "app",
@@ -368,8 +368,12 @@ export interface PlacesContext extends ControlContext {
 }
 
 export interface Places {
-  /** ControlInfo.providers. Cached; answers within ~3s even when a platform hangs (stale data, or ready:false). */
-  status(o?: { fresh?: boolean }): Promise<ProviderStatus[]>;
+  /**
+   * ControlInfo.providers. Cached: a row past its TTL is answered at once while it is refreshed
+   * (the new one arrives through onChange). A platform not seen yet gets `deadlineMs` (default 3 s),
+   * then its login state; its real row follows through onChange too.
+   */
+  status(o?: { fresh?: boolean; deadlineMs?: number }): Promise<ProviderStatus[]>;
   /** Resolve a place (creating the sandbox when target is "new"), ready to install and attach. */
   open(place: Place, o: OpenOptions): Promise<RemotePlace>;
   /** Only sandboxes the office created, unless force. Throws ControlError(409) for someone else's. */
@@ -471,7 +475,8 @@ export interface RemotePlace {
 
 export interface SessionManager {
   /** ControlInfo.agents. Cached (versions are probed in the background); fresh re-probes. */
-  availability(o?: { fresh?: boolean }): Promise<AgentAvailability[]>;
+  /** `quick`: before the first probe is done, which agents are on PATH without their versions (the probe goes on). */
+  availability(o?: { fresh?: boolean; quick?: boolean }): Promise<AgentAvailability[]>;
   /** Validates, registers and starts. Resolves at once with status creating / installing / starting; progress arrives through onChange. */
   hire(req: HireRequest): Promise<ControlSession>;
   list(): ControlSession[];
@@ -502,6 +507,12 @@ export interface SessionManager {
 export interface TermSink {
   data(chunk: Uint8Array): void;
   exit(code: number | null): void;
+  /**
+   * A viewer that takes its replay in two steps: the visible screen at once ("screen"), then the
+   * whole replay with the scrollback ("full"), each drawn from a reset terminal; live bytes come
+   * through data() in between and after. Without it, the replay is one data() chunk.
+   */
+  replay?(chunk: Uint8Array, part: "screen" | "full"): void;
 }
 
 export interface ChatSink {
