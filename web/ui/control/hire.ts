@@ -345,7 +345,7 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
           ? `${agentName(agent)} has no headless protocol: terminal only`
           : where === "local"
             ? (avail(agent).note ?? "Terminal only on this Mac")
-            : `${agentName(agent)} runs on this machine only for now`;
+            : `${agentName(agent)} runs on this Mac only for now`;
       b.title = why;
       setText(b.querySelector("small")!, why || (m === "terminal" ? "The agent's own TUI, live" : "Messages, tool calls, approvals"));
     }

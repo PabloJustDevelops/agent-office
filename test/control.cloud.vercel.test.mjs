@@ -448,3 +448,15 @@ test("chat: a stream that ends whole just before the agent's last words (a clean
   assert.match(io.out(), /got:last\nbye!\n/);
   assert.equal(io.out().split('"argv"').length - 1, 1, "nothing twice");
 });
+
+test("a name used again right after its sandbox was deleted is listed: it's a new sandbox, not the deleted one", async () => {
+  const v = await fakeVercel({ project: true });
+  const { places: p } = places(v);
+  const first = await p.open({ kind: "vercel", target: "new" }, { agent: "claude", sandbox: { name: "again" }, progress: () => {} });
+  assert.equal(first.host.id, "vercel:agentoffice-again");
+  await p.deleteSandbox("vercel", "agentoffice-again");
+  assert.deepEqual((await p.status({ fresh: true })).find((x) => x.kind === "vercel").sandboxes.map((s) => s.id), []);
+  await p.open({ kind: "vercel", target: "new" }, { agent: "claude", sandbox: { name: "again" }, progress: () => {} });
+  const row = (await p.status({ fresh: true })).find((x) => x.kind === "vercel");
+  assert.deepEqual(row.sandboxes.map((s) => [s.id, s.ours]), [["agentoffice-again", true]], "shown in Settings, so it can be deleted there");
+});
