@@ -10,8 +10,10 @@
  * rc files run as in a terminal, then node prints JSON between two RS
  * characters, so a chatty rc file can't confuse it. The command is valid in
  * sh, bash, zsh and fish (no quotes, `$`, `!` or backslashes inside the JS).
- * stdin is /dev/null, it has its own process group, and it is killed after
- * 5 s. Key import asks for allowlisted names only, never the whole thing.
+ * stdin is /dev/null, it has its own process group, and the answer is taken
+ * at the closing RS. The group is SIGKILLed once there's an answer or after
+ * 5 s, so nothing the rc files started outlives the probe. Key import asks
+ * for allowlisted names only, never the whole thing.
  */
 import { spawn } from "node:child_process";
 import { userInfo } from "node:os";
@@ -67,26 +69,33 @@ async function runLogin(js: string, extra: Record<string, string>, o: ShellOptio
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
-    const finish = (v: Record<string, string> | null, kill = false) => {
+    const finish = (v: Record<string, string> | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (kill) {
-        try {
-          // The whole group: an rc file that hangs may have started children of its own.
-          if (child.pid) process.kill(-child.pid, "SIGKILL");
-        } catch {
-          // Already gone.
-        }
+      try {
+        // The whole group, every time: the shell is done with it, and a job its rc files started
+        // there (one that hangs, or one that would have ended with the terminal) must not outlive it.
+        if (child.pid) process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // Already gone.
       }
+      // A daemon the rc files started in a session of its own may still hold the other end.
+      child.stdout!.destroy();
       done(v);
     };
-    const timer = setTimeout(() => finish(null, true), o.timeoutMs ?? LOGIN_TIMEOUT_MS);
+    const timer = setTimeout(() => finish(null), o.timeoutMs ?? LOGIN_TIMEOUT_MS);
     child.on("error", () => finish(null));
     child.stdout!.on("data", (c: Buffer) => {
       size += c.length;
-      if (size > 4 << 20) return finish(null, true);
+      if (size > 4 << 20) return finish(null);
       chunks.push(c);
+      // Done at the closing marker, not when stdout closes: anything the rc files left running
+      // holds stdout open, which would otherwise throw a complete answer away at the timeout.
+      if (c.includes(0x1e)) {
+        const v = parseMarked(Buffer.concat(chunks).toString("utf8"));
+        if (v) finish(v);
+      }
     });
     child.on("close", () => finish(parseMarked(Buffer.concat(chunks).toString("utf8"))));
   });
