@@ -182,3 +182,27 @@ test("opencode on a remote: the same rows through sqlite3 (or node) over sh, hos
     rmSync(s.dir, { recursive: true, force: true });
   }
 });
+
+test("opencode: a second write in the same millisecond still reaches the office", async (t) => {
+  const s = await scenario(t, (dir, onEvent) => I.createIngest({ agents: ["opencode"], onEvent, watch: false, env: { AGENT_OFFICE_OPENCODE_DIR: join(dir, "opencode"), AGENT_OFFICE_HOME: join(dir, "ao") } }));
+  if (!s) return;
+  const raw = new sqlite.DatabaseSync(s.db.path);
+  try {
+    s.db.message("msg_003", "ses_main", asst({}));
+    s.db.part("prt_005", "msg_003", "ses_main", { type: "tool", tool: "read", callID: "c2", state: { status: "running", input: { filePath: "/tmp/demo-app/src/app.ts" } } });
+    assert.deepEqual(kinds(await s.tick()), ["tool_start"]);
+    // The tool completes with the very stamps the office already saw: opencode writes ms, and two
+    // writes can share one.
+    const { t: stamp } = raw.prepare("select time_updated as t from session where id = 'ses_main'").get();
+    const done = { type: "tool", tool: "read", callID: "c2", state: { status: "completed", input: { filePath: "/tmp/demo-app/src/app.ts" }, output: "file body" } };
+    raw.prepare("update part set data = ?, time_updated = ? where id = 'prt_005'").run(JSON.stringify(done), stamp);
+    raw.prepare("update session set time_updated = ? where id = 'ses_main'").run(stamp);
+    assert.deepEqual(kinds(await s.tick()), ["tool_end"]);
+    assert.deepEqual(await s.tick(), [], "read again, the same rows say nothing");
+  } finally {
+    raw.close();
+    s.ingest.stop();
+    s.db.close();
+    rmSync(s.dir, { recursive: true, force: true });
+  }
+});
