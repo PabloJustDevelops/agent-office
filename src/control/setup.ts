@@ -505,9 +505,17 @@ export function instructionsOf(agent: AgentKind, s: Pick<SetupSource, "home" | "
 
 /* ------------------------------------------------------------ project */
 
+/**
+ * git in a folder the user picked, which may be someone else's checkout: a repo's own config can
+ * name commands git runs (core.fsmonitor, hooks), so those are switched off, the system config is
+ * skipped, and git gets only PATH and HOME (HOME for the user's global excludes file).
+ */
 function git(args: string[], cwd: string, maxBuffer = 64 << 20): Promise<string | null> {
+  const env: Record<string, string> = { GIT_OPTIONAL_LOCKS: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" };
+  for (const k of ["PATH", "HOME"]) if (process.env[k]) env[k] = process.env[k]!;
+  const hardened = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.untrackedCache=false", ...args];
   return new Promise((done) => {
-    execFile("git", args, { cwd, timeout: 15_000, maxBuffer, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" }, encoding: "buffer" }, (err, out) => done(err ? null : (out as Buffer).toString("utf8")));
+    execFile("git", hardened, { cwd, timeout: 15_000, maxBuffer, env, encoding: "buffer" }, (err, out) => done(err ? null : (out as Buffer).toString("utf8")));
   });
 }
 
@@ -540,9 +548,86 @@ function duCapped(dir: string, cap: number, skip?: (rel: string) => boolean): nu
   return total;
 }
 
-/** Remote URLs without user:password@ (a token in a clone URL stays here). */
-export function scrubGitConfig(text: string): string {
-  return text.replace(/^(\s*(?:url|pushurl)\s*=\s*[a-z][a-z0-9+.-]*:\/\/)[^@\s/]+@/gim, "$1");
+/**
+ * What of .git stays here: hooks (they run), the reflogs and FETCH_HEAD (a clone's reflog reads
+ * "clone: from <url>", token included), other worktrees' admin folders (paths on this Mac), and
+ * anything that looks like stored credentials.
+ */
+const GIT_LEFT_HERE = /^\.git\/(?:modules\/.+\/)?(?:hooks|logs)(?:\/|$)|^\.git\/worktrees(?:\/|$)|^\.git\/(?:modules\/.+\/)?FETCH_HEAD$|^\.git\/[^/]*credential[^/]*$/i;
+
+/**
+ * Which keys of a repo's .git/config go to the sandbox, by section; "*" is every key. Everything
+ * else stays here: http.extraheader and credential helpers (tokens), url.<base>.insteadOf (often
+ * a token in the base), include/includeIf (files on this Mac), core.sshCommand, fsmonitor, hooks.
+ */
+const GIT_CONFIG_KEEP: Record<string, readonly string[]> = {
+  core: ["repositoryformatversion", "filemode", "bare", "logallrefupdates", "ignorecase", "precomposeunicode", "symlinks"],
+  extensions: ["*"],
+  remote: ["url", "pushurl", "fetch", "push", "tagopt", "prune"],
+  branch: ["remote", "merge", "rebase", "pushremote"],
+  user: ["name", "email"],
+};
+
+/**
+ * A remote URL without its credentials: all of http(s)'s userinfo (a token often rides as the
+ * user name), and only the password part elsewhere, since ssh://git@host needs its user.
+ */
+function scrubRemoteUrl(value: string): string {
+  return value.replace(/^("?)([a-z][a-z0-9+.-]*):\/\/([^@\s/]+)@/i, (m, q: string, scheme: string, info: string) => {
+    if (/^(https?|ftps?)$/i.test(scheme)) return `${q}${scheme}://`;
+    const user = info.split(":")[0]!;
+    return info.includes(":") ? `${q}${scheme}://${user}@` : m;
+  });
+}
+
+/**
+ * A fresh .git/config with only the keys above, the remotes' URLs without user:password@ (a
+ * token in a clone URL stays here). Values are copied as written, so quoting survives; a
+ * continued value (trailing backslash) is dropped whole.
+ */
+export function safeGitConfig(text: string): string {
+  const out: string[] = [];
+  let section: string | null = null;
+  let header = "";
+  let headerOut = false;
+  let continued = false;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (continued) {
+      continued = line.endsWith("\\");
+      continue;
+    }
+    if (!line || line[0] === "#" || line[0] === ";") continue;
+    const h = /^\[\s*([A-Za-z0-9.-]+)(?:\s+"((?:[^"\\]|\\.)*)")?\s*\]/.exec(line);
+    if (h) {
+      // [name "sub"], or the old [name.sub] form
+      const [name, sub] = h[2] !== undefined ? [h[1]!, h[2]] : [h[1]!.split(".")[0]!, h[1]!.includes(".") ? h[1]!.slice(h[1]!.indexOf(".") + 1) : undefined];
+      section = Object.hasOwn(GIT_CONFIG_KEEP, name.toLowerCase()) ? name.toLowerCase() : null;
+      // remote and branch need their subsection; user, core and extensions must not have one
+      if (section && (section === "remote" || section === "branch") !== (sub !== undefined)) section = null;
+      header = sub === undefined ? `[${section}]` : `[${section} "${sub.replace(/["\\]/g, "\\$&")}"]`;
+      headerOut = false;
+      continue;
+    }
+    const kv = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/.exec(line);
+    if (!kv) continue;
+    if (line.endsWith("\\")) {
+      continued = true;
+      continue;
+    }
+    if (!section) continue;
+    const key = kv[1]!.toLowerCase();
+    const keep = GIT_CONFIG_KEEP[section]!;
+    if (!keep.includes("*") && !keep.includes(key)) continue;
+    let value = kv[2] ?? "true";
+    if (section === "remote" && (key === "url" || key === "pushurl")) value = scrubRemoteUrl(value);
+    if (!headerOut) {
+      out.push(header);
+      headerOut = true;
+    }
+    out.push(`\t${key} = ${value}`);
+  }
+  return out.length ? `${out.join("\n")}\n` : "";
 }
 
 interface ProjectList {
@@ -722,8 +807,8 @@ async function projectArchive(folder: string, o: { git: boolean; env: boolean; h
     const w = walkDir(p.gitDir, ".git", { root: p.gitDir, home: o.home, read: true, budget: { bytes: 0, files: 0 }, label: ".git", raw: true });
     entries.push({ name: ".git", type: "dir", mode: 0o700 });
     for (const e of w.entries) {
-      if (e.name === ".git/hooks" || e.name.startsWith(".git/hooks/")) continue;
-      if (e.name === ".git/config" && e.data) e.data = Buffer.from(scrubGitConfig(e.data.toString("utf8")), "utf8");
+      if (GIT_LEFT_HERE.test(e.name)) continue;
+      if (/^\.git\/(modules\/.+\/)?config$/.test(e.name) && e.data) e.data = Buffer.from(safeGitConfig(e.data.toString("utf8")), "utf8");
       entries.push(e.type === "file" ? { ...e, mode: 0o600 } : e);
       if (e.type === "file") bytes += e.data?.length ?? 0;
     }

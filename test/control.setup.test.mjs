@@ -6,7 +6,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { load, tmp } from "./remote.fakes.mjs";
 
@@ -22,6 +22,7 @@ const HEADER_SECRET = "Bearer header-secret-0002";
 const API_KEY = "sk-ant-api03-dummy-setup-key-0000000000-abcdefghijklmnopqrst";
 const ENV_SECRET = "DATABASE_URL=postgres://user:env-secret-0003@db/app";
 const AUTH_SECRET = "codex-refresh-token-secret-0004";
+const GIT_SECRET = "git-header-secret-0006";
 
 function w(path, text, mode) {
   mkdirSync(join(path, ".."), { recursive: true });
@@ -116,7 +117,25 @@ function fakeHome() {
   w(join(project, "node_modules", "x", "index.js"), "ignored\n");
   w(join(project, "dist", "out.js"), "ignored\n");
   w(join(project, ".env"), `${ENV_SECRET}\n`);
+  // What a real checkout carries besides the URL: a clone's reflog line and FETCH_HEAD hold the
+  // URL as typed, CI checkouts leave an auth header, and a hostile repo can name an fsmonitor command.
+  const dotGit = join(project, ".git");
+  const config = readFileSync(join(dotGit, "config"), "utf8");
+  w(join(dotGit, "config"), `${config}[http "https://github.com/"]\n\textraheader = AUTHORIZATION: basic ${GIT_SECRET}\n[url "https://x:${GIT_SECRET}@github.com/"]\n\tinsteadOf = https://github.com/\n[credential]\n\thelper = store\n[core]\n\tfsmonitor = touch ${join(home, "fsmonitor-ran")}\n`);
+  w(join(dotGit, "logs", "HEAD"), `0000000000000000000000000000000000000000 1111111111111111111111111111111111111111 t <t@example.com> 1 +0000\tclone: from https://someone:ghp_secretinurl0005@github.com/me/app.git\n`);
+  w(join(dotGit, "FETCH_HEAD"), `1111111111111111111111111111111111111111\t\tbranch 'main' of https://someone:ghp_secretinurl0005@github.com/me/app\n`);
   return { home, project };
+}
+
+/** Every file under a folder, read as text. */
+function readTree(dir) {
+  const out = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...readTree(p));
+    else if (e.isFile()) out.push(readFileSync(p, "latin1"));
+  }
+  return out;
 }
 
 /** A "sandbox": sh with HOME=remote, recording every script, env name and argv it was handed. */
@@ -291,6 +310,10 @@ test("bring my setup into an office sandbox: files 0600, MCP servers and the key
   assert.equal(git(cwd, "status", "--porcelain").trim(), "?? notes.txt");
   assert.equal(git(cwd, "remote", "get-url", "origin").trim(), "https://github.com/me/app.git");
   assert.ok(!existsSync(join(cwd, ".git", "hooks")));
+  assert.ok(!existsSync(join(cwd, ".git", "logs")) && !existsSync(join(cwd, ".git", "FETCH_HEAD")));
+  const shipped = readTree(join(cwd, ".git")).join("\n");
+  for (const secret of ["ghp_secretinurl0005", GIT_SECRET, "extraheader", "insteadOf", "fsmonitor", "helper"]) assert.ok(!shipped.includes(secret), `.git carries ${secret}`);
+  assert.ok(!existsSync(join(home, "fsmonitor-ran")), "the repo's fsmonitor command ran on this Mac");
 
   // values only ever in the secret command's environment
   const scripts = box.calls.map((c) => c.script ?? "").join("\n");
@@ -492,4 +515,52 @@ test("review fixes: an upload that fails is said and the configs still land; an 
   await M.bringSetup(again, { ...b, home: undefined, project: undefined, claude: { ...b.claude, settings: undefined } }, {}, () => {});
   assert.equal(again.calls.filter((c) => c.kind === "secret").length, 0, "the same config isn't written twice");
   assert.equal(statSync(join(remote, ".claude.json")).mtimeMs, before);
+});
+
+test("a project's .git/config goes over rebuilt: remotes, branches and format only, no tokens", () => {
+  const out = M.safeGitConfig([
+    "[core]",
+    "\trepositoryformatversion = 1",
+    "\tbare = false",
+    "\tsshCommand = ssh -i ~/.ssh/work",
+    "\tfsmonitor = /tmp/run-me",
+    "[extensions]",
+    "\tobjectformat = sha256",
+    '[remote "origin"]',
+    '\turl = "https://me:tok-0007@github.com/me/app.git"',
+    "\tpushurl = ssh://git@github.com/me/app.git",
+    "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+    '[branch "main"]',
+    "\tremote = origin",
+    "\tmerge = refs/heads/main",
+    "[http]",
+    "\textraheader = AUTHORIZATION: basic tok-0008",
+    '[url "https://x:tok-0009@github.com/"]',
+    "\tinsteadOf = https://github.com/",
+    "[include]",
+    "\tpath = ~/.gitconfig-work",
+    "[user]",
+    "\tname = Me",
+    "\tsigningkey = ~/.ssh/id",
+    "[alias]",
+    "\tlong = !echo \\",
+    "\t  continued",
+  ].join("\n"));
+  assert.equal(out, [
+    "[core]",
+    "\trepositoryformatversion = 1",
+    "\tbare = false",
+    "[extensions]",
+    "\tobjectformat = sha256",
+    '[remote "origin"]',
+    '\turl = "https://github.com/me/app.git"',
+    "\tpushurl = ssh://git@github.com/me/app.git",
+    "\tfetch = +refs/heads/*:refs/remotes/origin/*",
+    '[branch "main"]',
+    "\tremote = origin",
+    "\tmerge = refs/heads/main",
+    "[user]",
+    "\tname = Me",
+    "",
+  ].join("\n"));
 });
