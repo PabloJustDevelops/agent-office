@@ -42,6 +42,15 @@ export function isEphemeral(script: string): boolean {
   return /\/_npx\/|\/\.pnpm-store\/|\/pnpm\/dlx\/|\/dlx-\d+\/|\/bunx-|\/\.bun\/install\/cache\/|\/yarn\/berry\/cache\//.test(p);
 }
 
+/**
+ * What to type to run this CLI again, for the commands its hints name: `agentoffice` after a
+ * global install, `npx theagentoffice` from a package-runner cache, where `agentoffice` was
+ * never put on PATH.
+ */
+export function selfCommand(script = fileURLToPath(import.meta.url)): string {
+  return isEphemeral(script) ? `npx ${PACKAGE_NAME}` : "agentoffice";
+}
+
 export function chooseLaunch(opts: { remote: boolean; version?: string; script?: string; node?: string; platform?: string }): Launch {
   const platform = opts.platform ?? process.platform;
   const pkg = npxPackage(opts.version ?? "");

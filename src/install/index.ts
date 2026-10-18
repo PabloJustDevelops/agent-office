@@ -16,7 +16,7 @@ import { AGENT_KINDS, parseAgentKind } from "../mcp/clients.ts";
 import { runMcpStdio } from "../mcp/server.ts";
 import { fetchSnapshot, findOffice } from "../mcp/office.ts";
 import { outboxDir } from "../mcp/outbox.ts";
-import { chooseLaunch, npmHasVersion, npxPackage, type Launch } from "./command.ts";
+import { chooseLaunch, npmHasVersion, npxPackage, selfCommand, type Launch } from "./command.ts";
 import { diagnose, install, printDoctor, uninstall, type Out } from "./installer.ts";
 import { REMOTE_KINDS, detectRemotes, resolveRemotes, type RemoteKind, type RemoteSelector } from "./remotes.ts";
 import { localSys, remoteSys, type Sys } from "./sys.ts";
@@ -321,7 +321,7 @@ export async function runSubcommand(cmd: string, argv: string[], version: string
     f = parse(cmd, argv);
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
-    process.stderr.write(`agentoffice ${cmd}: ${err.message}\nRun agentoffice ${cmd} --help for usage.\n`);
+    process.stderr.write(`agentoffice ${cmd}: ${err.message}\nRun ${selfCommand()} ${cmd} --help for usage.\n`);
     return 2;
   }
   const out: Out = (line = "") => void process.stdout.write(`${line}\n`);
