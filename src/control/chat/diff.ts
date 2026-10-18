@@ -14,8 +14,8 @@ import { redactSecrets, safe } from "../../ingest/redact.ts";
 /** ChatDiff.lines holds at most this many lines ("~80" in the contract). */
 export const DIFF_LINES = 80;
 const LINE_CHARS = 400;
-/** Past this many line pairs a replacement is shown as all "-" then all "+" instead of diffed. */
-const LCS_MAX = 40_000;
+/** Past this many line pairs (8 MB of table) a replacement is shown as all "-" then all "+" instead of diffed. */
+const LCS_MAX = 2_000_000;
 /** Unchanged lines kept before the first and after the last change. */
 const EDGE_CONTEXT = 3;
 
@@ -86,6 +86,24 @@ export function replaceChange(path: string, edits: { old: unknown; new: unknown 
     lines.push(...part);
   }
   return { path, lines, ...count(lines) };
+}
+
+/**
+ * Only a change's +/- lines, runs apart split by "@@": for an old and new
+ * text that may be whole files (an ACP diff), whose unchanged lines the agent
+ * didn't write.
+ */
+export function changedOnly(c: FileChange): FileChange {
+  const lines: string[] = [];
+  let gap = false;
+  for (const l of c.lines) {
+    if (l[0] === "+" || l[0] === "-") {
+      if (gap && lines.length) lines.push("@@");
+      gap = false;
+      lines.push(l);
+    } else gap = true;
+  }
+  return { ...c, lines };
 }
 
 /** A whole new file the agent wrote. */

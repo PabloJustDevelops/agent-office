@@ -122,8 +122,8 @@ export interface AgentFacts {
   nodeMin?: number;
   /** Key names this agent reads, most preferred first (also the import allowlist). */
   keyNames: readonly string[];
-  /** It has a headless protocol the office speaks: chat mode. */
-  chat?: "claude" | "codex" | "opencode";
+  /** It has a headless protocol the office speaks: chat mode. "acp": the Agent Client Protocol (chat/acp.ts). */
+  chat?: "claude" | "codex" | "opencode" | "acp";
 }
 
 export const AGENT_FACTS: Record<AgentKind, AgentFacts> = {

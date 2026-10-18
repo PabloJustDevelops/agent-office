@@ -213,6 +213,8 @@ export class CodexChat extends ChatBase {
         this.bind(t, r.turn.id);
       }
     } catch (err) {
+      // It exited: its exit already closed the turn.
+      if (this.exit.fired) return;
       this.endTurn(t.id, { kind: "error", text: shortReason((err as Error).message || "Codex refused the turn."), durationMs: this.now() - t.t0 });
       this.turnDone();
     }

@@ -295,6 +295,11 @@ export function chatLaunch(o: ChatLaunchOptions): Launch {
       }
       if (OPENCODE_PERMISSION[o.permission]) env[OPENCODE_PERMISSION_ENV] = JSON.stringify(OPENCODE_PERMISSION[o.permission]);
       break;
+    case "commandcode":
+      // `command-code acp`: an ACP agent on stdio (its --help: "Run as an ACP agent over stdio"). The
+      // subcommand takes no other flags; the permission is its ACP session mode (chat/acp.ts ACP_PROFILES).
+      argv.push("acp");
+      break;
     default:
       throw new Error(`${o.agent} has no chat mode`);
   }
