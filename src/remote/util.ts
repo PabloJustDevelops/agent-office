@@ -6,10 +6,10 @@
  * office can say "login expired" rather than dump a stack, and their messages
  * are scrubbed so a token echoed back by an API never reaches the terminal.
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, dirname, join } from "node:path";
+import { delimiter, dirname, join, posix, win32 } from "node:path";
 import type { Host, HostKind, RemoteTarget } from "../shared/events.ts";
 
 export type CloudKind = Exclude<HostKind, "local" | "ssh">;
@@ -87,34 +87,63 @@ export interface SpawnLine {
 }
 
 /**
- * How to start `cmd args` without a shell. On Windows a .cmd or .bat only runs inside cmd.exe, and
- * Node refuses to start one directly. npm's shims (the railway CLI's, say) just run a script with
+ * One of Windows' own programs (cmd.exe, taskkill.exe) by its full path. By bare name Windows looks
+ * in the current folder before PATH, so a taskkill.exe in a cloned repo would run instead.
+ */
+export function windowsSystemBinary(name: string, env: NodeJS.ProcessEnv = process.env): string {
+  const root = [env.SystemRoot, env.windir].find((r) => !!r && win32.isAbsolute(r)) ?? "C:\\Windows";
+  return win32.join(root, "System32", name);
+}
+
+/**
+ * How to start `cmd args` without a shell. On Windows a bare name is found on PATH here (Windows
+ * itself would try the current folder first), and a .cmd or .bat only runs inside cmd.exe, which
+ * Node refuses to start one without. npm's shims (the railway CLI's, say) just run a script with
  * node, so that script runs with node here, arguments intact; any other .cmd goes through cmd.exe
  * with every argument quoted for it, or not at all.
  */
-export function spawnLine(cmd: string, args: string[], platform: string = process.platform, comspec = process.env.ComSpec): SpawnLine {
-  if (platform !== "win32" || !/\.(cmd|bat)$/i.test(cmd)) return { file: cmd, args, cmd: false };
-  const script = npmShimScript(cmd);
+export function spawnLine(cmd: string, args: string[], platform: string = process.platform, env: NodeJS.ProcessEnv = process.env): SpawnLine {
+  if (platform !== "win32") return { file: cmd, args, cmd: false };
+  const exe = /[\\/]/.test(cmd) ? cmd : which(cmd, env, platform);
+  if (!exe) throw new RemoteError("missing", `${cmd}: not installed`);
+  if (!/\.(cmd|bat)$/i.test(exe)) return { file: exe, args, cmd: false };
+  const script = npmShimScript(exe);
   if (script) return { file: process.execPath, args: [script, ...args], cmd: false };
   const quoted = args.map(cmdArg);
-  const odd = /["%!\r\n]/.test(cmd) ? cmd : args.find((_, i) => quoted[i] === null);
+  const odd = /["%!\r\n]/.test(exe) ? exe : args.find((_, i) => quoted[i] === null);
   if (odd !== undefined) throw new RemoteError("failed", `${cmd}: can't pass ${JSON.stringify(odd.slice(0, 40))} to a .cmd on Windows`);
-  return { file: comspec || "cmd.exe", args: ["/d", "/s", "/c", `""${cmd}"${quoted.map((q) => ` ${q}`).join("")}"`], cmd: true };
+  return { file: windowsSystemBinary("cmd.exe", env), args: ["/d", "/s", "/c", `""${exe}"${quoted.map((q) => ` ${q}`).join("")}"`], cmd: true };
+}
+
+/**
+ * End a child. On Windows a kill ends that one process, and what it started (cmd.exe's program,
+ * the native binary behind an npm CLI) lives on with its stdout open, so the tree goes first,
+ * while its root is still there to find it by.
+ */
+export function endTree(child: ChildProcess): void {
+  if (process.platform !== "win32" || !child.pid) {
+    child.kill("SIGTERM");
+    return;
+  }
+  const tree = spawn(windowsSystemBinary("taskkill.exe"), ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+  tree.on("error", () => child.kill("SIGTERM"));
+  tree.on("exit", () => child.kill("SIGTERM"));
 }
 
 /** Run a program (no shell). Rejects only when it cannot start; a non-zero exit resolves. */
 export function run(cmd: string, args: string[], o: RunOptions): Promise<RunResult> {
   const max = o.maxBytes ?? 64 << 20;
+  const env = o.env ?? process.env;
   return new Promise((resolve, reject) => {
     let line: SpawnLine;
     let child;
     try {
-      line = spawnLine(cmd, args);
+      line = spawnLine(cmd, args, process.platform, env);
     } catch (err) {
       return reject(err);
     }
     try {
-      child = spawn(line.file, line.args, { stdio: ["pipe", "pipe", "pipe"], env: o.env ?? process.env, windowsHide: true, windowsVerbatimArguments: line.cmd });
+      child = spawn(line.file, line.args, { stdio: ["pipe", "pipe", "pipe"], env, windowsHide: true, windowsVerbatimArguments: line.cmd });
     } catch (err) {
       return reject(new RemoteError("missing", `${cmd}: ${(err as Error).message}`));
     }
@@ -126,16 +155,7 @@ export function run(cmd: string, args: string[], o: RunOptions): Promise<RunResu
     let overflow = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const kill = () => {
-      if (process.platform === "win32" && child.pid) {
-        // A kill on Windows ends that one process; what it started (cmd.exe's program, the native
-        // binary behind an npm CLI) would live on and hold stdout open. End the tree while its
-        // root is still there to find it by, then the child.
-        const tree = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
-        tree.on("error", () => child.kill("SIGTERM"));
-        tree.on("exit", () => child.kill("SIGTERM"));
-      } else {
-        child.kill("SIGTERM");
-      }
+      endTree(child);
       killTimer ??= setTimeout(() => child.kill("SIGKILL"), 2_000);
       killTimer.unref?.();
     };
@@ -200,13 +220,16 @@ export function lastLine(s: string): string {
 }
 
 /** Is `bin` an executable on PATH (no spawn)? */
-export function which(bin: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
-  if (bin.includes("/")) return canRun(bin) ? bin : undefined;
-  const exts = process.platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD").split(";") : [""];
-  for (const dir of (env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
+export function which(bin: string, env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string | undefined {
+  const win = platform === "win32";
+  if (bin.includes("/") || (win && bin.includes("\\"))) return canRun(bin) ? bin : undefined;
+  // On Windows only real extensions: npm puts an extensionless sh script next to every .cmd.
+  const exts = win ? (env.PATHEXT ?? ".EXE;.CMD").split(";").filter(Boolean) : [""];
+  for (const dir of (env.PATH ?? "").split(win ? ";" : delimiter)) {
+    // On Windows a relative entry would be looked up in the current folder.
+    if (!dir || (win && !win32.isAbsolute(dir))) continue;
     for (const ext of exts) {
-      const p = join(dir, bin + ext.toLowerCase());
+      const p = (win ? win32 : posix).join(dir, bin + ext.toLowerCase());
       if (canRun(p)) return p;
     }
   }

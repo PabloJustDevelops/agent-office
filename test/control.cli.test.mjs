@@ -203,6 +203,10 @@ nodeTest("where the control plane can't run (Windows), doctor and open say the o
   lines.length = 0;
   assert.equal(await C.runOpen(["--print"], "0.0.0", out, "win32"), 1);
   assert.match(lines.join("\n"), /no controls to unlock here/);
+  // The browser opener: cmd.exe by full path on Windows, so a cmd.exe in the folder the office starts from never runs.
+  assert.deepEqual(C.browserCommand("http://127.0.0.1:4747", "win32", { SystemRoot: "C:\\WINDOWS" }), ["C:\\WINDOWS\\System32\\cmd.exe", ["/c", "start", '""', "http://127.0.0.1:4747"]]);
+  assert.deepEqual(C.browserCommand("http://127.0.0.1:4747", "darwin"), ["open", ["http://127.0.0.1:4747"]]);
+  assert.deepEqual(C.browserCommand("http://127.0.0.1:4747", "linux"), ["xdg-open", ["http://127.0.0.1:4747"]]);
   if (process.platform !== "win32") return;
   // And on Windows itself, through the CLI.
   const { env } = homes();

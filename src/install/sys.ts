@@ -9,11 +9,12 @@
  * Writes are atomic (temp file + rename), keep the existing file's mode, and
  * follow symlinks so a dotfiles-managed ~/.claude.json stays a symlink.
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { constants, promises as fsp } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { RemoteTarget } from "../shared/events.ts";
 import { userHome } from "../mcp/outbox.ts";
+import { endTree, spawnLine, type SpawnLine } from "../remote/util.ts";
 
 export interface RunResult {
   code: number;
@@ -84,6 +85,19 @@ export function localSys(opts: LocalSysOptions = {}): Sys {
       // Best effort.
     }
   };
+  const which = async (bin: string): Promise<string | null> => {
+    if (isAbsolute(bin)) return (await executable(bin)) ? bin : null;
+    const exts = platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";").filter(Boolean).map((e) => e.toLowerCase()) : [""];
+    for (const dir of (env.PATH ?? "").split(delimiter)) {
+      // Relative entries (node_modules/.bin, .) would run whatever the current folder holds.
+      if (!dir || !isAbsolute(dir)) continue;
+      for (const ext of exts) {
+        const p = join(dir, bin + ext);
+        if (await executable(p)) return p;
+      }
+    }
+    return null;
+  };
 
   return {
     where: "this machine",
@@ -148,37 +162,32 @@ export function localSys(opts: LocalSysOptions = {}): Sys {
       await copy(file, name);
       return name;
     },
-    async which(bin) {
-      if (isAbsolute(bin)) return (await executable(bin)) ? bin : null;
-      const exts = platform === "win32" ? (env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";").map((e) => e.toLowerCase()) : [""];
-      for (const dir of (env.PATH ?? "").split(delimiter)) {
-        // Relative entries (node_modules/.bin, .) would run whatever the current folder holds.
-        if (!dir || !isAbsolute(dir)) continue;
-        for (const ext of exts) {
-          const p = join(dir, bin + ext);
-          if (await executable(p)) return p;
+    which,
+    async run(argv, timeoutMs = 60_000) {
+      // Windows agent CLIs are .cmd shims. The CLI is found on PATH here, never in the current folder
+      // (where Windows would look first), then started the way src/remote/util.ts starts a .cmd: an
+      // npm shim's script with node, anything else through cmd.exe with its arguments quoted.
+      let line: SpawnLine = { file: argv[0]!, args: argv.slice(1), cmd: false };
+      if (platform === "win32") {
+        const exe = await which(argv[0]!);
+        if (!exe) return { code: 127, out: `${argv[0]}: not found on PATH` };
+        try {
+          line = spawnLine(exe, argv.slice(1), platform, env);
+        } catch (err) {
+          return { code: 127, out: (err as Error).message };
         }
       }
-      return null;
-    },
-    run(argv, timeoutMs = 60_000) {
       return new Promise((done) => {
         let out = "";
-        let child;
+        let child: ChildProcess;
         try {
-          // Windows agent CLIs are .cmd shims, which need a shell; quote every argument for it. One
-          // command line, no args array: Node 24 warns (DEP0190) about an array handed to a shell.
-          const win = platform === "win32";
-          const opts = { env, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"], windowsHide: true };
-          child = win
-            ? spawn([`"${argv[0]}"`, ...argv.slice(1).map((a) => `"${a.replace(/"/g, '""')}"`)].join(" "), { ...opts, shell: true })
-            : spawn(argv[0]!, argv.slice(1), opts);
+          child = spawn(line.file, line.args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, windowsVerbatimArguments: line.cmd });
         } catch (err) {
           return done({ code: 127, out: (err as Error).message });
         }
         const timer = setTimeout(() => {
           out += `\n(timed out after ${Math.round(timeoutMs / 1000)}s)`;
-          child.kill("SIGTERM");
+          endTree(child);
         }, timeoutMs);
         child.stdout!.on("data", (c: Buffer) => (out += c.toString("utf8")));
         child.stderr!.on("data", (c: Buffer) => (out += c.toString("utf8")));

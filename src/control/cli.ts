@@ -16,6 +16,7 @@ import { findOffice, officeFilePath, type OfficeFile } from "../mcp/office.ts";
 import { officeHome } from "../mcp/outbox.ts";
 import { stableNode } from "../install/command.ts";
 import { PAD, bold, dim, green, red, yellow } from "../install/ui.ts";
+import { windowsSystemBinary } from "../remote/util.ts";
 import { ControlAuth } from "./auth.ts";
 import { loginShellVars } from "./env.ts";
 import { createKeyStore } from "./keys.ts";
@@ -30,16 +31,18 @@ type Out = (line?: string) => void;
 /** Why the office is watch-only on Windows (and anything else that isn't macOS or Linux). */
 export const WATCH_ONLY = "hiring and driving agents from the page needs macOS or Linux; on this machine the office is watch-only.";
 
+/** The program and arguments that open `url` in the default browser. Windows' cmd.exe by full path: by name, the current folder's would win. */
+export function browserCommand(url: string, platform: string = process.platform, env: NodeJS.ProcessEnv = process.env): [string, string[]] {
+  if (platform === "darwin") return ["open", [url]];
+  if (platform === "win32") return [windowsSystemBinary("cmd.exe", env), ["/c", "start", '""', url]];
+  return ["xdg-open", [url]];
+}
+
 /** Open a URL in the default browser; quietly does nothing without an opener. */
 export function openBrowser(url: string): void {
-  const [cmd, args] =
-    process.platform === "darwin"
-      ? ["open", [url]]
-      : process.platform === "win32"
-        ? ["cmd", ["/c", "start", '""', url]]
-        : ["xdg-open", [url]];
+  const [cmd, args] = browserCommand(url);
   try {
-    const child = spawn(cmd, args as string[], {
+    const child = spawn(cmd, args, {
       stdio: "ignore",
       detached: true,
       windowsHide: true,

@@ -6,7 +6,7 @@ import test, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { spawnSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -416,6 +416,23 @@ writeFileSync(f, JSON.stringify(j, null, 2) + "\\n");`);
   assert.ok(M.readJsonc(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.context7, "other servers kept");
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(warnings.filter((w) => /DEP0190|child process/i.test(w)), []);
+});
+
+test("on Windows the installer runs an agent's CLI from PATH, never one sitting in the current folder", { skip: process.platform !== "win32" && "Windows only" }, async () => {
+  const { home, bin } = makeHome(false);
+  const dir = mkdtempSync(join(TMP, "cwd-"));
+  // An .exe named like the CLI where `agentoffice install` happens to run (a cloned repo, say).
+  copyFileSync(join(process.env.SystemRoot || "C:\\Windows", "System32", "whoami.exe"), join(dir, "claude.exe"));
+  const sys = M.localSys({ env: { PATH: bin, PATHEXT: ".EXE;.CMD", SystemRoot: process.env.SystemRoot }, home });
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    const r = await sys.run(["claude", "--version"], 10_000);
+    assert.equal(r.code, 127, r.out);
+    assert.match(r.out, /claude: not found on PATH/);
+  } finally {
+    process.chdir(cwd);
+  }
 });
 
 function assertInstalledSubset(home) {
