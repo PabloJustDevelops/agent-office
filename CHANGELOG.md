@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Chat mode in Daytona and Vercel sandboxes.** Claude Code and Codex hired into a Daytona or Vercel sandbox can now run in chat mode, as on Railway and ssh boxes. Daytona runs the agent as a command in a toolbox session of its own; Vercel as a command with its input attached. A dropped output connection is opened again without repeating what was already shown.
+
 ## 0.2.0
 
 The office can now run your agents, not just watch them.

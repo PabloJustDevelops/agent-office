@@ -5,7 +5,7 @@
  * sandboxes the office created ($AGENT_OFFICE_HOME/sandboxes.json, 0600).
  *
  * A driver supplies run() (a long-running exec: installs, seeding, env
- * files), openTerm() and, where chat mode works, openPipe(). The base adds
+ * files), openTerm() and pipe() for chat mode. The base adds
  * the agent install, first-run seeding (office sandboxes only), the Codex
  * provider flags, and the PATH ensureAgent found, so every driver launches
  * the same way.
@@ -45,6 +45,29 @@ export class Listeners<T> {
         // A listener's bug stays its own.
       }
     }
+  }
+}
+
+/**
+ * Listeners that keep what is emitted before the first one comes and hand it to that one (in a
+ * microtask, as Once does): a pipe whose output can arrive before its caller has subscribed.
+ */
+export class Held<T> {
+  private fns = new Listeners<T>();
+  private kept: T[] | undefined = [];
+  on(fn: (v: T) => void): Disposable {
+    const d = this.fns.on(fn);
+    const kept = this.kept;
+    this.kept = undefined;
+    if (kept?.length)
+      queueMicrotask(() => {
+        for (const v of kept) fn(v);
+      });
+    return d;
+  }
+  emit(v: T): void {
+    if (!this.kept) return this.fns.emit(v);
+    if (this.kept.length < 4096) this.kept.push(v);
   }
 }
 
