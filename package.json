@@ -21,7 +21,9 @@
     "dev": "node scripts/build.mjs && node dist/cli.js --demo",
     "test": "node scripts/build.mjs && node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "prepack": "node scripts/build.mjs"
+    "prepack": "node scripts/build.mjs",
+    "site": "node scripts/build-site.mjs",
+    "site:dev": "node scripts/build-site.mjs --dev"
   },
   "keywords": [
     "claude-code",
