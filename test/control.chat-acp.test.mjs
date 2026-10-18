@@ -2,11 +2,14 @@
 // Agent Client Protocol v1 over stdio, the way `command-code acp` does: its initialize answer is
 // the one recorded from Command Code 1.84.0, its modes and permission options are Command Code's,
 // and like Command Code it refuses a second prompt while one runs.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanup, fakeBin, load, NODE_DIR, scratch, sleep, until } from "./control.session-fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/chat/acp.ts", "src/control/chat/common.ts", "src/control/agents.ts");
 const { AcpChat, ACP_PROFILES, acpLabel, localPipe, chatLaunch } = M;

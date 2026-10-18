@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeHome, load, runIn, serve, tmp, writeBin } from "./remote.fakes.mjs";
+import { POSIX } from "./platform.mjs";
 
 const M = await load("src/remote/boat.ts", "src/ingest/index.ts");
 
@@ -58,7 +59,7 @@ test("BOAT_API_KEY: live sandboxes across pages, BOAT_ORG header, default names 
   await srv.close();
 });
 
-test("exec through the commands API: sh -c, exit codes, truncation and a stopped VM are errors", async () => {
+test("exec through the commands API: sh -c, exit codes, truncation and a stopped VM are errors", { skip: POSIX }, async () => {
   const boxes = [{ id: "bx_23456789", name: "vm", state: "running", home: tmp() }];
   const srv = await fakeBoat(boxes);
   const [d] = await M.createBoatProvider({ env: { HOME: tmp(), BOAT_API_KEY: "boat_goodkey123", BOAT_API_BASE: `${srv.url}/api/v1`, PATH: "" } }).list();
@@ -105,7 +106,7 @@ if (a[0] === "list") {
 } else process.exit(2);
 `;
 
-test("no key but the boat CLI on PATH: boat list --json and boat exec --json", async () => {
+test("no key but the boat CLI on PATH: boat list --json and boat exec --json", { skip: POSIX }, async () => {
   const dir = tmp();
   const home = fakeHome();
   const world = join(dir, "world.json");

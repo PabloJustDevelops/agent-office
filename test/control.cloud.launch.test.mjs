@@ -3,11 +3,14 @@
 // file and stopScript), the env-file writers (from a variable, stdin, a heredoc with an awkward
 // value), the agent probe and install plans, first-run seeding that never overwrites, and the
 // Codex provider flags. Every line is run for real with sh under a scratch HOME; keys are dummies.
-import test from "node:test";
+import nodeTest from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { load, runIn, tmp, writeBin } from "./remote.fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/cloud/launch.ts", "src/control/cloud/install.ts", "src/control/cloud/firstrun.ts", "src/control/cloud/place.ts");
 

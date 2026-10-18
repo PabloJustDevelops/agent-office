@@ -4,13 +4,16 @@
 // (a note first, created only on a create), the v3 create body, the 45-minute retry, tags-based
 // "ours", attach (keys only in the start frame's env, never in any command's args), resize and
 // exit frames, the npx CLI fallback with its env file, and delete. Keys are dummies.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { load, tmp, until, writeBin } from "./remote.fakes.mjs";
 import { AGENT_SCRIPT, collect, fakeContext, fakePty, wsServe } from "./control.cloud.fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/cloud/index.ts");
 

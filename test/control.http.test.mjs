@@ -3,7 +3,7 @@
 // (Host, Origin, Sec-Fetch-Site, the X-Agent-Office header, the cookie, a rotated secret),
 // Snapshot.control and control frames per browser, body caps, the hook route, keys never echoed,
 // and the folder listing confined to HOME. Everything runs in temp folders with dummy keys.
-import test, { after, before } from "node:test";
+import nodeTest, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
@@ -11,6 +11,9 @@ import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TMP = realpathSync(mkdtempSync(join(tmpdir(), "agentoffice-ctl-http-")));

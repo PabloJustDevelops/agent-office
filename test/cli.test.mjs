@@ -71,7 +71,9 @@ test("the office advertises itself in office.json and removes it on exit", { ski
     const exited = new Promise((r) => child.on("exit", r));
     child.kill("SIGTERM");
     await exited;
-    assert.equal(existsSync(file), false, "office.json removed on shutdown");
+    // Windows has no SIGTERM to send: kill() ends the process outright, so nothing runs on the way out
+    // (Ctrl+C there is SIGINT, which does). A stale office.json is ignored once its pid is gone.
+    if (process.platform !== "win32") assert.equal(existsSync(file), false, "office.json removed on shutdown");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

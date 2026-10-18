@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeHome, load, runIn, serve, tmp } from "./remote.fakes.mjs";
+import { POSIX } from "./platform.mjs";
 
 const M = await load("src/remote/daytona.ts", "src/ingest/index.ts");
 
@@ -88,7 +89,7 @@ test("an API key in the env: lists started sandboxes across pages, with the tool
   await srv.close();
 });
 
-test("exec runs the script under sh, drops stderr, rejects non-zero exits", async () => {
+test("exec runs the script under sh, drops stderr, rejects non-zero exits", { skip: POSIX }, async () => {
   const home = tmp();
   const srv = await fakeDaytona([{ id: "s1", name: "box", state: "started", home }], { proxyInList: false });
   const [d] = await M.createDaytonaProvider({ env: env(srv, { DAYTONA_API_KEY: "good-key" }) }).list();

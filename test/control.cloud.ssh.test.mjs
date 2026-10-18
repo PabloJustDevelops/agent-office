@@ -4,12 +4,15 @@
 // the env file through a heredoc on ssh's stdin, then runs `ssh -tt … sh -c '<line>'` on the shared
 // ControlMaster; the agent gets its keys and the file is gone; chat mode gets plain pipes. No key
 // ever appears in an argv.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { load, tmp, writeBin, until } from "./remote.fakes.mjs";
 import { collect, fakeContext, fakePty } from "./control.cloud.fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/cloud/ssh.ts", "src/control/cloud/index.ts");
 

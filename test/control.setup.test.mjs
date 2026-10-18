@@ -3,12 +3,15 @@
 // hooks), ~/.codex (config.toml, AGENTS.md, prompts, auth.json) and a small git project. The
 // "sandbox" is a second folder where `sh` runs as if it were the remote, with that folder as HOME.
 // The page sees names only; values land 0600 there and never in a script, an argv or a log.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { load, tmp } from "./remote.fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/setup.ts", "src/control/cloud/setup.ts", "src/control/tar.ts", "src/control/toml.ts");
 

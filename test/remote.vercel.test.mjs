@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeHome, load, runIn, serve, tmp } from "./remote.fakes.mjs";
+import { POSIX } from "./platform.mjs";
 
 const M = await load("src/remote/vercel.ts", "src/ingest/index.ts");
 
@@ -80,7 +81,7 @@ test("auto-detection (scope auto) stays in the default team: a teammate's sandbo
   await srv.close();
 });
 
-test("exec streams stdout from the ndjson frames, ignores stderr, rejects exits and stopped sessions", async () => {
+test("exec streams stdout from the ndjson frames, ignores stderr, rejects exits and stopped sessions", { skip: POSIX }, async () => {
   const home = tmp();
   const sbx = [{ team: "team_a", project: DEF, name: "box", status: "running", session: "sbx_s1", home }];
   const srv = await fakeVercel(sbx);

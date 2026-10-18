@@ -10,6 +10,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSyn
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { POSIX } from "./platform.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TMP = mkdtempSync(join(tmpdir(), "agentoffice-install-test-"));
@@ -185,7 +186,7 @@ function snapshot(dir, { backups = false } = {}) {
       const p = join(d, name);
       const st = statSync(p);
       if (st.isDirectory()) walk(p);
-      else if (backups || !name.includes(".agentoffice-backup-")) out[p.slice(dir.length + 1)] = readFileSync(p, "utf8");
+      else if (backups || !name.includes(".agentoffice-backup-")) out[p.slice(dir.length + 1).replaceAll("\\", "/")] = readFileSync(p, "utf8");
     }
   };
   walk(dir);
@@ -266,7 +267,7 @@ test("install on a machine with existing configs, re-run is a no-op, uninstall r
     assert.ok(b, `backup of ${f}`);
     assert.equal(withBackups[b], EXISTING[f]);
   }
-  assert.equal(statSync(join(home, ".agentoffice")).mode & 0o777, 0o700);
+  if (process.platform !== "win32") assert.equal(statSync(join(home, ".agentoffice")).mode & 0o777, 0o700);
 
   const afterFirst = snapshot(home, { backups: true });
   const second = await run(M.install, sys);
@@ -315,7 +316,7 @@ test("a malformed config is reported and left untouched; everything else still i
   const sys = M.localSys({ env: { HOME: home, PATH: bin }, home });
   const r = await run(M.install, sys);
   assert.equal(r.code, 1);
-  assert.match(r.text, /~\/\.cursor\/mcp\.json can't be edited safely/);
+  assert.match(r.text, /~[\\/]\.cursor[\\/]mcp\.json can't be edited safely/);
   assert.match(r.text, /config\.toml: "mcp_servers" is set inline/);
   assert.equal(readFileSync(join(home, ".cursor/mcp.json"), "utf8"), broken);
   assert.equal(readFileSync(join(home, ".codex/config.toml"), "utf8"), 'mcp_servers = { agentoffice = { command = "x" } }\n');
@@ -334,7 +335,7 @@ test("dry run prints the plan and diffs and writes nothing", async () => {
   assert.match(r.text, /dry run/);
   assert.match(r.text, /What would change/);
   assert.match(r.text, /\+ \[mcp_servers\.agentoffice\]/);
-  assert.match(r.text, /~\/\.agents\/skills\/agent-office\/SKILL\.md \(new file/);
+  assert.match(r.text, /~[\\/]\.agents[\\/]skills[\\/]agent-office[\\/]SKILL\.md \(new file/);
   assert.deepEqual(snapshot(home, { backups: true }), before);
   await run(M.install, sys);
   const installed = snapshot(home, { backups: true });
@@ -367,6 +368,8 @@ test("--agents limits the run; agents that aren't installed are skipped", async 
 function shim(bin, name, logFile, script) {
   const js = join(bin, `${name}.mjs`);
   writeFileSync(js, `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)) + "\\n");\n${script ?? ""}\n`);
+  // On Windows a .cmd like npm's shims, which the installer can only start through cmd.exe.
+  if (process.platform === "win32") return writeFileSync(join(bin, `${name}.cmd`), `@"${process.execPath}" "${js}" %*\r\n`);
   writeFileSync(join(bin, name), `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(js)} "$@"\n`);
   chmodSync(join(bin, name), 0o755);
 }
@@ -388,7 +391,7 @@ writeFileSync(f, JSON.stringify(j, null, 2) + "\\n");`);
   const r = await run(M.install, sys, { agents: ["claude", "codex"] });
   assert.equal(r.code, 0, r.text);
   assert.match(r.text, /Claude Code.*registered with claude mcp add/);
-  assert.match(r.text, /Codex.*registered in ~\/\.codex\/config\.toml \(codex mcp add didn't take/);
+  assert.match(r.text, /Codex.*registered in ~[\\/]\.codex[\\/]config\.toml \(codex mcp add didn't take/);
   const calls = readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
   const cmd = M.launchFor(LAUNCH(), "claude");
   assert.deepEqual(calls[0], ["mcp", "add", "--scope", "user", "agentoffice", "--", cmd.command, ...cmd.args]);
@@ -480,7 +483,7 @@ function fakeRemote(home) {
   };
 }
 
-test("remote install through a RemoteTarget: npx command, same files, uninstall restores", async () => {
+test("remote install through a RemoteTarget: npx command, same files, uninstall restores", { skip: POSIX }, async () => {
   const { home } = makeHome(true);
   const original = snapshot(home);
   const sys = await M.remoteSys(fakeRemote(home));
@@ -504,7 +507,7 @@ test("remote install through a RemoteTarget: npx command, same files, uninstall 
   assert.deepEqual(snapshot(home), original);
 });
 
-test("remote install explains a missing Node instead of registering a dead command", async () => {
+test("remote install explains a missing Node instead of registering a dead command", { skip: POSIX }, async () => {
   const { home } = makeHome(true);
   const real = await M.remoteSys(fakeRemote(home));
   const sys = { ...real, which: async (b) => (b === "node" || b === "npx" ? null : real.which(b)) };
@@ -515,7 +518,7 @@ test("remote install explains a missing Node instead of registering a dead comma
   assert.ok(!existsSync(join(home, ".gemini/settings.json")));
 });
 
-test("--ssh: the built-in ssh target survives a real shell's quoting (fake ssh, local sh)", async () => {
+test("--ssh: the built-in ssh target survives a real shell's quoting (fake ssh, local sh)", { skip: POSIX }, async () => {
   const { home, bin } = makeHome(true);
   // Stands in for ssh: drops the options and host, then hands the command string to a shell in a
   // fresh environment, as sshd does (the runner's own XDG_CONFIG_HOME must not leak into the "remote").
@@ -541,7 +544,7 @@ test("--ssh: the built-in ssh target survives a real shell's quoting (fake ssh, 
 test("CLI: install --dry-run and doctor run end to end against a fake HOME", () => {
   const { home, bin } = makeHome(true);
   const before = snapshot(home, { backups: true });
-  const env = { HOME: home, PATH: bin, AGENT_OFFICE_PORT: "1", NO_COLOR: "1" };
+  const env = { HOME: home, USERPROFILE: home, PATH: bin, AGENT_OFFICE_PORT: "1", NO_COLOR: "1" };
   const dry = spawnSync(process.execPath, [CLI, "install", "--dry-run"], { env, encoding: "utf8" });
   assert.equal(dry.status, 0, dry.stderr + dry.stdout);
   assert.match(dry.stdout, /What would change/);
