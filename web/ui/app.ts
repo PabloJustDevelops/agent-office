@@ -59,7 +59,7 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
   const model = new OfficeModel();
   const sound = new Sound();
   const toasts = new Toasts();
-  const topbar = createTopbar();
+  const topbar = createTopbar({ onNeedsYou: nextWaiting });
   const prefs = readPrefs();
   let selected: string | null = null;
   let crt = !!prefs.crt;
@@ -260,6 +260,13 @@ export function mountChrome(root: HTMLElement, scene: OfficeScene): Chrome {
         recording = null;
         toolbar.setRecording(false);
       });
+  }
+
+  /** Jump to the next worker waiting on its human, cycling from the one selected. */
+  function nextWaiting(): void {
+    const waiting = [...model.workers.values()].filter((w) => w.status === "waiting" && !w.parentId).map((w) => w.workerId);
+    if (!waiting.length) return;
+    select(waiting[(waiting.indexOf(selected ?? "") + 1) % waiting.length]!, true);
   }
 
   function select(id: string | null, focus = false): void {

@@ -146,7 +146,8 @@ export class OfficeState {
       const ts = new Date(now).toISOString();
       if (quiet >= this.goneMs) {
         this.remove(w, { ...this.base(w, ts), kind: w.state.parentId ? "subagent_end" : "session_end" });
-      } else if (quiet >= this.idleMs && w.state.status !== "idle") {
+      } else if (quiet >= this.idleMs && w.state.status !== "idle" && w.state.status !== "waiting") {
+        // A worker waiting on its human still needs them however long it waits; it only goes home.
         const e: RawEvent = { ...this.base(w, ts), kind: "idle" };
         this.fold(w, e, now);
         this.publish(e);

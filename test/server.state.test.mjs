@@ -107,9 +107,9 @@ test("editedFiles pulls basenames out of redacted summaries", () => {
 test("idle after IDLE_MS of quiet, once; activity wakes the worker", () => {
   const { state, seen, ev, advance } = office();
   state.ingest(ev({ kind: "session_start" }));
-  state.ingest(ev({ kind: "waiting" }));
+  state.ingest(ev({ kind: "tool_end", tool: "Read" }));
   advance(IDLE_MS - 1_000);
-  assert.equal(seen.at(-1).kind, "waiting");
+  assert.equal(seen.at(-1).kind, "tool_end");
   advance(1_000);
   assert.equal(seen.at(-1).kind, "idle");
   const n = seen.length;
@@ -120,6 +120,17 @@ test("idle after IDLE_MS of quiet, once; activity wakes the worker", () => {
   assert.equal(state.snapshot().workers[0].status, "prompt");
   advance(IDLE_MS);
   assert.equal(seen.at(-1).kind, "idle");
+});
+
+test("a worker waiting on its human stays waiting until it goes home", () => {
+  const { state, seen, ev, advance } = office();
+  state.ingest(ev({ kind: "session_start" }));
+  state.ingest(ev({ kind: "waiting" }));
+  advance(IDLE_MS * 5);
+  assert.equal(seen.at(-1).kind, "waiting");
+  assert.equal(state.snapshot().workers[0].status, "waiting");
+  advance(GONE_MS);
+  assert.equal(seen.at(-1).kind, "session_end");
 });
 
 test("session_end after GONE_MS removes the worker and its interns", () => {
