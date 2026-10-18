@@ -22,7 +22,7 @@ import { furnitureFigures, workerFigures } from "./figures.ts";
 import { Crt } from "./crt.ts";
 import * as R from "./room.ts";
 import * as P from "./props.ts";
-import { DESK_DY, DESK_W, POD_H, WALL_H } from "./layout.ts";
+import { DESK_W, POD_H, WALL_H, deskTop } from "./layout.ts";
 import { BRAND, HOST_BRAND } from "../../src/shared/events.ts";
 import { FONT, fit, textBitmap } from "./font.ts";
 import { drawMark } from "./logos.ts";
@@ -35,6 +35,8 @@ const NIGHT_K = 0.84;
 const WIN_TOP = 12;
 const WIN_H = WALL_H - 22 - 12;
 const MODE_MS = 700;
+/** A camera zoom rounded to whole device px per art px (crisp), once it is at least 1. */
+const whole = (z: number) => (z >= 1 ? Math.round(z) : z);
 
 export interface OfficeSceneExtras extends OfficeScene {
   /** Pin the sky to an hour (0-24) instead of the local clock; null = live. */
@@ -54,6 +56,14 @@ export const createOfficeScene: CreateOfficeScene = (mount: HTMLElement) => crea
 export function create(mount: HTMLElement): OfficeSceneExtras {
   const canvas = document.createElement("canvas");
   canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;display:block;touch-action:none;outline:none;";
+  /* Drags and pinches are the camera's, unless the page around the office
+   * scrolls: then a vertical drag scrolls the page (touch-action pan-y) and a
+   * plain wheel does too. An embedder's own touch-action is left alone. */
+  let touchAction = "none";
+  const pageScrolls = () => {
+    const se = document.scrollingElement;
+    return !!se && se.scrollHeight > se.clientHeight + 1;
+  };
   canvas.setAttribute("aria-label", "Agent office: a live pixel-art view of your coding agents");
   canvas.tabIndex = -1;
   if (getComputedStyle(mount).position === "static") mount.style.position = "relative";
@@ -121,11 +131,14 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
 
   /* ---------------------------------------------------------------- sizing */
   let lastDpr = 0;
+  /* Up to 3x: a phone's canvas at its real pixel ratio, so a whole zoom is a
+   * whole number of screen pixels (at 2x a 3x phone resampled every frame). */
+  const MAX_DPR = 3;
   function resize() {
-    lastDpr = Math.min(window.devicePixelRatio || 1, 2);
+    lastDpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
     const rect = mount.getBoundingClientRect();
     const cssW = Math.max(1, rect.width), cssH = Math.max(1, rect.height);
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
     // cap the backing store around 6 MP so 4K screens stay smooth
     const maxPx = 6_000_000;
     if (cssW * cssH * dpr * dpr > maxPx) dpr = Math.sqrt(maxPx / (cssW * cssH));
@@ -140,6 +153,7 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
     cam.vh = h;
     cam.dpr = dpr;
     crew.layout.setAspect(cam.layoutAspect(), cssW / cssH < 0.8);
+    if (canvas.style.touchAction === touchAction) canvas.style.touchAction = touchAction = pageScrolls() ? "pan-y" : "none";
   }
   /* The chrome can keep auto-fit clear of its panels without touching the
    * contract: set --scene-inset-{top,right,bottom,left} (px) on the mount,
@@ -180,14 +194,14 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
         const kind = b.host && b.host.kind !== "local" ? b.host.kind : "ssh";
         const col = HOST_BRAND[kind].color;
         const on = b.offline ? 0.25 : 1;
-        L.push({ x: bx + b.w / 2, y: by + POD_H - 8, r: Math.max(40, b.w * 0.55), cut: 0.35 * night * on, color: col, glow: 0.07 * on * (0.4 + night), flat: 0.42 });
+        L.push({ x: bx + b.w / 2, y: by + b.h - 8, r: Math.max(40, Math.max(b.w, b.h) * 0.55), cut: 0.35 * night * on, color: col, glow: 0.07 * on * (0.4 + night), flat: 0.42 });
         continue;
       }
       // a warm pendant pool over every desk, and one soft wash over the pod
-      L.push({ x: bx + b.w / 2, y: by + 46, r: Math.max(56, b.w * 0.62), cut: 0.32 * night, color: C.gold2, glow: (b.agent === "commandcode" || b.agent === "cursor" ? 0.035 : 0.06) * night, flat: 0.55 });
+      L.push({ x: bx + b.w / 2, y: by + 46 + (b.h - POD_H) / 2, r: Math.max(56, Math.max(b.w, b.h) * 0.62), cut: 0.32 * night, color: C.gold2, glow: (b.agent === "commandcode" || b.agent === "cursor" ? 0.035 : 0.06) * night, flat: 0.55 });
       for (const st of b.stations) {
         if (st.hot) continue;
-        L.push({ x: bx + Math.round(st.x) + DESK_W / 2, y: by + DESK_DY + 14, r: 34, cut: 0.42 * night, color: C.gold3, glow: 0.07 * night, flat: 0.6 });
+        L.push({ x: bx + Math.round(st.x) + DESK_W / 2, y: deskTop(b, st) + 14, r: 34, cut: 0.42 * night, color: C.gold3, glow: 0.07 * night, flat: 0.6 });
       }
     }
     for (const d of crew.layout.decor) {
@@ -490,12 +504,14 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
       insetCheck = clock;
       readCssInsets();
       // moving the window to another screen changes DPR without a resize
-      if (Math.min(window.devicePixelRatio || 1, 2) !== lastDpr) resize();
+      if (Math.min(window.devicePixelRatio || 1, MAX_DPR) !== lastDpr) resize();
     }
+    cam.bounds = room;
+    cam.minZ = Math.max(0.5, cam.fitZoom(room) * 0.8);
     if (cam.mode === "auto" && cut) {
       const w = crew.workers.get(cut.id)!;
       const fitZ = cam.fitZoom(room);
-      cam.tz = clamp(fitZ * cut.zoom, fitZ, 12 * dpr);
+      cam.tz = whole(clamp(fitZ * cut.zoom, fitZ, 12 * dpr));
       cam.follow(w.seat.x, w.seat.deskY + 12);
       // keep the room filling the frame: a worker by the wall shouldn't put the void in shot
       const hw = cam.vw / 2 / cam.tz, hh = cam.vh / 2 / cam.tz;
@@ -652,7 +668,12 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
   const pointers = new Map<number, { x: number; y: number }>();
   let downAt: { x: number; y: number } | null = null;
   let moved = false;
-  let pinch: { d: number; mx: number; my: number } | null = null;
+  let pinch: { d: number; mx: number; my: number; z0: number } | null = null;
+  /** The last tap (touch): a second one close by and soon after puts the camera back on auto. */
+  let lastTap: { x: number; y: number; t: number } | null = null;
+  let wheelSettle = 0;
+  /** The zoom a run of wheel events started from (null between runs). */
+  let wheelZ0: number | null = null;
   const devXY = (e: { clientX: number; clientY: number }) => {
     const r = canvas.getBoundingClientRect();
     return { x: (e.clientX - r.left) * dpr, y: (e.clientY - r.top) * dpr };
@@ -663,11 +684,19 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
     return crew.hit(wx, wy);
   }
   function onWheel(e: WheelEvent) {
+    // a page that scrolls keeps its wheel; a trackpad pinch (ctrl+wheel) still zooms the office
+    if (!e.ctrlKey && pageScrolls()) return;
     e.preventDefault();
     const p = devXY(e);
     const k = e.ctrlKey ? 0.012 : 0.0016;
     const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    wheelZ0 ??= cam.tz;
     cam.zoomAt(p.x, p.y, Math.exp(-dy * k));
+    clearTimeout(wheelSettle);
+    wheelSettle = window.setTimeout(() => {
+      cam.settle(p.x, p.y, wheelZ0 ?? cam.tz);
+      wheelZ0 = null;
+    }, 220);
   }
   function onDown(e: PointerEvent) {
     canvas.setPointerCapture?.(e.pointerId);
@@ -676,7 +705,7 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
     if (pointers.size === 1) { downAt = p; moved = false; }
     if (pointers.size === 2) {
       const [a, b] = [...pointers.values()];
-      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+      pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, z0: cam.tz };
       moved = true;
     }
   }
@@ -696,7 +725,7 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
       const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
       cam.panBy(mx - pinch.mx, my - pinch.my);
       cam.zoomAt(mx, my, d / Math.max(1, pinch.d));
-      pinch = { d, mx, my };
+      pinch = { ...pinch, d, mx, my };
       return;
     }
     if (downAt && !moved && Math.hypot(p.x - downAt.x, p.y - downAt.y) > 4 * dpr) moved = true;
@@ -708,12 +737,23 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
   function onUp(e: PointerEvent) {
     const p = devXY(e);
     pointers.delete(e.pointerId);
-    if (pointers.size < 2) pinch = null;
+    if (pinch && pointers.size < 2) {
+      cam.settle(pinch.mx, pinch.my, pinch.z0);
+      pinch = null;
+    }
     if (pointers.size === 0) {
-      if (downAt && !moved) {
-        const id = pickAt(p.x, p.y);
-        crew.selected = id;
-        selectCb?.(id);
+      // a cancelled pointer is the browser taking the gesture (a page scroll): not a tap
+      if (downAt && !moved && e.type !== "pointercancel") {
+        const t = performance.now();
+        if (e.pointerType === "touch" && lastTap && t - lastTap.t < 320 && Math.hypot(p.x - lastTap.x, p.y - lastTap.y) < 30 * dpr) {
+          cam.reset();
+          lastTap = null;
+        } else {
+          const id = pickAt(p.x, p.y);
+          crew.selected = id;
+          selectCb?.(id);
+          lastTap = { x: p.x, y: p.y, t };
+        }
       }
       downAt = null;
       canvas.style.cursor = "grab";
@@ -781,11 +821,12 @@ export function create(mount: HTMLElement): OfficeSceneExtras {
       cam.followId = id;
       // close enough to see the pod and its interns, not just one face
       const fitZ = cam.fitZoom(room);
-      cam.tz = clamp(Math.max(cam.tz, fitZ * 1.8), fitZ, 12 * dpr);
+      cam.tz = whole(clamp(Math.max(cam.tz, fitZ * 1.8), fitZ, 12 * dpr));
     },
     destroy() {
       destroyed = true;
       clearTimeout(relayoutTimer);
+      clearTimeout(wheelSettle);
       if (raf) cancelAnimationFrame(raf);
       ro.disconnect();
       document.removeEventListener("visibilitychange", onVis);

@@ -22,7 +22,7 @@ import { drawMark, pixelLogo, type LogoKind } from "./logos.ts";
 import type { Camera } from "./camera.ts";
 import { brandInk, type Act, type Crew, type Worker } from "./workers.ts";
 import { podInk, asciiOnly, SIGN_LOGO, SHOUT_MS, PLATFORM_TAG } from "./room.ts";
-import { MARK_STEP, POD_H, tagW, type Block } from "./layout.ts";
+import { MARK_STEP, tagW, type Block } from "./layout.ts";
 import { bitmap, clamp, internSummary, type Bitmap } from "./util.ts";
 
 const ACT_COL: Record<Act, string> = {
@@ -111,7 +111,9 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
   const { dpr, now } = o;
   asciiLook = o.ascii;
   const z = cam.z;
-  const fs = clamp(Math.round(Math.min(1.5 * dpr, Math.max(1.1 * dpr, z * 0.75)) + (z > 7 * dpr ? dpr * 0.5 : 0)), 1, 6);
+  // on a phone, never under ~1.33 CSS px a font pixel: chips have to read at arm's length
+  const base = clamp(Math.round(Math.min(1.5 * dpr, Math.max(1.1 * dpr, z * 0.75)) + (z > 7 * dpr ? dpr * 0.5 : 0)), 1, 6);
+  const fs = clamp(Math.max(cam.vw / dpr < 640 ? Math.round(dpr * 1.34) : 1, base), 1, 6);
   const edge = 4 * dpr;
   const inX = (x: number, w: number) => Math.round(clamp(x, edge, Math.max(edge, cam.vw - w - edge)));
   const pad = 2 * fs;
@@ -132,21 +134,26 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
     if (sx < -200 || sy < -40 || sx > cam.vw + 20 || sy > cam.vh + 20) continue;
     if (o.ascii) {
       const tagText = remote && b.host && b.host.kind !== "local" ? `${PLATFORM_TAG[b.host.kind] ?? ""} ` : "";
-      const label = fit(FONT(), tagText + (asciiOnly(b.label) || b.label), 26 * 6);
+      // no wider than its pod on screen, so neighbouring signs never run into each other:
+      // the phone's larger letters step down (never below the usual size) before the name is cut
+      const full = tagText + (asciiOnly(b.label) || b.label);
+      const fits = (k: number) => Math.floor((b.w * z) / k) - 14;
+      const ss = textW(full, 1) > fits(fs) && textW(full, 1) <= fits(base) ? base : fs;
+      const label = fit(FONT(), full, clamp(fits(ss), 24, 26 * 6));
       const ink = b.offline ? C.slate3 : podInk(b);
-      const lw = textW(label, fs);
-      const bx = Math.round(sx - 2 * fs), by = Math.round(sy - fs);
+      const lw = textW(label, ss);
+      const bx = Math.round(sx - 2 * ss), by = Math.round(sy - ss);
       g.globalAlpha = b.alpha;
       g.fillStyle = "#09070c";
-      g.fillRect(bx - fs, by - fs, lw + 13 * fs, lineH + fs);
+      g.fillRect(bx - ss, by - ss, lw + 13 * ss, 9 * ss);
       g.fillStyle = ink;
-      g.fillRect(bx - fs, by + lineH - fs, lw + 13 * fs, fs);
-      if (8 * fs >= 12) drawMark(g, kind, bx, by, 8 * fs, b.offline ? C.slate3 : col);
-      else g.drawImage(pixelLogo(kind, 9, b.offline ? C.slate3 : col).c, bx, by, 8 * fs, 8 * fs);
-      text(g, label, b.offline ? C.slate3 : C.white, bx + 11 * fs, by, fs);
-      if (b.offline) text(g, "offline", C.red3, bx + 13 * fs + lw, by, fs);
+      g.fillRect(bx - ss, by + 7 * ss, lw + 13 * ss, ss);
+      if (8 * ss >= 12) drawMark(g, kind, bx, by, 8 * ss, b.offline ? C.slate3 : col);
+      else g.drawImage(pixelLogo(kind, 9, b.offline ? C.slate3 : col).c, bx, by, 8 * ss, 8 * ss);
+      text(g, label, b.offline ? C.slate3 : C.white, bx + 11 * ss, by, ss);
+      if (b.offline) text(g, "offline", C.red3, bx + 13 * ss + lw, by, ss);
       g.globalAlpha = 1;
-      placed.push({ x: bx, y: by, w: lw + 12 * fs, h: lineH });
+      placed.push({ x: bx, y: by, w: lw + 12 * ss, h: 8 * ss });
       continue;
     }
     // tags steer clear of the sign; moods and VIPs may still cover it
@@ -181,7 +188,7 @@ export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera,
   /** A chip under the chairs stays on its pod's rug: never below it, never past its ends when it fits. */
   const onRug = (b: Block, c: Box): Box => {
     const [x0, y0] = cam.toScreen(b.x + 1, b.y);
-    const [x1, y1] = cam.toScreen(b.x + b.w - 1, b.y + POD_H - 2);
+    const [x1, y1] = cam.toScreen(b.x + b.w - 1, b.y + b.h - 2);
     const x = x1 - x0 >= c.w ? clamp(c.x, x0, x1 - c.w) : c.x;
     const y = Math.min(c.y, y1 - c.h);
     return { ...c, x: Math.round(x), y: Math.round(Math.max(y, y0)) };
