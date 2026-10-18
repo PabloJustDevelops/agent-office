@@ -28,8 +28,9 @@ On this machine, in Daytona, Vercel and Railway sandboxes, or over ssh. A failin
 
 <br>
 
-<sub>Sponsored by</sub><br>
-<a href="https://commandcode.ai"><img src="docs/logos/commandcode.svg" width="22" align="center" alt="">&nbsp;<b>Command Code</b></a>
+<sub>Sponsored by</sub>
+
+<a href="https://commandcode.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/sponsors/command-code.dark.svg"><img alt="Command Code" src="docs/sponsors/command-code.svg" height="28"></picture></a>
 
 </div>
 
