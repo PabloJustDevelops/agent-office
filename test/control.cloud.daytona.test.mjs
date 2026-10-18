@@ -11,29 +11,36 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { load, tmp, until, writeBin } from "./remote.fakes.mjs";
-import { AGENT_SCRIPT, collect, fakeContext, fakePty, sandboxShell, wsServe } from "./control.cloud.fakes.mjs";
+import { AGENT_SCRIPT, CHAT_SCRIPT, collect, fakeContext, fakePty, sandboxShell, wsServe } from "./control.cloud.fakes.mjs";
 
 const M = await load("src/control/cloud/index.ts");
+const { LogDemux } = await load("src/control/cloud/daytona.ts");
 
 const KEY = "sk-ant-dummy-daytona-0002";
 const API_KEY = "dtn-dummy-key";
 const made = [];
 const ptys = [];
 const servers = [];
+const children = [];
 after(async () => {
   for (const p of ptys) p.killAll();
+  for (const c of children) c.kill("SIGKILL");
   for (const s of servers) await s.close();
   for (const d of made) rmSync(d, { recursive: true, force: true });
 });
 
 let n = 0;
-async function fakeDaytona({ boxes = [], wsReject } = {}) {
+async function fakeDaytona({ boxes = [], wsReject, dropLogs = 0 } = {}) {
   const bin = tmp();
   writeBin(bin, "claude", AGENT_SCRIPT);
   writeBin(bin, "claude-version", "console.log('2.1.302')");
+  writeBin(bin, "chat-agent", CHAT_SCRIPT);
   made.push(bin);
   const shells = new Map();
-  const seen = { creates: [], executes: [], ptys: [], resizes: [], deletes: [], beats: 0, ptyDeletes: [] };
+  const seen = { creates: [], executes: [], ptys: [], resizes: [], deletes: [], beats: 0, ptyDeletes: [], sessions: [], sessionExecs: [], inputs: [], sessionDeletes: [], logOpens: [] };
+  // Session commands (chat): the child, its log as tagged chunks (01 01 01 stdout, 02 02 02 stderr), live log sockets.
+  const commands = new Map();
+  let cmdN = 0;
   const box = (b) => ({ id: b.id, name: b.name, state: b.state, labels: b.labels ?? {}, createdAt: "2026-10-18T00:00:00.000Z", autoDestroyAt: b.ttl ? "2026-10-18T00:30:00.000Z" : undefined, toolboxProxyUrl: `${srv.url}/toolbox` });
   const srv = await wsServe({
     reject: (req, url) => (req.headers.authorization !== `Bearer ${API_KEY}` ? 401 : wsReject?.(url) ?? 0),
@@ -101,9 +108,74 @@ async function fakeDaytona({ boxes = [], wsReject } = {}) {
         shells.get(m[2])?.kill("SIGHUP");
         return { json: {} };
       }
+      if ((m = p.match(/^\/toolbox\/([^/]+)\/process\/session$/)) && req.method === "POST") {
+        seen.sessions.push(body.sessionId);
+        return { status: 201, text: "" };
+      }
+      if ((m = p.match(/^\/toolbox\/([^/]+)\/process\/session\/([^/]+)\/exec$/))) {
+        const b = boxes.find((x) => x.id === decodeURIComponent(m[1]));
+        seen.sessionExecs.push(body);
+        const c = { id: `cmd-${++cmdN}`, session: decodeURIComponent(m[2]), command: body.command, log: [], socks: new Set(), exitCode: undefined };
+        // As the daemon does: the command's stdin is a pipe that /input writes to.
+        c.child = spawn("sh", ["-c", body.command], { cwd: b.home, env: { PATH: `${bin}:${process.env.PATH}`, HOME: b.home } });
+        children.push(c.child);
+        const push = (tag, d) => {
+          const chunk = Buffer.concat([Buffer.from([tag, tag, tag]), d]);
+          c.log.push(chunk);
+          // Live chunks cut inside the marker, as a frame boundary may.
+          for (const s of c.socks) {
+            s.binary(chunk.subarray(0, 2));
+            s.binary(chunk.subarray(2));
+            // Dropped once it has said something, while the command runs.
+            if (dropLogs > 0) {
+              dropLogs--;
+              c.socks.delete(s);
+              setTimeout(() => s.socket.destroy(), 50);
+            }
+          }
+        };
+        c.child.stdout.on("data", (d) => push(1, d));
+        c.child.stderr.on("data", (d) => push(2, d));
+        c.child.stdin.on("error", () => {});
+        c.child.on("close", (code, sig) => {
+          c.exitCode = code ?? 128 + ({ SIGHUP: 1, SIGKILL: 9, SIGTERM: 15 }[sig] ?? 0);
+          for (const s of c.socks) s.close(1000);
+        });
+        commands.set(c.id, c);
+        return { status: 202, json: { cmdId: c.id, output: null, stdout: null, stderr: null, exitCode: null } };
+      }
+      if ((m = p.match(/^\/toolbox\/([^/]+)\/process\/session\/([^/]+)\/command\/([^/]+)\/input$/))) {
+        const c = commands.get(decodeURIComponent(m[3]));
+        if (c.exitCode !== undefined) return { status: 410, json: { statusCode: 410, message: `command has already completed with exit code ${c.exitCode}` } };
+        seen.inputs.push(body.data);
+        // The daemon ends a write that lacks one with a newline.
+        c.child.stdin.write(body.data.endsWith("\n") ? body.data : `${body.data}\n`);
+        return { status: 204, text: "" };
+      }
+      if ((m = p.match(/^\/toolbox\/([^/]+)\/process\/session\/([^/]+)\/command\/([^/]+)$/))) {
+        const c = commands.get(decodeURIComponent(m[3]));
+        return { json: { id: c.id, command: c.command, ...(c.exitCode !== undefined ? { exitCode: c.exitCode } : {}) } };
+      }
+      if ((m = p.match(/^\/toolbox\/([^/]+)\/process\/session\/([^/]+)$/)) && req.method === "DELETE") {
+        const s = decodeURIComponent(m[2]);
+        seen.sessionDeletes.push(s);
+        for (const c of commands.values()) if (c.session === s && c.exitCode === undefined) c.child.kill("SIGKILL");
+        return { status: 204, text: "" };
+      }
       return { status: 404, json: { message: `no route ${p}` } };
     },
     ws(conn, req, url) {
+      const logs = url.pathname.match(/^\/toolbox\/([^/]+)\/process\/session\/([^/]+)\/command\/([^/]+)\/logs$/);
+      if (logs) {
+        const c = commands.get(decodeURIComponent(logs[3]));
+        seen.logOpens.push({ follow: url.searchParams.get("follow"), version: req.headers["x-daytona-sdk-version"] });
+        // A replay of the whole log first, then live chunks until the command ends.
+        for (const chunk of c.log) conn.binary(chunk);
+        if (c.exitCode !== undefined) return conn.close(1000);
+        c.socks.add(conn);
+        conn.onClose(() => c.socks.delete(conn));
+        return;
+      }
       const m = url.pathname.match(/^\/toolbox\/([^/]+)\/process\/pty\/([^/]+)\/connect$/);
       const b = boxes.find((x) => x.id === m?.[1]);
       const sh = sandboxShell(b.home, bin, { TERM: "xterm-256color" });
@@ -286,4 +358,100 @@ sh.on("exit", (c) => process.exit(c ?? 1));`);
   term.write("quit\r");
   assert.equal((await out.done).code, 3);
   assert.deepEqual(readdirSync(join(box.home, ".agentoffice/run")).filter((f) => f.endsWith(".env")), []);
+});
+
+/** A PipeProc's stdout and stderr as text, and its exit. */
+function piped(p) {
+  const out = [];
+  const err = [];
+  p.onStdout((c) => out.push(Buffer.from(c)));
+  p.onStderr((c) => err.push(Buffer.from(c)));
+  const done = new Promise((resolve) => p.onExit(resolve));
+  return { out: () => Buffer.concat(out).toString("utf8"), err: () => Buffer.concat(err).toString("utf8"), done };
+}
+
+const CHAT = (cwd) => ({ argv: ["chat-agent", "-p"], cwd, env: { ANTHROPIC_API_KEY: KEY }, secret: ["ANTHROPIC_API_KEY"] });
+
+test("chat: a toolbox session command of its own; the key by env file; whole lines in order; stdout and stderr apart; exit code; the session goes", async () => {
+  const d = await fakeDaytona();
+  const { places: p } = places(d);
+  const place = await p.open({ kind: "daytona", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe(CHAT(place.cwd));
+  const io = piped(pipe);
+  await until(() => io.out().includes("\n"), 5000, "first line");
+  const hello = JSON.parse(io.out().split("\n")[0]);
+  assert.equal(hello.keys.ANTHROPIC_API_KEY, KEY);
+  assert.deepEqual(hello.argv, ["-p"]);
+  assert.ok(!hello.files.some((f) => f.endsWith(".env")), "the env file was read and deleted before the agent started");
+  assert.ok(hello.files.some((f) => f.endsWith(".pid")), "the pid file, for SIGTERM");
+  pipe.write("pi");
+  pipe.write(new TextEncoder().encode("ng\nhalf"));
+  pipe.write("-line\nünï ✓\n");
+  await until(() => io.out().includes("got:ünï ✓"), 5000, "the lines back");
+  assert.match(io.out(), /got:ping\ngot:half-line\ngot:ünï ✓\n/, "in order, none cut where a write ended");
+  assert.deepEqual(d.seen.inputs, ["ping\n", "half-line\nünï ✓\n"], "only whole lines go to /input");
+  assert.match(io.err(), /err:ping\nerr:half-line\nerr:ünï ✓\n/);
+  assert.ok(!io.out().includes("err:"), "stderr stays apart");
+  pipe.write("quit\n");
+  assert.equal((await io.done).code, 3);
+
+  const session = d.seen.sessions[0];
+  assert.match(session, /^ao-[0-9a-f]{12}$/);
+  const exec = d.seen.sessionExecs[0];
+  assert.equal(exec.runAsync, true);
+  assert.equal(exec.suppressInputEcho, true);
+  assert.ok(exec.command.startsWith("sh -c '"));
+  assert.ok(!exec.command.includes(KEY), "no key in the session command");
+  assert.ok(d.seen.executes.find((e) => e.envs?.AO_ENV)?.envs.AO_ENV.includes(KEY), "the key rode one execute's per-command envs");
+  assert.deepEqual(d.seen.logOpens, [{ follow: "true", version: "0.167.0" }], "stdout and stderr tagged apart");
+  await until(() => d.seen.sessionDeletes.includes(session), 3000, "the session (and its log) deleted after the exit");
+  await until(() => readdirSync(join(d.boxes[0].home, ".agentoffice/run")).length === 0, 3000, "pid file cleaned up");
+});
+
+test("chat: a log socket that drops while the agent runs is opened again, and nothing comes twice", async () => {
+  const d = await fakeDaytona({ dropLogs: 1 });
+  const { places: p } = places(d);
+  const place = await p.open({ kind: "daytona", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe(CHAT(place.cwd));
+  const io = piped(pipe);
+  await until(() => io.out().includes("\n"), 5000, "first line");
+  pipe.write("one\n");
+  await until(() => io.out().includes("got:one"), 5000, "echo");
+  await until(() => d.seen.logOpens.length >= 2, 8000, "the socket reopened");
+  pipe.write("two\n");
+  await until(() => io.out().includes("got:two"), 5000, "echo after the reopen");
+  assert.equal(io.out().split('"argv"').length - 1, 1, "the replayed first line was skipped");
+  assert.equal(io.out().split("got:one").length - 1, 1);
+  assert.equal(io.err().split("err:one").length - 1, 1);
+  pipe.kill("SIGKILL");
+  const e = await io.done;
+  assert.notEqual(e.code, 0);
+  assert.ok(d.seen.sessionDeletes.length >= 1, "SIGKILL deletes the session");
+});
+
+test("chat: end() is SIGTERM through the pid file (a session command's stdin can't be closed)", async () => {
+  const d = await fakeDaytona();
+  const { places: p } = places(d);
+  const place = await p.open({ kind: "daytona", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe({ ...CHAT(place.cwd), env: {} });
+  const io = piped(pipe);
+  await until(() => io.out().includes("\n"), 5000, "first line");
+  assert.equal(d.seen.executes.filter((e) => e.envs?.AO_ENV).length, 0, "no env file without keys");
+  pipe.end();
+  assert.equal((await io.done).code, 143);
+  assert.ok(d.seen.executes.some((e) => /kill -TERM/.test(e.command)), "signalled by its pid");
+});
+
+test("the log demuxer: markers cut across frames, and a replay skips what was delivered", () => {
+  const got = [];
+  const dm = new LogDemux((s, b) => got.push([s, Buffer.from(b).toString()]));
+  const f = (...parts) => Buffer.concat(parts.map((p) => (typeof p === "number" ? Buffer.from([p]) : Buffer.from(p))));
+  dm.feed(f(1, 1, 1, "out-a\n", 2, 2));
+  dm.feed(f(2, "err-a\n", 1));
+  dm.feed(f(1, 1, "out-b\n"));
+  assert.deepEqual(got, [[1, "out-a\n"], [2, "err-a\n"], [1, "out-b\n"]]);
+  got.length = 0;
+  dm.replay();
+  dm.feed(f(1, 1, 1, "out-a\n", 2, 2, 2, "err-a\n", 1, 1, 1, "out-b\nout-c\n"));
+  assert.deepEqual(got, [[1, "out-c\n"]], "only what's new after the replay");
 });

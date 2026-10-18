@@ -202,12 +202,12 @@ To run an agent in a sandbox or on an ssh box you can give it API keys from the 
 
 How a key reaches a remote agent, the least persistent way each platform has:
 
-- **Vercel:** in the environment of the agent's own command (the interactive shell's start frame). No file. Vercel keeps every command's arguments; the office never puts a key or a prompt there.
+- **Vercel:** in the environment of the agent's own command (the interactive shell's start frame, or the chat's command). No file. Vercel keeps every command's arguments; the office never puts a key or a prompt there.
 - **Daytona, Railway, ssh:** a file readable only by you, `~/.agentoffice/run/<id>.env` on the remote, written by one command that carries the values in its own environment (Daytona, Railway) or in a script on ssh's input, then read and deleted by the line that starts the agent, before it starts. Daytona's terminal settings and a sandbox's create-time variables are stored by the platform, so keys never go there.
 - **Railway chat mode:** in the environment of the agent's command on Railway's exec bridge. No file.
 - Codex with `OPENAI_API_KEY` is started with a provider definition on its command line that reads the key from its environment, so it skips its login screen without writing `~/.codex/auth.json`.
 
-What stays on the remote: the agent's own files, a pid file in `~/.agentoffice/run` (so the office can stop the agent), what [Your setup](#your-setup-bring-it-along) copied there, and on Railway the relay's copy of about 8 MiB of the terminal's scrollback.
+What stays on the remote: the agent's own files, a pid file in `~/.agentoffice/run` (so the office can stop the agent), what [Your setup](#your-setup-bring-it-along) copied there, on Railway the relay's copy of about 8 MiB of the terminal's scrollback, and on Vercel a chat's output (the conversation as the agent streams it), which Vercel keeps after the command ends: its API still returns it. On Daytona a chat's output is logged in its session while it runs, and the session and its log are deleted when the chat ends.
 
 ### Sandboxes from the page
 
@@ -215,8 +215,8 @@ Hire an agent into a new sandbox, a running one, or an ssh box, and its terminal
 
 | | new sandbox | terminal | chat mode |
 | --- | --- | --- | --- |
-| **Daytona** | `agentoffice-…`, labelled `agentoffice=1`, deleted as soon as it stops, never alive past its lifetime | Daytona's own PTY; `daytona ssh` if that fails | no (v1) |
-| **Vercel Sandbox** | `agentoffice-…`, tagged `agentoffice=1`, not persistent (no snapshot is kept), in `vercel-sandbox-default-project` (created on your first sandbox if it's missing; the page says so first) or `VERCEL_PROJECT_ID` | Vercel's interactive shell; the pinned `npx sandbox@4.8.1` CLI if that fails | no (v1) |
+| **Daytona** | `agentoffice-…`, labelled `agentoffice=1`, deleted as soon as it stops, never alive past its lifetime | Daytona's own PTY; `daytona ssh` if that fails | Claude Code and Codex, as a command in a Daytona session of its own |
+| **Vercel Sandbox** | `agentoffice-…`, tagged `agentoffice=1`, not persistent (no snapshot is kept), in `vercel-sandbox-default-project` (created on your first sandbox if it's missing; the page says so first) or `VERCEL_PROJECT_ID` | Vercel's interactive shell; the pinned `npx sandbox@4.8.1` CLI if that fails | Claude Code and Codex, as a command with its input attached |
 | **Railway** | in the project and environment you pick in Hire (the office remembers it for next time); it starts on the last one you used, else the one in `config.json` (below, ids or names), a project the office's sandboxes are in, a project named `agentoffice…`, the `railway link` of the folder you started the office in, or your account's only project. A `RAILWAY_TOKEN` project token always uses its own. Each is looked up in your account first, so a link to a deleted project is skipped. Destroyed by Railway once it has been idle for its lifetime | `railway sandbox ssh` (needs the `railway` CLI, which registers its ssh key on your Railway account the first time, as it always does) | Claude Code and Codex |
 | **ssh box** | | your own `ssh`, sharing the watcher's connection, with no prompts: a key with a passphrase must be in your ssh-agent and the host key already known (run `ssh <host>` once), or the hire says so | Claude Code and Codex |
 

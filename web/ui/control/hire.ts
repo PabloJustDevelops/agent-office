@@ -164,13 +164,11 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
     store.info?.agents.find((x) => x.agent === a) ?? { agent: a, installed: false, modes: HEADLESS.includes(a) ? ["terminal", "chat"] : ["terminal"], keyNames: [] };
   const prov = (k: string): ProviderStatus | undefined => store.info?.providers.find((p) => p.kind === k);
   const running = (p?: ProviderStatus): SandboxInfo[] => (p?.sandboxes ?? []).filter((s) => s.status === "running" || s.status === "starting");
-  /** Where chat mode works remotely: on pipes over ssh or Railway's exec bridge (Daytona and Vercel: terminal only, v1). */
-  const remoteChat = () => where === "ssh" || (where === "sandbox" && provider === "railway");
-  /** Modes this agent can be hired in, here. */
+  /** Modes this agent can be hired in, here. Remotely chat runs on every place's pipes (ssh, Railway's exec bridge, Daytona's sessions, Vercel's commands); opencode's server stays local. */
   const modesHere = (a: AgentKind): ControlMode[] => {
     const m = avail(a).modes.length ? avail(a).modes : ["terminal" as ControlMode];
     if (where === "local") return m;
-    return HEADLESS.includes(a) && a !== "opencode" && remoteChat() ? ["terminal", "chat"] : ["terminal"];
+    return HEADLESS.includes(a) && a !== "opencode" ? ["terminal", "chat"] : ["terminal"];
   };
   /** opencode runs on this machine only for now (the server answers 400 elsewhere). */
   const usableHere = (a: AgentKind) => (where === "local" ? avail(a).installed : a !== "opencode");
@@ -347,7 +345,7 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
           ? `${agentName(agent)} has no headless protocol: terminal only`
           : where === "local"
             ? (avail(agent).note ?? "Terminal only on this Mac")
-            : `Not in ${PLACE_NAME[provider]} yet: ssh and Railway have it`;
+            : `${agentName(agent)} runs on this machine only for now`;
       b.title = why;
       setText(b.querySelector("small")!, why || (m === "terminal" ? "The agent's own TUI, live" : "Messages, tool calls, approvals"));
     }

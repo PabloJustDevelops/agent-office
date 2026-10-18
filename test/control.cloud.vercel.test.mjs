@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { load, tmp, until, writeBin } from "./remote.fakes.mjs";
-import { AGENT_SCRIPT, collect, fakeContext, fakePty, wsServe } from "./control.cloud.fakes.mjs";
+import { AGENT_SCRIPT, CHAT_SCRIPT, collect, fakeContext, fakePty, wsServe } from "./control.cloud.fakes.mjs";
 
 const M = await load("src/control/cloud/index.ts");
 
@@ -19,19 +19,26 @@ const KEY = "sk-ant-dummy-vercel-0003";
 const made = [];
 const ptys = [];
 const servers = [];
+const children = [];
 after(async () => {
   for (const p of ptys) p.killAll();
+  for (const c of children) c.kill("SIGKILL");
   for (const s of servers) await s.close();
   for (const d of made) rmSync(d, { recursive: true, force: true });
 });
 
 let n = 0;
-async function fakeVercel({ project = false, hobby = false, noInteractive = false } = {}) {
+async function fakeVercel({ project = false, hobby = false, noInteractive = false, dropStdin = 0, cutLogs = 0 } = {}) {
   const bin = tmp();
   writeBin(bin, "claude", AGENT_SCRIPT);
+  writeBin(bin, "chat-agent", CHAT_SCRIPT);
   made.push(bin);
   const boxes = [];
-  const seen = { projects: [], creates: [], cmds: [], deletes: [], starts: [], resizes: [] };
+  const seen = { projects: [], creates: [], cmds: [], deletes: [], starts: [], resizes: [], stdin: [], kills: [], logOpens: 0 };
+  // Detached commands (chat): the child, everything it printed as {stream, data}, live log readers.
+  const detached = new Map();
+  let cmdN = 0;
+  const cmdView = (c) => ({ id: c.id, name: "sh", args: c.args, cwd: c.cwd, sessionId: c.session, exitCode: c.exitCode, startedAt: 1760745600000 });
   let projectExists = project;
   const runSh = (b, script, env = {}) =>
     new Promise((resolve) => {
@@ -45,6 +52,26 @@ async function fakeVercel({ project = false, hobby = false, noInteractive = fals
   const view = (b) => ({ name: b.name, status: b.status, currentSessionId: b.session, tags: b.tags, createdAt: 1760745600000, expiresAt: 1760747400000, persistent: false });
   const srv = await wsServe({
     reject: (req, url) => (url.searchParams.get("token") !== "itok" ? 401 : 0),
+    // A detached command's logs: everything so far (a replay from the start), then live until it exits.
+    stream(req, res, url) {
+      const m = url.pathname.match(/^\/v2\/sandboxes\/sessions\/([^/]+)\/cmd\/([^/]+)\/logs$/);
+      if (!m) return false;
+      const c = detached.get(m[2]);
+      if (req.headers.authorization !== `Bearer ${TOKEN}` || !c) {
+        res.writeHead(c ? 403 : 404, { "content-type": "application/json" });
+        res.end("{}");
+        return true;
+      }
+      seen.logOpens++;
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      for (const e of c.log) res.write(JSON.stringify(e) + "\n");
+      if (c.exitCode !== null) res.end();
+      else {
+        c.readers.add(res);
+        res.on("close", () => c.readers.delete(res));
+      }
+      return true;
+    },
     async http(req, body, url) {
       const p = url.pathname;
       if (p === "/health") return { json: { ok: true } };
@@ -84,9 +111,71 @@ async function fakeVercel({ project = false, hobby = false, noInteractive = fals
       if ((m = p.match(/^\/v2\/sandboxes\/sessions\/([^/]+)\/cmd$/))) {
         const b = boxes.find((x) => x.session === m[1]);
         seen.cmds.push(body);
+        if (body.attachStdin) {
+          const c = { id: `cmd_d${++cmdN}`, session: m[1], args: body.args, cwd: body.cwd ?? b.home, exitCode: null, written: 0, log: [], readers: new Set() };
+          c.child = spawn("sh", ["-c", body.args[1]], { cwd: c.cwd, env: { PATH: `${bin}:${process.env.PATH}`, HOME: b.home, ...(body.env ?? {}) } });
+          children.push(c.child);
+          const push = (stream, d) => {
+            const e = { stream, data: String(d) };
+            c.log.push(e);
+            for (const r of c.readers) {
+              r.write(JSON.stringify(e) + "\n");
+              // Cut once it has said something, while the command runs (what a proxy may do to a long stream).
+              if (cutLogs > 0) {
+                cutLogs--;
+                c.readers.delete(r);
+                r.end();
+              }
+            }
+          };
+          c.child.stdout.on("data", (d) => push("stdout", d));
+          c.child.stderr.on("data", (d) => push("stderr", d));
+          c.child.stdin.on("error", () => {});
+          c.done = new Promise((resolve) =>
+            c.child.on("close", (code, sig) => {
+              c.exitCode = code ?? 128 + ({ SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGTERM: 15 }[sig] ?? 0);
+              for (const r of c.readers) r.end();
+              resolve();
+            }),
+          );
+          detached.set(c.id, c);
+          return { json: { command: cmdView(c) } };
+        }
         const r = await runSh(b, body.args[1], body.env);
         const lines = [{ command: { id: "cmd_1" } }, { stream: "stdout", data: r.out }, { stream: "stderr", data: r.err }, { command: { id: "cmd_1", exitCode: r.code } }];
         return { type: "application/x-ndjson", text: lines.map((l) => JSON.stringify(l)).join("\n") + "\n" };
+      }
+      if ((m = p.match(/^\/v2\/sandboxes\/sessions\/([^/]+)\/cmd\/([^/]+)\/stdin$/))) {
+        const c = detached.get(m[2]);
+        if (!c || c.exitCode !== null) return { status: 404, json: { error: { code: "command_not_found_or_exited", message: "Not found: command not found or has exited" } } };
+        seen.stdin.push(body);
+        let data = body.data ? Buffer.from(body.data, "base64") : Buffer.alloc(0);
+        // What it already has is skipped: a resend at the same offset writes nothing twice.
+        if (typeof body.offset === "number" && body.offset < c.written) data = data.subarray(Math.min(data.length, c.written - body.offset));
+        if (data.length) {
+          c.child.stdin.write(data);
+          c.written += data.length;
+        }
+        if (body.close) c.child.stdin.end();
+        if (dropStdin > 0 && data.length) {
+          // Applied, then the connection drops before the answer.
+          dropStdin--;
+          req.socket.destroy();
+          return new Promise(() => {});
+        }
+        return { json: { command: cmdView(c), bytesWritten: c.written } };
+      }
+      if ((m = p.match(/^\/v2\/sandboxes\/sessions\/([^/]+)\/cmd\/([^/]+)\/kill$/))) {
+        const c = detached.get(m[2]);
+        seen.kills.push(body.signal);
+        c.child.kill({ 1: "SIGHUP", 2: "SIGINT", 9: "SIGKILL", 15: "SIGTERM" }[body.signal]);
+        return { json: { command: cmdView(c) } };
+      }
+      if ((m = p.match(/^\/v2\/sandboxes\/sessions\/([^/]+)\/cmd\/([^/]+)$/))) {
+        const c = detached.get(m[2]);
+        if (!c) return { status: 404, json: { error: { message: "not found" } } };
+        if (url.searchParams.get("wait") === "true") await c.done;
+        return { json: { command: cmdView(c) } };
       }
       if ((m = p.match(/^\/v2\/sandboxes\/sessions\/([^/]+)\/interactive$/))) {
         if (noInteractive) return { status: 404, json: { error: { message: "not found" } } };
@@ -245,4 +334,80 @@ test("delete asks for orphan snapshots to go too; someone else's sandbox needs f
   await assert.rejects(p.deleteSandbox("vercel", "users-own"), (e) => e.status === 409);
   const other = await p.open({ kind: "vercel", target: "users-own" }, { agent: "claude", progress: () => {} });
   assert.equal(other.ours, false);
+});
+
+/** A PipeProc's stdout and stderr as text, and its exit. */
+function piped(p) {
+  const out = [];
+  const err = [];
+  p.onStdout((c) => out.push(Buffer.from(c)));
+  p.onStderr((c) => err.push(Buffer.from(c)));
+  const done = new Promise((resolve) => p.onExit(resolve));
+  return { out: () => Buffer.concat(out).toString("utf8"), err: () => Buffer.concat(err).toString("utf8"), done };
+}
+
+const CHAT = (cwd) => ({ argv: ["chat-agent", "-p"], cwd, env: { ANTHROPIC_API_KEY: KEY }, secret: ["ANTHROPIC_API_KEY"] });
+
+test("chat: a detached command with stdin attached; the key in its env only; stdout and stderr apart; EOF ends it", async () => {
+  const v = await fakeVercel({ project: true });
+  const { places: p } = places(v);
+  const place = await p.open({ kind: "vercel", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe(CHAT(place.cwd));
+  const io = piped(pipe);
+  await until(() => io.out().includes("\n"), 5000, "first line");
+  const hello = JSON.parse(io.out().split("\n")[0]);
+  assert.equal(hello.keys.ANTHROPIC_API_KEY, KEY);
+  assert.deepEqual(hello.argv, ["-p"]);
+  assert.deepEqual(hello.files, [], "no env file or pid file: the API signals the command itself");
+  pipe.write("pi");
+  pipe.write(new TextEncoder().encode("ng\n"));
+  pipe.write("ünï ✓\n");
+  await until(() => io.out().includes("got:ünï ✓"), 5000, "both lines back");
+  assert.ok(io.out().indexOf("got:ping") < io.out().indexOf("got:ünï ✓"), "in order");
+  assert.match(io.err(), /err:ping\nerr:ünï ✓\n/);
+  assert.ok(!io.out().includes("err:"), "stderr stays apart");
+  pipe.end();
+  assert.equal((await io.done).code, 0, "stdin closed: the agent read EOF");
+
+  const cmd = v.seen.cmds.find((c) => c.attachStdin);
+  assert.equal(cmd.command, "sh");
+  assert.equal(cmd.env.ANTHROPIC_API_KEY, KEY);
+  assert.ok(!JSON.stringify(cmd.args).includes(KEY), "Vercel keeps args: no key there");
+  const offsets = v.seen.stdin.map((s) => s.offset);
+  assert.deepEqual(offsets, [...offsets].sort((a, b) => a - b), "offsets only grow");
+  assert.equal(v.seen.stdin.at(-1).close, true);
+  assert.equal(v.seen.logOpens, 1);
+});
+
+test("chat: a stdin request that drops after it was applied is resent at its offset and written once", async () => {
+  const v = await fakeVercel({ project: true, dropStdin: 1 });
+  const { places: p } = places(v);
+  const place = await p.open({ kind: "vercel", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe(CHAT(place.cwd));
+  const io = piped(pipe);
+  await until(() => io.out().includes("\n"), 5000, "first line");
+  pipe.write("once\n");
+  pipe.write("twice\n");
+  await until(() => io.out().includes("got:twice"), 8000, "after the resend");
+  assert.equal(io.out().split("got:once").length - 1, 1, "the resent line wasn't written twice");
+  const once = v.seen.stdin.filter((s) => s.data === Buffer.from("once\n").toString("base64"));
+  assert.equal(once.length, 2, "sent again after the drop");
+  assert.equal(once[0].offset, once[1].offset, "at the same offset");
+  pipe.write("quit\n");
+  assert.equal((await io.done).code, 3);
+});
+
+test("chat: a log stream cut while the agent runs is opened again, and nothing comes twice", async () => {
+  const v = await fakeVercel({ project: true, cutLogs: 1 });
+  const { places: p } = places(v);
+  const place = await p.open({ kind: "vercel", target: "new" }, { agent: "claude", progress: () => {} });
+  const pipe = await place.pipe(CHAT(place.cwd));
+  const io = piped(pipe);
+  await until(() => v.seen.logOpens >= 2, 8000, "the stream reopened");
+  pipe.write("after\n");
+  await until(() => io.out().includes("got:after"), 5000, "output after the reopen");
+  assert.equal(io.out().split('"argv"').length - 1, 1, "the replayed first line was skipped");
+  pipe.kill("SIGTERM");
+  assert.equal((await io.done).code, 143);
+  assert.deepEqual(v.seen.kills, [15]);
 });

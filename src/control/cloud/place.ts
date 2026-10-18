@@ -5,7 +5,7 @@
  * sandboxes the office created ($AGENT_OFFICE_HOME/sandboxes.json, 0600).
  *
  * A driver supplies run() (a long-running exec: installs, seeding, env
- * files), openTerm() and, where chat mode works, openPipe(). The base adds
+ * files), openTerm() and pipe() for chat mode. The base adds
  * the agent install, first-run seeding (office sandboxes only), the Codex
  * provider flags, and the PATH ensureAgent found, so every driver launches
  * the same way.
