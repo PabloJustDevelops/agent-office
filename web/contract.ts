@@ -23,6 +23,17 @@ export interface OfficeScene {
   select(workerId: string | null): void;
   /** Pan/zoom the camera so this worker is centred. */
   focus(workerId: string): void;
+  /**
+   * Keep auto-fit clear of the chrome's panels (CSS px from each edge). `overlay` is for panels
+   * that come and go with a selection (the inspector, the phone sheet): the camera frames around
+   * them too, but they never re-pack the office, so clicking a worker doesn't rearrange it.
+   */
+  setInsets?(insets: { top: number; right: number; bottom: number; left: number }, overlay?: Partial<{ top: number; right: number; bottom: number; left: number }>): void;
+  /**
+   * Director mode (stream mode): the camera cuts in on each big moment (a flip, a shout, a
+   * sandbox beaming in) with letterbox bars and a caption, then back out to the whole office.
+   */
+  setDirector?(on: boolean): void;
   /** The canvas, for PNG export and MediaRecorder capture. */
   readonly canvas: HTMLCanvasElement;
   destroy(): void;

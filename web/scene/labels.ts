@@ -1,0 +1,409 @@
+/*
+ * The screen-resolution pass: crisp pod signs, mood chips and name tags above
+ * heads, status chips under chairs, and the big kaomoji speech bubble during a
+ * table flip. Text uses the same bitmap font as the room, scaled by a whole
+ * number of device pixels so it stays crisp at any zoom; emoji moods are the
+ * only system-font glyphs. The project lives on the pod sign, so a worker's
+ * tag names its agent (or role, for interns) or wears the mood it set. Labels
+ * are placed greedily by priority (selected, needs-you, flipping, moods,
+ * recently active), tried at a few offsets before giving up, and a budget
+ * scaled to the screen keeps a crowded office down to the labels that matter.
+ */
+import type { AgentKind } from "../../src/shared/events.ts";
+import { BRAND, HOST_BRAND } from "../../src/shared/events.ts";
+import { C, mix, rgba } from "./palette.ts";
+import { FONT, fit, textBitmap } from "./font.ts";
+import { drawMark, pixelLogo, type LogoKind } from "./logos.ts";
+import type { Camera } from "./camera.ts";
+import { brandInk, type Act, type Crew, type Worker } from "./workers.ts";
+import { podInk, asciiOnly, SIGN_LOGO, SHOUT_MS, PLATFORM_TAG } from "./room.ts";
+import { MARK_STEP, tagW } from "./layout.ts";
+import { bitmap, clamp, type Bitmap } from "./util.ts";
+
+const ACT_COL: Record<Act, string> = {
+  idle: C.slate3, thinking: C.slate4, read: C.slate5, edit: C.blue4, bash: C.green4, search: C.gold3,
+  web: C.blue5, agent: C.plum3, todo: C.gold3, mcp: C.plum3, other: C.blue5, reply: C.white,
+  waiting: C.gold3, error: C.red3,
+};
+
+/** Short agent names for tags. */
+const SHORT: Record<string, string> = {
+  claude: "Claude", commandcode: "Command", codex: "Codex", opencode: "opencode", droid: "Droid",
+  gemini: "Gemini", qwen: "Qwen", cursor: "Cursor",
+};
+
+interface Box { x: number; y: number; w: number; h: number; id?: string }
+const hit = (a: Box, b: Box) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+
+/** In ASCII mode labels are terminal text: a flat black field between square brackets. */
+let asciiLook = false;
+
+/** Pixel pill: a rect with its corners nibbled off (square brackets in ASCII mode). */
+function pill(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, s: number, bg: string, edge?: string) {
+  if (asciiLook) {
+    g.fillStyle = "#09070c";
+    g.fillRect(x, y, w, h);
+    g.fillStyle = edge ?? mix(bg, C.white, 0.35);
+    for (const bx of [x, x + w - s]) g.fillRect(bx, y, s, h);
+    for (const [tx, dir] of [[x, 1], [x + w - s, -1]] as const) {
+      g.fillRect(tx + dir * s, y, s, s);
+      g.fillRect(tx + dir * s, y + h - s, s, s);
+    }
+    return;
+  }
+  if (edge) {
+    g.fillStyle = edge;
+    g.fillRect(x + s, y - s, w - 2 * s, h + 2 * s);
+    g.fillRect(x, y, w, h);
+    g.fillRect(x - s, y + s, w + 2 * s, h - 2 * s);
+  }
+  g.fillStyle = bg;
+  g.fillRect(x + s, y, w - 2 * s, h);
+  g.fillRect(x, y + s, w, h - 2 * s);
+}
+
+function text(g: CanvasRenderingContext2D, s: string, color: string, x: number, y: number, fs: number) {
+  const b = textBitmap(FONT(), s, color);
+  g.drawImage(b.c, Math.round(x), Math.round(y), b.w * fs, b.h * fs);
+  return b.w * fs;
+}
+
+function textW(s: string, fs: number) {
+  return textBitmap(FONT(), s, C.white).w * fs;
+}
+
+const emojiCache = new Map<string, Bitmap>();
+/** A colour emoji rendered by the system font, cached per size. */
+function emojiBitmap(e: string, px: number): Bitmap {
+  const key = e + "|" + px;
+  let b = emojiCache.get(key);
+  if (!b) {
+    if (emojiCache.size > 200) emojiCache.clear();
+    b = bitmap(Math.ceil(px * 1.3), Math.ceil(px * 1.3));
+    const g = b.g;
+    g.imageSmoothingEnabled = true;
+    g.font = `${px}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+    g.textBaseline = "middle";
+    g.textAlign = "center";
+    g.fillText(e, b.w / 2, b.h / 2 + px * 0.06);
+    emojiCache.set(key, b);
+  }
+  return b;
+}
+
+export interface LabelOpts {
+  dpr: number;
+  now: number;
+  ascii: boolean;
+  /** the wall TV, written as real text in ASCII mode */
+  tv?: { x: number; y: number; w: number; h: number };
+}
+
+export function drawLabels(g: CanvasRenderingContext2D, crew: Crew, cam: Camera, o: LabelOpts): Box[] {
+  const { dpr, now } = o;
+  asciiLook = o.ascii;
+  const z = cam.z;
+  const fs = clamp(Math.round(Math.min(1.5 * dpr, Math.max(1.1 * dpr, z * 0.75)) + (z > 7 * dpr ? dpr * 0.5 : 0)), 1, 6);
+  const edge = 4 * dpr;
+  const inX = (x: number, w: number) => Math.round(clamp(x, edge, Math.max(edge, cam.vw - w - edge)));
+  const pad = 2 * fs;
+  const lineH = 8 * fs;
+  const placed: Box[] = [];
+  const signs: Box[] = [];
+  const hitboxes: Box[] = [];
+  if (o.ascii && o.tv) asciiTv(g, crew, cam, o.tv, now);
+
+  /* ---- pod signs: the real vector mark over the pixel one (and in ASCII
+   * mode, where the sign is not in the sampled picture, the whole sign) */
+  for (const b of crew.layout.blocks.values()) {
+    if (b.alpha < 0.3) continue;
+    const remote = b.zone === "cloud";
+    const kind = (remote && b.host && b.host.kind !== "local" ? b.host.kind : b.agent) as LogoKind;
+    const col = remote && b.host && b.host.kind !== "local" ? HOST_BRAND[b.host.kind].color : BRAND[b.agent]?.color ?? C.slate4;
+    const [sx, sy] = cam.toScreen(b.x + SIGN_LOGO.x, b.y + SIGN_LOGO.y);
+    if (sx < -200 || sy < -40 || sx > cam.vw + 20 || sy > cam.vh + 20) continue;
+    if (o.ascii) {
+      const tagText = remote && b.host && b.host.kind !== "local" ? `${PLATFORM_TAG[b.host.kind] ?? ""} ` : "";
+      const label = fit(FONT(), tagText + (asciiOnly(b.label) || b.label), 26 * 6);
+      const ink = b.offline ? C.slate3 : podInk(b);
+      const lw = textW(label, fs);
+      const bx = Math.round(sx - 2 * fs), by = Math.round(sy - fs);
+      g.globalAlpha = b.alpha;
+      g.fillStyle = "#09070c";
+      g.fillRect(bx - fs, by - fs, lw + 13 * fs, lineH + fs);
+      g.fillStyle = ink;
+      g.fillRect(bx - fs, by + lineH - fs, lw + 13 * fs, fs);
+      if (8 * fs >= 12) drawMark(g, kind, bx, by, 8 * fs, b.offline ? C.slate3 : col);
+      else g.drawImage(pixelLogo(kind, 9, b.offline ? C.slate3 : col).c, bx, by, 8 * fs, 8 * fs);
+      text(g, label, b.offline ? C.slate3 : C.white, bx + 11 * fs, by, fs);
+      if (b.offline) text(g, "offline", C.red3, bx + 13 * fs + lw, by, fs);
+      g.globalAlpha = 1;
+      placed.push({ x: bx, y: by, w: lw + 12 * fs, h: lineH });
+      continue;
+    }
+    // tags steer clear of the sign; moods and VIPs may still cover it
+    const marks = remote ? [] : b.mix.slice(0, 3);
+    const extra = Math.max(0, marks.length - 1) * MARK_STEP;
+    signs.push({ x: sx - 4 * z, y: sy - 3 * z, w: Math.min(b.w, 22 + [...b.label].length * 6 + tagW(b) + extra) * z, h: 14 * z });
+    const size = SIGN_LOGO.size * z;
+    if (size >= 12) {
+      g.globalAlpha = 0.95 * b.alpha;
+      if (marks.length > 1) {
+        for (let i = marks.length - 1; i >= 0; i--) {
+          const a = marks[i]!;
+          g.fillStyle = "#14121c";
+          g.fillRect(sx + i * MARK_STEP * z - z, sy - z, size + 2 * z, size + 2 * z);
+          drawMark(g, a, sx + i * MARK_STEP * z, sy, size, b.offline ? C.slate3 : BRAND[a]?.color ?? C.slate4);
+        }
+      } else drawMark(g, kind, sx, sy, size, b.offline ? C.slate3 : col);
+      g.globalAlpha = 1;
+    }
+  }
+
+  const ws = [...crew.workers.values()].filter((w) => !w.gone && w.alpha > 0.4 && !w.tp);
+  const prio = (w: Worker) =>
+    (crew.selected === w.id ? 1000 : 0) + (crew.hovered === w.id ? 500 : 0) + (w.show?.kind === "flip" ? 400 : 0) +
+    (w.needsHuman ? 300 : 0) + (w.show ? 100 : 0) + (w.mood ? 80 + Math.max(0, 40 - (now - w.mood.at) / 1000) : 0) +
+    Math.max(0, 60 - (now - w.summaryAt) / 200) + (w.intern ? 0 : 10);
+  ws.sort((a, b) => prio(b) - prio(a));
+
+  // how many free-floating labels the screen can take before it turns to soup
+  const onScreen = ws.filter((w) => { const [x, y] = cam.toScreen(w.x, w.y); return x > -20 && y > -20 && x < cam.vw + 20 && y < cam.vh + 20; }).length;
+  const budget = Math.max(4, Math.floor((cam.vw * cam.vh) / (lineH * lineH * 90)));
+  const crowded = onScreen * 2 > budget;
+  let spent = 0;
+  const tryPlace = (cands: Box[], force: boolean): Box | null => {
+    for (const c of cands) if (!placed.some((p) => hit(p, c)) && !signs.some((p) => hit(p, c))) return c;
+    for (const c of cands) if (force && !placed.some((p) => hit(p, c))) return c;
+    return force ? cands[0] : null;
+  };
+  /* Labels stay inside the worker's own zone (the office, or the cloud wing behind its glass). */
+  const zoneOf = (w: Worker) => {
+    const r = w.seat.block.zone === "cloud" && crew.layout.wing ? crew.layout.wing : crew.layout.main;
+    const [x0] = cam.toScreen(r.x + 4, 0);
+    const [x1] = cam.toScreen(r.x + r.w - 4, 0);
+    return { x0: Math.max(edge, x0), x1: Math.min(cam.vw - edge, x1) };
+  };
+  const inZone = (w: Worker, b: Box): Box => {
+    const zn = zoneOf(w);
+    if (zn.x1 - zn.x0 < b.w) return b;
+    return { ...b, x: Math.round(clamp(b.x, zn.x0, zn.x1 - b.w)) };
+  };
+
+  for (const w of ws) {
+    const sel = crew.selected === w.id;
+    const hov = crew.hovered === w.id;
+    // Waiting is drawn in the world (raised hand, a bobbing "!"): it doesn't force a pill of its own.
+    const vip = sel || hov || w.show?.kind === "flip";
+    const h = crew.headPos(w);
+    const [hx, hy] = cam.toScreen(h.x, h.y);
+    const [, fy] = cam.toScreen(w.x, w.y);
+    if (hx < -100 || hx > cam.vw + 100 || hy < -100 || fy > cam.vh + 100) continue;
+    const ink = brandInk(w.agent);
+
+    // --- flip speech bubble (the money shot)
+    if (w.show?.kind === "flip") {
+      const t = now - w.show.t0;
+      let say = "";
+      if (t > 900 && t < 3900) say = "(╯°□°)╯︵ ┻━┻";
+      else if (t >= 4000 && t < 6300) say = "┬─┬ノ( º _ ºノ)";
+      if (say) {
+        const bs = clamp(Math.max(fs + Math.max(1, Math.round(dpr * 0.5)), Math.round(z * 0.55)), 1, 8);
+        const reason = t < 3900 && w.flipReason ? fit(FONT(), asciiOnly(w.flipReason) || w.flipReason, 34 * 6) : "";
+        const rs = Math.max(1, bs - 1);
+        const tw = Math.max(textW(say, bs), reason ? textW(reason, rs) : 0);
+        const bw = tw + 6 * bs, bh = 8 * bs + 6 * bs + (reason ? 9 * rs + bs : 0);
+        const pop = clamp((t - (t < 3900 ? 900 : 4000)) / 160, 0, 1);
+        // Beside the head, not above it: above is the pod sign, and the sign should stay readable.
+        // Right of the worker unless that runs off screen; the tail points back at the face.
+        let right = hx + 9 * z + bw < cam.vw - edge;
+        if (!right && hx - 9 * z - bw < edge) right = true;
+        const bx = inX(right ? hx + 7 * z : hx - 7 * z - bw, bw);
+        const by = Math.round(clamp(hy - bh * 0.55 - 2 * bs * pop, edge, cam.vh - bh - edge));
+        g.globalAlpha = pop;
+        pill(g, bx, by, bw, bh, bs, C.white, C.ink);
+        const ty = Math.round(by + bh * 0.55);
+        const tx = right ? bx - 2 * bs : bx + bw;
+        g.fillStyle = C.ink;
+        g.fillRect(tx, ty - bs, 2 * bs, 3 * bs);
+        g.fillRect(right ? tx - 2 * bs : tx + 2 * bs, ty, 2 * bs, bs);
+        g.fillStyle = C.white;
+        g.fillRect(right ? bx - bs : bx + bw - bs, ty, 2 * bs, bs);
+        text(g, say, t < 3900 ? C.red2 : C.ink2, bx + 3 * bs, by + 4 * bs, bs);
+        if (reason) {
+          g.fillStyle = mix(C.white, C.slate4, 0.5);
+          g.fillRect(bx + 3 * bs, by + 13 * bs, bw - 6 * bs, Math.max(1, Math.round(bs / 2)));
+          text(g, reason, C.ink2, bx + 3 * bs, by + 14 * bs + Math.round(bs / 2), rs);
+        }
+        g.globalAlpha = 1;
+        placed.push({ x: bx, y: by, w: bw, h: bh });
+      }
+    }
+    const flipping = w.show?.kind === "flip";
+
+    // --- the tag above the head: mood if set, else agent / role
+    const mood = w.mood;
+    const moodText = mood ? asciiOnly(mood.text) || (mood.emoji ? "" : mood.text) : "";
+    let name = w.intern ? (w.role || "intern") : SHORT[w.agent] ?? BRAND[w.agent]?.name ?? w.agent;
+    if (sel || hov) name = `${w.intern ? name : BRAND[w.agent]?.name ?? name}${w.model ? " · " + shortModel(w.model) : ""}`;
+    const showMood = !!mood && !flipping;
+    const label = showMood && !sel && !hov ? fit(FONT(), moodText, 30 * 6) : fit(FONT(), name, sel || hov ? 40 * 6 : 16 * 6);
+    const emojiPx = Math.round(9 * fs);
+    const lead = showMood && mood!.emoji && !sel && !hov ? emojiPx + fs * 2 : 7 * fs + 3 * fs;
+    const tw = label ? textW(label, fs) : 0;
+    const tagW = lead + tw + pad * 2 - (label ? 0 : fs * 2);
+    const tagH = lineH + pad + (showMood ? fs * 2 : 0);
+    const zoomedIn = 74 * z > 520;
+    // remote pods mix agents, so their people carry a name tag when there is room
+    const wantTag = !flipping && (vip || showMood || ((w.intern || w.remote) && !crowded) || zoomedIn);
+    if (wantTag && (vip || spent < budget)) {
+      const lift = (w.needsHuman || (w.seated && w.act === "thinking" && !mood)) ? 20 * z : 4 * z;
+      const ty = Math.round(hy - tagH - lift);
+      const cands: Box[] = [0, -1, 1, -2].map((k) => inZone(w, {
+        x: inX(hx - tagW / 2 + (k === -2 ? 0 : k * tagW * 0.55), tagW),
+        y: ty - (k === -2 ? tagH + fs * 2 : 0),
+        w: tagW, h: tagH,
+      }));
+      let tag = tryPlace(cands, false);
+      // A mood with no free spot shrinks to its emoji beside the head rather
+      // than covering a pod sign or a neighbour's mood; the text stays in the
+      // feed and the inspector.
+      let compact = false;
+      if (!tag && showMood && !sel && !hov && mood!.emoji) {
+        const cw = emojiPx + pad * 2;
+        const side = 5 * z;
+        tag = tryPlace([
+          { x: inX(hx - cw / 2, cw), y: ty, w: cw, h: tagH },
+          { x: inX(hx + side, cw), y: Math.round(hy - fs), w: cw, h: tagH },
+          { x: inX(hx - side - cw, cw), y: Math.round(hy - fs), w: cw, h: tagH },
+        ].map((b) => inZone(w, b)), !crowded);
+        compact = !!tag;
+      }
+      if (!tag) tag = tryPlace(cands, sel || hov || (showMood && !crowded && !mood!.emoji));
+      if (tag) {
+        spent++;
+        const rank = Math.max(0, spent - budget * 0.6);
+        const fade = vip ? 1 : clamp(1 - rank / Math.max(1, budget), 0.55, 1);
+        if (showMood && !sel && !hov) {
+          // the agent's own status: brand-tinted, a speech tail down to the head
+          const bg = mix(C.ink, ink === C.cc9 || ink === C.cu9 ? C.slate1 : ink, 0.32);
+          g.globalAlpha = 0.95 * fade;
+          pill(g, tag.x, tag.y, tag.w, tag.h, fs, bg, mix(ink, C.white, 0.2));
+          g.fillStyle = mix(ink, C.white, 0.2);
+          const tx = clamp(Math.round(hx - fs), tag.x + 2 * fs, tag.x + tag.w - 4 * fs);
+          if (!compact) g.fillRect(tx, tag.y + tag.h, 2 * fs, fs * 2);
+          g.globalAlpha = fade;
+          let x = tag.x + pad;
+          if (mood!.emoji) {
+            const eb = emojiBitmap(mood!.emoji, emojiPx);
+            g.drawImage(eb.c, Math.round(x - (eb.w - emojiPx) / 2), Math.round(tag.y + (tag.h - eb.h) / 2));
+            x += emojiPx + fs * 2;
+          }
+          if (label && !compact) text(g, label, C.white, x, tag.y + Math.round((tag.h - 7 * fs) / 2) - fs, fs);
+        } else if (w.intern && !sel && !hov) {
+          // an intern's role: a quiet chip, nothing like a pod sign
+          g.globalAlpha = 0.78 * fade;
+          pill(g, tag.x, tag.y, tag.w, tag.h, fs, mix(C.ink, C.blue2, 0.25));
+          g.globalAlpha = fade;
+          text(g, label, C.blue5, tag.x + pad + 10 * fs, tag.y + fs, fs);
+          g.fillStyle = C.blue5;
+          g.fillRect(tag.x + pad + 2 * fs, tag.y + Math.round(tag.h / 2) - fs, 4 * fs, 2 * fs);
+        } else {
+          const bg = sel ? mix(C.ink, ink === C.cc9 ? C.slate1 : ink, 0.18) : C.ink;
+          g.globalAlpha = (sel || hov ? 0.96 : 0.84) * fade;
+          pill(g, tag.x, tag.y, tag.w, tag.h, fs, bg, sel ? ink : undefined);
+          g.globalAlpha = fade;
+          const ly = tag.y + Math.round((tag.h - 7 * fs) / 2);
+          if (7 * fs >= 12) drawMark(g, w.agent, tag.x + pad, ly, 7 * fs, BRAND[w.agent]?.color ?? C.slate4);
+          else g.drawImage(pixelLogo(w.agent as AgentKind, 7, ink).c, tag.x + pad, ly, 7 * fs, 7 * fs);
+          text(g, label, sel ? C.white : C.slate5, tag.x + pad + 10 * fs, tag.y + fs, fs);
+          g.fillStyle = ink;
+          g.fillRect(tag.x + fs * 2, tag.y + tag.h - fs, tag.w - fs * 4, fs);
+        }
+        g.globalAlpha = 1;
+        tag.id = w.id;
+        placed.push(tag);
+        hitboxes.push(tag);
+      }
+    }
+
+    // --- status chip under the chair
+    const fresh = now - w.summaryAt < 9000;
+    // A waiting worker's chip ("needs you · ...") only when someone points at it.
+    const waitingQuiet = w.needsHuman && !sel && !hov;
+    const wantChip = w.summary && !w.leaving && !flipping && !waitingQuiet && (vip || (fresh && (!crowded || spent < budget * 0.7)) || zoomedIn);
+    if (wantChip && (vip || spent < budget)) {
+      const raw = w.needsHuman ? (w.summary && !/^(needs you|waiting)$/i.test(w.summary) ? `needs you · ${w.summary}` : "needs you") : w.summary;
+      const s = fit(FONT(), raw, (sel ? 44 : 26) * 6);
+      const cw = textW(s, fs) + pad * 2 + 4 * fs;
+      const cy = Math.round(fy + 6 * z);
+      const cands: Box[] = [0, 1, -1].map((k) => inZone(w, { x: inX(hx - cw / 2 + k * cw * 0.6, cw), y: cy + (k ? Math.round(lineH * 0.6) : 0), w: cw, h: lineH + pad }));
+      const chip = tryPlace(cands, sel || hov || w.needsHuman);
+      if (chip) {
+        spent++;
+        const pulse = w.needsHuman ? 0.5 + 0.5 * Math.sin(now * 0.008) : 0;
+        const bg = w.needsHuman ? mix(ink === C.cc9 ? C.slate2 : ink, C.ink, 0.25 + 0.2 * (1 - pulse)) : C.ink2;
+        const age = clamp((now - w.summaryAt) / 9000, 0, 1);
+        g.globalAlpha = vip ? 0.95 : 0.88 - age * 0.3;
+        pill(g, chip.x, chip.y, chip.w, chip.h, fs, bg, w.needsHuman ? rgba(C.white, 0.5 + pulse * 0.5) : undefined);
+        g.fillStyle = w.needsHuman ? C.white : ACT_COL[w.act];
+        g.fillRect(chip.x + pad, chip.y + pad, 2 * fs, lineH - pad);
+        text(g, s, w.needsHuman ? C.white : C.slate5, chip.x + pad + 4 * fs, chip.y + fs, fs);
+        g.globalAlpha = 1;
+        placed.push(chip);
+      }
+    }
+  }
+  return hitboxes;
+}
+
+/** The scoreboard as a terminal readout: header, three counters, and the shout ticker. */
+function asciiTv(g: CanvasRenderingContext2D, crew: Crew, cam: Camera, tv: { x: number; y: number; w: number; h: number }, now: number) {
+  const [x0, y0] = cam.toScreen(tv.x, tv.y);
+  const [x1, y1] = cam.toScreen(tv.x + tv.w, tv.y + tv.h);
+  const W = x1 - x0, H = y1 - y0;
+  if (x1 < 0 || y1 < 0 || x0 > cam.vw || y0 > cam.vh || W < 40) return;
+  const s = clamp(Math.floor(Math.min(W / 108, H / 44)), 1, 8);
+  const b = crew.board;
+  g.save();
+  g.beginPath();
+  g.rect(x0, y0, W, H);
+  g.clip();
+  g.fillStyle = "#09070c";
+  g.fillRect(x0, y0, W, H);
+  text(g, "AGENT OFFICE", C.gold3, x0 + 3 * s, y0 + 3 * s, s);
+  if (Math.floor(now / 600) % 2 === 0) { g.fillStyle = C.red3; g.fillRect(x1 - 6 * s, y0 + 4 * s, 3 * s, 3 * s); }
+  const cols: [number, string, string][] = [[b.workers, "crew", C.white], [b.tools, "tools", C.blue5], [b.flips, "flips", C.terra4]];
+  const cw = W / 3;
+  const ns = s + Math.max(1, Math.round(s / 2));
+  cols.forEach(([n, label, c], i) => {
+    const v = n > 9999 ? (n / 1000).toFixed(0) + "k" : String(n);
+    const cx = x0 + cw * i + cw / 2;
+    text(g, v, c, cx - textW(v, ns) / 2, y0 + 13 * s, ns);
+    text(g, label, C.slate3, cx - textW(label, s) / 2, y0 + 13 * s + 9 * ns, s);
+  });
+  const shout = b.shouts[b.shouts.length - 1];
+  const ty = y1 - 10 * s;
+  if (shout && now - shout.t0 < SHOUT_MS) {
+    g.fillStyle = C.red1;
+    g.fillRect(x0, ty - s, W, 10 * s);
+    const msg = `> ${asciiOnly(shout.text) || shout.text}`;
+    const tw = textW(msg, s);
+    const x = x1 - (((now - shout.t0) * 0.06 * s) % (tw + W));
+    text(g, msg, C.white, x, ty, s);
+  } else {
+    const spark = b.spark.slice(-Math.floor(W / (2 * s)));
+    const max = Math.max(3, ...spark);
+    g.fillStyle = C.green3;
+    spark.forEach((v, i) => {
+      const h = Math.max(v ? s : 0, Math.round((v / max) * 7 * s));
+      g.fillRect(x0 + 2 * s + i * 2 * s, y1 - 2 * s - h, s, h);
+    });
+  }
+  g.restore();
+}
+
+function shortModel(m: string): string {
+  const s = m.replace(/^claude-/, "").replace(/-\d{8}$/, "").replace(/^.*\//, "");
+  return s.length > 18 ? s.slice(0, 18) : s;
+}
