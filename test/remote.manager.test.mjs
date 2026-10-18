@@ -437,3 +437,17 @@ test("a CLI that is a .cmd on Windows: npm's shim runs its script with node, any
   assert.equal(r2.code, 0, r2.stderr);
   assert.deepEqual(JSON.parse(r2.stdout), args);
 });
+
+test("on Windows a CLI that times out goes with everything it started, so stdout closes", { skip: process.platform !== "win32" && "Windows only", timeout: 30_000 }, async () => {
+  // A CLI that starts a long-lived child sharing its stdout, like the railway CLI's node wrapper and its native binary.
+  const dir = tmp();
+  writeFileSync(join(dir, "hang.js"), 'require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" }); setTimeout(() => {}, 60000);');
+  writeFileSync(join(dir, "npm-style.cmd"), '@"%~dp0\\node.exe" "%~dp0\\hang.js" %*\r\n');
+  writeFileSync(join(dir, "plain.cmd"), `@"${process.execPath}" "${join(dir, "hang.js")}" %*\r\n`);
+  for (const cli of ["npm-style.cmd", "plain.cmd"]) {
+    const t0 = Date.now();
+    const r = await M.run(join(dir, cli), ["list"], { timeoutMs: 1_000 });
+    assert.equal(r.timedOut, true, cli);
+    assert.ok(Date.now() - t0 < 15_000, `${cli} came back after ${Date.now() - t0} ms`);
+  }
+});

@@ -126,9 +126,16 @@ export function run(cmd: string, args: string[], o: RunOptions): Promise<RunResu
     let overflow = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const kill = () => {
-      // Killing cmd.exe would leave the program it started running: end the whole tree.
-      if (line.cmd && child.pid) spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true }).on("error", () => {});
-      child.kill("SIGTERM");
+      if (process.platform === "win32" && child.pid) {
+        // A kill on Windows ends that one process; what it started (cmd.exe's program, the native
+        // binary behind an npm CLI) would live on and hold stdout open. End the tree while its
+        // root is still there to find it by, then the child.
+        const tree = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { stdio: "ignore", windowsHide: true });
+        tree.on("error", () => child.kill("SIGTERM"));
+        tree.on("exit", () => child.kill("SIGTERM"));
+      } else {
+        child.kill("SIGTERM");
+      }
       killTimer ??= setTimeout(() => child.kill("SIGKILL"), 2_000);
       killTimer.unref?.();
     };
