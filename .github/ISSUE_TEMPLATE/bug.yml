@@ -22,6 +22,6 @@ body:
     attributes:
       label: Versions
       description: agent office, the agent, your OS and Node.
-      placeholder: agentsoffice 0.1.0, Claude Code 2.1, macOS 27, Node 24
+      placeholder: theagentoffice 0.1.0, Claude Code 2.1, macOS 27, Node 24
     validations:
       required: true

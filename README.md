@@ -21,7 +21,7 @@ On this machine, in Daytona, Vercel and Railway sandboxes, or over ssh. A failin
 
 [![by @bas3line](https://img.shields.io/badge/by-%40bas3line-181717?logo=github&logoColor=white)](https://github.com/bas3line)
 [![CI](https://github.com/bas3line/agent-office/actions/workflows/ci.yml/badge.svg)](https://github.com/bas3line/agent-office/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/agentsoffice?color=181717&logo=npm&logoColor=white)](https://www.npmjs.com/package/agentsoffice)
+[![npm](https://img.shields.io/npm/v/theagentoffice?color=181717&logo=npm&logoColor=white)](https://www.npmjs.com/package/theagentoffice)
 [![MIT](https://img.shields.io/badge/license-MIT-181717)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-181717?logo=typescript&logoColor=white)](tsconfig.json)
 [![zero dependencies](https://img.shields.io/badge/dependencies-0-181717)](package.json)
@@ -30,7 +30,7 @@ On this machine, in Daytona, Vercel and Railway sandboxes, or over ssh. A failin
 
 <br>
 
-Written in TypeScript by [@bas3line](https://github.com/bas3line). `npx agentsoffice` reads the transcripts your agents already write and turns them into an office you can watch: every session is a worker at a desk, subagents are interns who walk in from the lift, a raised hand means an agent is waiting on you, and a failing `npm test` gets the table flipped. One command, zero dependencies, nothing to configure, nothing leaves your machine.
+Written in TypeScript by [@bas3line](https://github.com/bas3line). `npx theagentoffice` reads the transcripts your agents already write and turns them into an office you can watch: every session is a worker at a desk, subagents are interns who walk in from the lift, a raised hand means an agent is waiting on you, and a failing `npm test` gets the table flipped. One command, zero dependencies, nothing to configure, nothing leaves your machine.
 
 <p align="center">
   <img src="docs/hero.png" width="49%" alt="The office at full size: one desk per agent on the left, a glass cloud wing of Daytona, boat, Railway and Vercel sandboxes on the right, a Claude Code worker who just flipped a table">
@@ -60,11 +60,11 @@ I run Claude Code, Command Code and Codex side by side most days, some of them i
 ## Install
 
 ```sh
-npx agentsoffice          # your real agents (Node 18+)
-npx agentsoffice --demo   # a busy simulated office, for a first look or a recording
+npx theagentoffice          # your real agents (Node 18+)
+npx theagentoffice --demo   # a busy simulated office, for a first look or a recording
 ```
 
-It opens `http://127.0.0.1:4747`. Start Claude Code, Codex or any agent below in another terminal and it walks in; quit it and it walks back to the lift. `npm install -g agentsoffice` gives you the `agentoffice` command instead.
+It opens `http://127.0.0.1:4747`. Start Claude Code, Codex or any agent below in another terminal and it walks in; quit it and it walks back to the lift. `npm install -g theagentoffice` gives you the `agentoffice` command instead.
 
 Something good just happened? Press <kbd>R</kbd>: the office keeps a rolling buffer and saves the last ~15 seconds as a clip, with a caption for the moment burned in. <kbd>H</kbd> turns on stream mode, where the camera cuts to every flip, shout and arrival. The demo starts from the top for each new viewer, so every recording opens on the arrivals.
 
@@ -149,7 +149,7 @@ npx sandbox@latest sh --rm   # a fresh sandbox, removed when you exit
 claude                       # inside it; Claude Code, Codex and opencode are preinstalled
 ```
 
-Claude Code signs in separately inside the sandbox. On your machine, `npx agentsoffice` finds the sandbox and the worker beams into the cloud wing.
+Claude Code signs in separately inside the sandbox. On your machine, `npx theagentoffice` finds the sandbox and the worker beams into the cloud wing.
 
 ## With an AI coding agent
 
@@ -166,10 +166,10 @@ Agents can talk back. `agentoffice mcp` is a zero-dependency MCP server with fiv
 Install both into every agent on the machine at once:
 
 ```sh
-npx agentsoffice install --dry-run   # the plan, and the exact diff of every file it would touch
-npx agentsoffice install             # do it
-npx agentsoffice doctor              # what's installed where, and is the office running
-npx agentsoffice uninstall           # every file back the way it was
+npx theagentoffice install --dry-run   # the plan, and the exact diff of every file it would touch
+npx theagentoffice install             # do it
+npx theagentoffice doctor              # what's installed where, and is the office running
+npx theagentoffice uninstall           # every file back the way it was
 ```
 
 It uses each agent's own mechanism (`claude mcp add`, `codex mcp add`, or its MCP JSON, plus its skills folder), touches only the agents it finds, backs up every file first, and keeps your comments and formatting. Re-running is a no-op. Add `--vercel all` or `--ssh me@gpu-box` to install inside sandboxes and boxes too. Everything an agent sends is scrubbed before it reaches the screen: paths become file names, URLs become host names, anything that looks like a secret becomes `•••`.
@@ -200,8 +200,8 @@ The CLI tails transcript folders, backfills sessions active in the last 30 minut
 ## CLI
 
 ```sh
-npx agentsoffice [office] [options]     # open the office (the default command)
-npx agentsoffice <command> [options]    # install | uninstall | doctor | mcp
+npx theagentoffice [office] [options]     # open the office (the default command)
+npx theagentoffice <command> [options]    # install | uninstall | doctor | mcp
 ```
 
 | option | |
