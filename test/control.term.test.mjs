@@ -132,6 +132,7 @@ test("resize clamps and a viewer that throws is dropped", async () => {
 /* ---- the terminal worker, and the replay in two steps ---- */
 
 import { build } from "esbuild";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scratch } from "./control.session-fakes.mjs";
 
@@ -242,5 +243,26 @@ test("the worker serializes a big replay without holding up this thread", async 
   clearInterval(iv);
   assert.ok(v.log.find((e) => e.kind === "full").text.length > 200_000);
   assert.ok(worst < 100, `this thread was blocked for ${worst.toFixed(0)} ms`);
+  tb.dispose();
+});
+
+test("the worker dying during an attach: what the viewer has stays, and the live bytes still reach it", async () => {
+  // A worker that takes the bytes and dies when asked for a replay.
+  const dir = scratch("agentoffice-termworker-dies-");
+  const file = join(dir, "dies.mjs");
+  writeFileSync(file, `import { parentPort } from "node:worker_threads";\nparentPort.on("message", (m) => { if (m.t === "snap") process.exit(1); });\n`);
+  const tb = new TermBuffer({ cols: 40, rows: 6, reply: () => {}, worker: file });
+  tb.write(Buffer.from("before\r\n"));
+  const v = twoStep();
+  tb.attach(v.sink);
+  tb.write(Buffer.from("after\r\n"));
+  await until(() => v.stream().includes("after"), 3000, "the live bytes");
+  assert.ok(!v.log.some((e) => e.kind === "full" && !e.text), "no empty replay to reset the screen to");
+  // From then on the screen is kept in this thread: a later viewer gets what came since.
+  tb.write(Buffer.from("later\r\n"));
+  const w = twoStep();
+  tb.attach(w.sink);
+  await until(() => w.log.some((e) => e.kind === "full"), 3000, "the later viewer's replay");
+  assert.match(w.stream(), /later/);
   tb.dispose();
 });

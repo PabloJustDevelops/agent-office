@@ -69,7 +69,8 @@ interface Engine {
   readonly bracketedPaste: boolean;
   write(chunk: Uint8Array, seq: number): void;
   resize(cols: number, rows: number): void;
-  snapshot(kinds: SnapshotKind[], each: (kind: SnapshotKind, data: string, upTo: number) => void): void;
+  /** `data` null: there is no screen to take it from any more (the worker died); nothing to replay. */
+  snapshot(kinds: SnapshotKind[], each: (kind: SnapshotKind, data: string | null, upTo: number) => void): void;
   text(unwrap: boolean): Promise<string>;
   dispose(): void;
 }
@@ -120,7 +121,7 @@ interface Remote {
 class WorkerHost {
   private worker: Worker | null = null;
   private readonly remotes = new Map<number, Remote>();
-  private readonly snaps = new Map<number, (kind: SnapshotKind, data: string, upTo: number) => void>();
+  private readonly snaps = new Map<number, (kind: SnapshotKind, data: string | null, upTo: number) => void>();
   private readonly texts = new Map<number, (text: string) => void>();
   private nextId = 0;
   private nextReq = 0;
@@ -179,10 +180,13 @@ class WorkerHost {
     }
   }
 
-  /** The worker is gone: each screen starts over in this thread, and anyone waiting gets what there is. */
+  /**
+   * The worker is gone: each screen starts over in this thread from the next byte, and a viewer
+   * waiting for a replay is told there is none (it keeps what it has, and gets the live bytes).
+   */
   private failover(): void {
     for (const r of this.remotes.values()) r.fallback ??= localEngine(r.cols, r.rows, r.scrollback, r.hooks);
-    for (const fn of this.snaps.values()) fn("full", "", Number.MAX_SAFE_INTEGER);
+    for (const fn of this.snaps.values()) fn("full", null, 0);
     this.snaps.clear();
     for (const fn of this.texts.values()) fn("");
     this.texts.clear();
@@ -215,7 +219,7 @@ class WorkerHost {
         const req = ++host.nextReq;
         let left = kinds.length;
         host.snaps.set(req, (kind, data, upTo) => {
-          if (--left <= 0 || upTo === Number.MAX_SAFE_INTEGER) host.snaps.delete(req);
+          if (--left <= 0 || data === null) host.snaps.delete(req);
           each(kind, data, upTo);
         });
         host.post({ t: "snap", id, req, kinds });
@@ -387,6 +391,16 @@ export class TermBuffer {
     // Each snapshot covers every byte written before it was asked for (upTo), and none after.
     this.engine.snapshot(twoStep ? ["screen", "full"] : ["full"], (kind, data, upTo) => {
       if (!this.viewers.has(v)) return;
+      if (data === null) {
+        // No screen to replay from any more (the worker died): what the viewer has stays, and every
+        // live byte it hasn't had yet goes now.
+        v.kept = [];
+        v.keptBytes = 0;
+        v.phase = "live";
+        this.flushOne(v);
+        if (v.exitAfterReplay || this.exitCode !== undefined) this.finish(v);
+        return;
+      }
       const bytes = data ? Buffer.from(data, "utf8") : null;
       if (kind === "screen") {
         if (bytes) this.deliver(v, () => sink.replay!(bytes, "screen"));
