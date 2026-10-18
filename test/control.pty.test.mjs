@@ -1,6 +1,6 @@
 // Tests for src/control/pty.ts: the node-pty backend and the python3 bridge behave the same
 // (bytes, resize, Ctrl+C, exit codes, signals), and the loader picks, forces and falls back.
-import test, { after } from "node:test";
+import test, { after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { cleanup, load, scratch, sleep, until } from "./control.session-fakes.mjs";
@@ -11,7 +11,19 @@ after(cleanup);
 const nodePty = await loadPty({ force: "node-pty" });
 const python = await loadPty({ force: "python" });
 
+// Every terminal a test starts is SIGKILLed (its whole group) when the test ends, passed or not:
+// one left waiting on input keeps this file's process, and so `npm test`, from ever exiting.
+const live = new Set();
+afterEach(async () => {
+  const exits = [...live].map((term) => new Promise((r) => term.onExit(r)));
+  for (const term of live) term.kill("SIGKILL");
+  live.clear();
+  await Promise.race([Promise.all(exits), sleep(2000)]);
+});
+
 function collect(term) {
+  live.add(term);
+  term.onExit(() => live.delete(term));
   const chunks = [];
   term.onData((c) => chunks.push(Buffer.from(c)));
   const exit = new Promise((r) => term.onExit(r));
@@ -21,7 +33,9 @@ function collect(term) {
 for (const [label, backend] of [["node-pty", nodePty], ["python bridge", python]]) {
   test(`${label}: output, resize with SIGWINCH, input, exit code`, { skip: !backend && `${label} not available here` }, async () => {
     const cwd = scratch();
-    const script = 'trap \'echo "WINCH:$(tput cols)x$(tput lines)"\' WINCH; printf "h\\303\\251llo\\n"; tput cols; read line; echo "got:$line"; sleep 0.3; exit 7';
+    // Wait for the resize in short sleeps, not in `read`: bash 5.2 (Linux) holds a WINCH trap while the
+    // read builtin waits on a terminal and runs it only once a line comes in; bash 3.2 (macOS) runs it at once.
+    const script = 'trap \'w=1; echo "WINCH:$(tput cols)x$(tput lines)"\' WINCH; printf "h\\303\\251llo\\n"; tput cols; while [ -z "$w" ]; do sleep 0.05; done; read line; echo "got:$line"; sleep 0.3; exit 7';
     const term = backend.spawn({ file: "/bin/bash", args: ["-c", script], cwd, env: { PATH: "/usr/bin:/bin", TERM: "xterm-256color" }, cols: 80, rows: 24 });
     assert.ok(term.pid > 0);
     const out = collect(term);
