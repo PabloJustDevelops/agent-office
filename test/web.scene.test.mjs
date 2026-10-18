@@ -332,3 +332,37 @@ test("control store: a primed answer stands for the first snapshot, and a dialog
     globalThis.fetch = realFetch;
   }
 });
+
+test("control store: a control_info that lands while GET /api/control is out isn't lost to that older answer", async () => {
+  const store = new ControlStore();
+  const realFetch = globalThis.fetch;
+  // The office's state: the agents on PATH first, their versions once the startup probe is done.
+  let agents = [{ agent: "claude", installed: true, modes: ["terminal"], keyNames: [] }];
+  const answer = () => JSON.stringify({ enabled: true, agents, providers: [], keys: [], sessions: [], recentFolders: [], service: {} });
+  let release;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls++;
+    if (calls === 1) {
+      // assembled now, answered later (it waited on the platforms)
+      const body = answer();
+      await new Promise((r) => (release = r));
+      return new Response(body, { status: 200 });
+    }
+    return new Response(answer(), { status: 200 });
+  };
+  try {
+    const loading = store.refresh();
+    await new Promise((r) => setTimeout(r, 5));
+    // meanwhile the probe finishes and /events carries it
+    agents = [{ agent: "claude", installed: true, version: "2.1.302", modes: ["terminal"], keyNames: [] }];
+    store.onEvent("control_info", { agents });
+    release();
+    await loading;
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(store.state, "enabled");
+    assert.equal(store.info.agents[0].version, "2.1.302", "the probe's versions stay");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
