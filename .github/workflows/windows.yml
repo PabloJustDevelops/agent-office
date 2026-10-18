@@ -3,9 +3,10 @@ name: Windows
 # The office on windows-latest: the checks, then the packed package run the way
 # `npx theagentoffice` runs it, from PowerShell with a fresh, empty user profile.
 on:
-  workflow_dispatch:
+  pull_request:
   push:
-    branches: [fix/windows]
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   test:
