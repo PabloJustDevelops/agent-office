@@ -90,7 +90,8 @@ process.stdin.on("data", (d) => {
     if (buf === "\x1b") { say("ESC"); buf = ""; break; }
     if (buf.startsWith("\x1b") && buf.length < 3) break;
     if (buf[0] === "\r") { say("ENTER"); buf = buf.slice(1); continue; }
-    if (buf === "q") { say("BYE"); process.exit(3); }
+    // "q" may share a read with the terminal's late answer to the DSR above: quit on a leading q.
+    if (buf[0] === "q") { say("BYE"); process.exit(3); }
     if (buf === "t" && process.env.FAKE_TRUST) { process.stdout.write("\x1b[2J\x1b[Htrusted\r\n"); buf = ""; break; }
     if (buf.length) { say("KEY[" + JSON.stringify(buf).slice(1, -1) + "]"); buf = ""; }
     break;
