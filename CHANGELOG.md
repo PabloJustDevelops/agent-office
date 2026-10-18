@@ -1,8 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - **Chat mode in Daytona and Vercel sandboxes.** Claude Code and Codex hired into a Daytona or Vercel sandbox can now run in chat mode, as on Railway and ssh boxes. Daytona runs the agent as a command in a toolbox session of its own; Vercel as a command with its input attached. A dropped output connection is opened again without repeating what was already shown.
+- **Windows.** The office watches transcripts live, the office tools (`office_status`, `office_peers`) find their worker, and `install`, `doctor` and `uninstall` work through `claude mcp add` and `codex mcp add`, on Node 18 to 24 from PowerShell or cmd. Hiring and driving agents from the page is not on Windows yet, and the page and `doctor` say so. System programs run from System32, and CLIs are only looked up on PATH, never in the current folder.
+- **First run with npx.**
+  - Unlock hints say `npx theagentoffice open` when the office runs from npx, where `agentoffice` isn't on PATH.
+  - On a Linux box with no display, the office no longer claims it opened a browser; it points to `open --print`.
+  - The locked page names the command that unlocks it.
+  - A background service installed through npx hints the command that works there.
+- **Fixes.** A Vercel sandbox created under the name of one just deleted shows up in Settings › Cloud at once.
 
 ## 0.2.0
 
