@@ -503,9 +503,10 @@ test("remote install explains a missing Node instead of registering a dead comma
 
 test("--ssh: the built-in ssh target survives a real shell's quoting (fake ssh, local sh)", async () => {
   const { home, bin } = makeHome(true);
-  // Stands in for ssh: drops the options and host, then hands the command string to a shell, as sshd does.
+  // Stands in for ssh: drops the options and host, then hands the command string to a shell in a
+  // fresh environment, as sshd does (the runner's own XDG_CONFIG_HOME must not leak into the "remote").
   const fakeSsh = join(bin, "fake-ssh");
-  writeFileSync(fakeSsh, `#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done; shift\nHOME=${JSON.stringify(home)} PATH=/usr/bin:/bin:${JSON.stringify(dirname(process.execPath))} exec /bin/sh -c "$*"\n`);
+  writeFileSync(fakeSsh, `#!/bin/sh\nwhile [ "$1" != "--" ]; do shift; done; shift\nexec env -i HOME=${JSON.stringify(home)} PATH=/usr/bin:/bin:${JSON.stringify(dirname(process.execPath))} /bin/sh -c "$*"\n`);
   chmodSync(fakeSsh, 0o755);
   const original = snapshot(home);
   const target = M.sshTarget("dev@box", { sshBin: fakeSsh });
