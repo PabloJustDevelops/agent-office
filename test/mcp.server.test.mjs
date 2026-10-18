@@ -9,7 +9,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, existsSync, writeFileSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -44,7 +44,8 @@ function fakeHome() {
 function session({ home, cwd, args = [], env = {} }) {
   const child = spawn(process.execPath, [CLI, "mcp", ...args], {
     cwd,
-    env: { PATH: process.env.PATH, HOME: home, AGENT_OFFICE_PORT: "1", ...env },
+    // USERPROFILE: Windows' home; Node's homedir() reads it, not HOME.
+    env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, AGENT_OFFICE_PORT: "1", ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let buf = "";
@@ -211,8 +212,11 @@ test("every tool writes one well-formed AgentSignal; scrubbing; flip cooldown", 
   await s2.close();
 
   const dir = join(home, ".agentoffice", "outbox");
-  assert.equal(statSync(dir).mode & 0o777, 0o700);
-  for (const f of readdirSync(dir)) assert.equal(statSync(join(dir, f)).mode & 0o777, 0o600);
+  // Windows has no mode bits to check: the profile folder's ACL is what keeps them private there.
+  if (process.platform !== "win32") {
+    assert.equal(statSync(dir).mode & 0o777, 0o700);
+    for (const f of readdirSync(dir)) assert.equal(statSync(join(dir, f)).mode & 0o777, 0o600);
+  }
 });
 
 test("protocol errors: parse error, unknown method, unknown tool, bad params, invalid input, batches", async () => {
@@ -263,6 +267,21 @@ test("--agent beats clientInfo; unknown clients fall back to it; roots fix a vag
   assert.equal(sig.cwd, realpathSync(proj));
 });
 
+test("a server started in the filesystem's root (a drive's, on Windows) asks the client for its workspace too", async () => {
+  const { home, proj } = fakeHome();
+  const s = session({ home, cwd: parse(proj).root, env: { PWD: "" } });
+  await s.request(1, "initialize", legacyInit("claude-code", { capabilities: { roots: {} } }));
+  s.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+  await new Promise((r) => setTimeout(r, 150));
+  const ask = s.got.find((m) => m.method === "roots/list");
+  assert.ok(ask, "server requested roots/list");
+  s.send({ jsonrpc: "2.0", id: ask.id, result: { roots: [{ uri: pathToFileURL(proj).href, name: "app" }] } });
+  await new Promise((r) => setTimeout(r, 50));
+  await s.request(2, "tools/call", { name: "office_celebrate", arguments: {} });
+  await s.close();
+  assert.equal(outbox(home)[0].cwd, realpathSync(proj));
+});
+
 test("clientInfo names map to agents", () => {
   const cases = {
     "claude-code": "claude", "Claude Code": "claude", "codex-mcp-client": "codex", "Codex": "codex",
@@ -285,6 +304,18 @@ test("scrubText and parseMood", () => {
   assert.equal(mod.parseMood("🧑‍🍳 cooking"), "🧑‍🍳");
   assert.equal(mod.parseMood("Focused!"), "🎯");
   assert.equal(mod.parseMood("hello"), undefined);
+});
+
+test("office_peers reads the office's ~\\ folders (how it shows them on Windows) as this user's home", () => {
+  const { home } = fakeHome();
+  const now = new Date().toISOString();
+  const w = (workerId, agent, cwd) => ({ workerId, agent, project: "code", cwd, status: "thinking", lastTs: now, toolCalls: 1, tokens: 0, filesTouched: 0 });
+  mkdirSync(join(home, "code", ".git"), { recursive: true });
+  const snap = { version: 1, startedAt: now, demo: false, workers: [w("me", "claude", "~\\code"), w("cx", "codex", "~\\code"), w("oc", "opencode", "~\\site")], recent: [] };
+  const r = mod.buildPeers(snap, { agent: "claude", cwd: join(home, "code") }, { url: "http://127.0.0.1:1", home });
+  assert.equal(r.you?.workerId, "me");
+  assert.deepEqual(r.peers.filter((p) => p.sameRepo).map((p) => p.workerId), ["cx"]);
+  assert.equal(mod.expandHome("~\\code", home), mod.expandHome("~/code", home));
 });
 
 test("office_peers flags same-repo agents and their files; politely handles a closed office", async () => {
@@ -381,9 +412,16 @@ test("filesFromSummary", () => {
   assert.deepEqual(mod.filesFromSummary("Edit"), []);
 });
 
+test("the office's home is HOME, and on Windows the profile folder the agents use, whatever HOME says", () => {
+  assert.equal(mod.userHome({ HOME: "/home/me", USERPROFILE: "C:\\Users\\me" }, "linux"), "/home/me");
+  assert.equal(mod.userHome({ HOME: "/home/me", USERPROFILE: "C:\\Users\\me" }, "darwin"), "/home/me");
+  assert.equal(mod.userHome({ HOME: "C:\\msys64\\home\\me", USERPROFILE: "C:\\Users\\me" }, "win32"), "C:\\Users\\me");
+  assert.equal(mod.officeHome({ HOME: "/home/me", AGENT_OFFICE_HOME: " /data/ao " }), "/data/ao");
+});
+
 test("sweepOutbox removes week-old files only", async () => {
   const { home } = fakeHome();
-  const env = { HOME: home };
+  const env = { HOME: home, USERPROFILE: home };
   const ob = mod.createOutbox(env, 111);
   assert.equal(ob.write({ v: 1, ts: new Date().toISOString(), cwd: "/x", kind: "celebrate" }), null);
   assert.equal(mod.sweepOutbox(env, Date.now()), 0);

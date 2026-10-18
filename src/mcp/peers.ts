@@ -53,9 +53,9 @@ export function repoRoot(dir: string): string | undefined {
   return undefined;
 }
 
-/** "~/x" -> "/home/me/x", symlinks resolved (macOS /var is /private/var) so paths compare. */
-function expandHome(p: string, home: string): string {
-  const abs = p === "~" ? home : p.startsWith("~/") ? join(home, p.slice(2)) : p;
+/** "~/x" (on Windows "~\x") -> "/home/me/x", symlinks resolved (macOS /var is /private/var) so paths compare. */
+export function expandHome(p: string, home: string): string {
+  const abs = p === "~" ? home : p.startsWith("~/") || p.startsWith("~\\") ? join(home, p.slice(2)) : p;
   return canonical(abs);
 }
 

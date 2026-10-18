@@ -12,12 +12,11 @@
  * Batches (2025-03-26) are accepted. Nothing but JSON-RPC ever goes to stdout.
  */
 import { realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type { AgentKind } from "../shared/events.ts";
 import { agentFromClient, agentFromEnv } from "./clients.ts";
-import { createCooldown, createOutbox, sweepOutbox, type Cooldown, type Outbox } from "./outbox.ts";
+import { createCooldown, createOutbox, sweepOutbox, userHome, type Cooldown, type Outbox } from "./outbox.ts";
 import { fetchSnapshot, findOffice } from "./office.ts";
 import { TOOLS, createHandlers, type ToolContext } from "./tools.ts";
 
@@ -113,10 +112,10 @@ export function createMcpServer(opts: McpServerOptions): McpServer {
       return resolve(p);
     }
   };
-  const home = real(env.HOME || homedir());
+  const home = real(userHome(env));
   const startCwd = real(opts.cwd ?? process.cwd());
-  // Some agents launch MCP servers from / or ~; that says nothing about the project.
-  const vagueCwd = (p: string) => p === "/" || real(p) === home;
+  // Some agents launch MCP servers from / (a drive's root on Windows) or ~; that says nothing about the project.
+  const vagueCwd = (p: string) => dirname(p) === p || real(p) === home;
 
   /** Best guess at the workspace: an explicit override, our cwd unless it's / or ~, the client's root, $PWD. */
   function cwd(): string {

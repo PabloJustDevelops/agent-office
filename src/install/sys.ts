@@ -11,9 +11,9 @@
  */
 import { spawn } from "node:child_process";
 import { constants, promises as fsp } from "node:fs";
-import { homedir } from "node:os";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { RemoteTarget } from "../shared/events.ts";
+import { userHome } from "../mcp/outbox.ts";
 
 export interface RunResult {
   code: number;
@@ -57,8 +57,9 @@ export interface LocalSysOptions {
 
 export function localSys(opts: LocalSysOptions = {}): Sys {
   const env = opts.env ?? process.env;
-  const home = opts.home ?? env.HOME ?? homedir();
   const platform = opts.platform ?? process.platform;
+  // Where the agents keep their configs: the profile folder on Windows, whatever HOME says.
+  const home = opts.home ?? userHome(env, platform);
 
   const real = async (p: string) => {
     try {
