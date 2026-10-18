@@ -16,6 +16,7 @@ import type { ControlInfo, ServiceStatus } from "../shared/control.ts";
 import { allowedHosts, hostAllowed, SECURITY_HEADERS } from "../server/http.ts";
 import type { OfficeState } from "../server/state.ts";
 import { officeHome } from "../mcp/outbox.ts";
+import { selfCommand } from "../install/command.ts";
 import { scrubMessage } from "../remote/util.ts";
 import {
   ControlError, HOOK_PREFIX,
@@ -261,7 +262,7 @@ export function createControlPlane(o: ControlPlaneOptions): Plane {
     // A link another site (or another localhost port) puts in front of you is never an unlock.
     if (!hostAllowed(req.headers.host, allowed) || foreignOrigin(req)) return denied(res, 403, "This unlock link can only be opened directly.");
     const t = new URL(req.url ?? "/", "http://office").searchParams.get("t");
-    if (!auth.redeem(t)) return denied(res, 403, "This unlock link expired or was already used. Run <code>agentoffice open</code> for a new one.");
+    if (!auth.redeem(t)) return denied(res, 403, `This unlock link expired or was already used. Run <code>${selfCommand()} open</code> for a new one.`);
     // The page trades the #fragment (never sent anywhere) for its token once; see auth.ts.
     res.writeHead(303, { ...SECURITY_HEADERS, Location: `/#unlock=${auth.mintHandoff()}`, "Set-Cookie": auth.cookie(), "Cache-Control": "no-store", "Content-Length": "0" });
     res.end();
@@ -274,7 +275,7 @@ export function createControlPlane(o: ControlPlaneOptions): Plane {
       return sendJson(res, 405, { error: "POST only." });
     }
     const body = (await readJson(req, SMALL_BODY)) as { handoff?: unknown } | undefined;
-    if (!auth.takeHandoff(body?.handoff)) return sendJson(res, 403, { error: "This unlock link expired or was already used. Run agentoffice open for a new one." });
+    if (!auth.takeHandoff(body?.handoff)) return sendJson(res, 403, { error: `This unlock link expired or was already used. Run ${selfCommand()} open for a new one.` });
     sendJson(res, 200, { token: auth.pageToken() });
   }
 

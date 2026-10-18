@@ -1,16 +1,20 @@
 // Tests for the control plane's CLI wiring (src/cli.ts, src/control/cli.ts), on a fresh bundle of
 // src/cli.ts against a fake HOME and a scratch AGENT_OFFICE_HOME: the banner's Controls line
 // (never the unlock link), `agentoffice open --print` and `--rotate`, a watch-only office with
-// --no-control, help and doctor rows. No service is installed or loaded.
+// --no-control, help and doctor rows, the hints a copy run from an npx cache (or the service's copy
+// of one) prints, and what happens with no browser to open. No service is loaded (an install
+// writes its files under a fake HOME, its launchctl/systemctl calls only recorded), and no real
+// browser opens. Where the control plane can't run (Windows), what doctor and open say instead.
 import nodeTest, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { cleanup, fakeBin, load } from "./control.session-fakes.mjs";
 import { CONTROL, skipAll } from "./platform.mjs";
 
 const test = skipAll(nodeTest, CONTROL);
@@ -18,14 +22,20 @@ const test = skipAll(nodeTest, CONTROL);
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TMP = realpathSync(mkdtempSync(join(tmpdir(), "agentoffice-ctl-cli-")));
 const CLI = join(TMP, "pkg", "dist", "cli.js");
+/** The same CLI where `npx theagentoffice` puts it: `agentoffice` isn't on PATH there. */
+const NPX_CLI = join(TMP, ".npm", "_npx", "0123abcd", "node_modules", "theagentoffice", "dist", "cli.js");
 const kids = [];
 
 before(async () => {
-  mkdirSync(join(TMP, "pkg", "dist", "web"), { recursive: true });
-  await build({
-    entryPoints: [join(ROOT, "src/cli.ts")], outfile: CLI, bundle: true, platform: "node", format: "esm", target: "node18",
-    external: ["@lydell/node-pty"], logLevel: "error",
-  });
+  for (const outfile of [CLI, NPX_CLI]) {
+    mkdirSync(join(outfile, "..", "web"), { recursive: true });
+    await build({
+      entryPoints: [join(ROOT, "src/cli.ts")], outfile, bundle: true, platform: "node", format: "esm", target: "node18",
+      external: ["@lydell/node-pty"], logLevel: "error",
+    });
+  }
+  // A package root the service can copy (src/control/service.ts copyApp).
+  writeFileSync(join(NPX_CLI, "..", "..", "package.json"), JSON.stringify({ name: "theagentoffice", version: "0.2.0" }));
   try {
     symlinkSync(join(ROOT, "node_modules"), join(TMP, "pkg", "node_modules"));
   } catch {
@@ -35,6 +45,7 @@ before(async () => {
 after(() => {
   for (const k of kids) if (k.exitCode === null) k.kill("SIGKILL");
   rmSync(TMP, { recursive: true, force: true });
+  cleanup();
 });
 
 let n = 0;
@@ -42,11 +53,11 @@ function homes() {
   const home = join(TMP, `home-${n++}`);
   mkdirSync(home, { recursive: true });
   const ao = join(home, ".agentoffice");
-  const env = { PATH: process.env.PATH, HOME: home, AGENT_OFFICE_HOME: ao, NO_COLOR: "1", BROWSER: "none", CI: "1", SHELL: "/bin/sh" };
+  const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, AGENT_OFFICE_HOME: ao, NO_COLOR: "1", BROWSER: "none", CI: "1", SHELL: "/bin/sh" };
   return { home, ao, env };
 }
 
-const run = (args, env) => spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8", env, timeout: 20_000 });
+const run = (args, env, cli = CLI) => spawnSync(process.execPath, [cli, ...args], { encoding: "utf8", env, timeout: 20_000 });
 
 function get(port, path, headers = {}, method = "GET", data) {
   return new Promise((done, fail) => {
@@ -61,8 +72,8 @@ function get(port, path, headers = {}, method = "GET", data) {
 }
 
 /** Start an office, wait for office.json, return its port and a way to read its output. */
-async function office(env, args = []) {
-  const child = spawn(process.execPath, [CLI, "--no-open", "--port", "0", "--local-only", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
+async function office(env, args = [], o = {}) {
+  const child = spawn(process.execPath, [o.cli ?? CLI, ...(o.open ? [] : ["--no-open"]), "--port", "0", "--local-only", ...args], { env, stdio: ["ignore", "pipe", "pipe"] });
   kids.push(child);
   let output = "";
   child.stdout.on("data", (c) => (output += c));
@@ -214,4 +225,98 @@ nodeTest("where the control plane can't run (Windows), doctor and open say the o
   const o = run(["open"], env);
   assert.equal(o.status, 1);
   assert.match(o.stdout, /no controls to unlock here/);
+});
+
+test("run from an npx cache, every hint names npx theagentoffice: agentoffice isn't on PATH there", { timeout: 30_000 }, async () => {
+  const { env, ao } = homes();
+  const bad = run(["--bogus"], env, NPX_CLI);
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /Run npx theagentoffice --help for usage/);
+  assert.match(run(["install", "--bogus"], env, NPX_CLI).stderr, /Run npx theagentoffice install --help for usage/);
+  assert.match(run(["--help"], env, NPX_CLI).stdout, /Run npx theagentoffice <command> --help/);
+  mkdirSync(ao, { recursive: true });
+  const doc = run(["doctor"], env, NPX_CLI);
+  assert.match(doc.stdout, /npx theagentoffice open unlocks a browser/);
+  assert.match(doc.stdout, /not installed · npx theagentoffice install --service/);
+  const { child, info, output } = await office(env, [], { cli: NPX_CLI });
+  try {
+    assert.match(output(), /Controls\s+locked · npx theagentoffice open unlocks a browser/);
+    const spent = await get(info.port, "/unlock?t=0.0.0", { "sec-fetch-site": "none" });
+    assert.equal(spent.status, 403);
+    assert.match(spent.body, /Run <code>npx theagentoffice open<\/code> for a new one/);
+  } finally {
+    await stop(child);
+  }
+  // A global install (or a checkout) keeps the short name.
+  assert.match(run(["--bogus"], env).stderr, /Run agentoffice --help for usage/);
+});
+
+test("Linux with no display: the banner doesn't claim a browser opened, and open points at --print", { skip: process.platform !== "linux" && "only Linux can lack a display (elsewhere this would open a real browser)", timeout: 30_000 }, async () => {
+  const { env } = homes();
+  for (const k of ["BROWSER", "CI", "DISPLAY", "WAYLAND_DISPLAY", "WSL_DISTRO_NAME"]) delete env[k];
+  const { child, output } = await office(env, [], { open: true });
+  try {
+    assert.match(output(), /Controls\s+locked · no browser to open here: agentoffice open --print gives a link for yours/);
+    assert.doesNotMatch(output(), /unlocked in the browser it opened/);
+    const r = run(["open"], env);
+    assert.equal(r.status, 1, r.stdout + r.stderr);
+    assert.match(r.stdout, /No browser to open here.*agentoffice open --print/);
+    assert.doesNotMatch(r.stdout, /unlock\?t=|Opened/);
+    assert.equal(run(["open", "--print"], env).status, 0, "--print still works");
+  } finally {
+    await stop(child);
+  }
+});
+
+nodeTest("canOpenBrowser: Linux needs a display, $BROWSER or WSL; macOS and Windows always can; BROWSER=none never", async () => {
+  const { canOpenBrowser } = await load("src/control/cli.ts");
+  assert.equal(canOpenBrowser({}, "win32"), true);
+  assert.equal(canOpenBrowser({}, "linux"), false, "an ssh session or a server");
+  assert.equal(canOpenBrowser({ DISPLAY: ":0" }, "linux"), true);
+  assert.equal(canOpenBrowser({ WAYLAND_DISPLAY: "wayland-0" }, "linux"), true);
+  assert.equal(canOpenBrowser({ BROWSER: "wslview" }, "linux"), true);
+  assert.equal(canOpenBrowser({ WSL_DISTRO_NAME: "Ubuntu" }, "linux"), true);
+  assert.equal(canOpenBrowser({}, "freebsd"), false);
+  assert.equal(canOpenBrowser({}, "darwin"), true);
+  assert.equal(canOpenBrowser({ BROWSER: "none", DISPLAY: ":0" }, "linux"), false);
+  assert.equal(canOpenBrowser({ BROWSER: "none" }, "darwin"), false);
+});
+
+test("openBrowser resolves false when no opener ran or it gave up, true when it exited cleanly or keeps running", async () => {
+  const { openBrowser } = await load("src/control/cli.ts");
+  const bin = join(TMP, "openers");
+  const url = "http://127.0.0.1:1/";
+  assert.equal(await openBrowser(url, { platform: "linux", opener: join(bin, "missing") }), false);
+  // xdg-open with nothing to open with: "no method available", exit 3.
+  assert.equal(await openBrowser(url, { platform: "linux", opener: fakeBin(bin, "gives-up", "process.exit(3)") }), false);
+  assert.equal(await openBrowser(url, { platform: "linux", opener: fakeBin(bin, "opens", "process.exit(process.argv[2] === 'http://127.0.0.1:1/' ? 0 : 1)") }), true);
+  assert.equal(await openBrowser(url, { platform: "linux", opener: fakeBin(bin, "stays", "setTimeout(() => {}, 5000)"), waitMs: 300 }), true);
+});
+
+test("a background service installed through npx keeps naming npx theagentoffice: its app copy isn't on PATH either", { timeout: 30_000 }, async () => {
+  const { installService, readServiceFile } = await load("src/control/service.ts");
+  const { env, home, ao } = homes();
+  const calls = [];
+  const deps = (command) => ({
+    home: ao, userHome: home, platform: process.platform === "linux" ? "linux" : "darwin", uid: 501, version: "0.2.0",
+    env: { PATH: env.PATH, LANG: "en_US.UTF-8" }, pkgRoot: join(NPX_CLI, "..", ".."), node: process.execPath, command,
+    run: async (cmd, args) => (calls.push([cmd, ...args].join(" ")), { code: 0, out: "" }),
+  });
+  await installService(deps("npx theagentoffice"), { start: false, port: 4747 });
+  assert.ok(calls.length && calls.every((c) => /^(launchctl|systemctl) /.test(c)), "launchctl/systemctl were only recorded");
+  assert.equal(readServiceFile(ao).command, "npx theagentoffice");
+  const copy = join(ao, "app", "current", "dist", "cli.js");
+  const { child, info, output } = await office(env, [], { cli: copy });
+  try {
+    assert.match(output(), /Controls\s+locked · npx theagentoffice open unlocks a browser/);
+    const spent = await get(info.port, "/unlock?t=0.0.0", { "sec-fetch-site": "none" });
+    assert.equal(spent.status, 403);
+    assert.match(spent.body, /Run <code>npx theagentoffice open<\/code> for a new one/);
+  } finally {
+    await stop(child);
+  }
+  // Installed from a global install, the copy keeps the short name.
+  await installService(deps("agentoffice"), { start: false, port: 4747 });
+  assert.equal(readServiceFile(ao).command, "agentoffice");
+  assert.match(run(["--bogus"], env, copy).stderr, /Run agentoffice --help for usage/);
 });

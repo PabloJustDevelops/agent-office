@@ -450,6 +450,13 @@ test("launch choice: npx cache -> npx; checkout -> absolute node + script; remot
   assert.equal(M.npxPackage("1.2.3-beta.1"), "theagentoffice@1.2.3-beta.1");
 });
 
+test("selfCommand: hints name npx theagentoffice from an npx cache, where agentoffice isn't on PATH", () => {
+  assert.equal(M.selfCommand("/Users/me/.npm/_npx/abc123/node_modules/theagentoffice/dist/cli.js"), "npx theagentoffice");
+  assert.equal(M.selfCommand("/tmp/dlx-12345/node_modules/theagentoffice/dist/cli.js"), "npx theagentoffice");
+  assert.equal(M.selfCommand("/opt/homebrew/lib/node_modules/theagentoffice/dist/cli.js"), "agentoffice");
+  assert.equal(M.selfCommand("/Users/me/agent-office/dist/cli.js"), "agentoffice");
+});
+
 test("stableNode never registers a node found through a relative PATH entry", () => {
   const dir = mkdtempSync(join(TMP, "relpath-"));
   mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });

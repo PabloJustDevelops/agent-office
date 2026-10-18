@@ -33,7 +33,8 @@ import { createLinker, createOfficePort } from "./control/link.ts";
 import { claudeSessionOf, startPresence } from "./control/presence.ts";
 import { createInstallApi } from "./control/install-api.ts";
 import { appCurrent, installService, serviceLogger, serviceStatus, setStartAtLogin, startService } from "./control/service.ts";
-import { loginPath, openBrowser, serviceDeps, waitForOffice } from "./control/cli.ts";
+import { canOpenBrowser, loginPath, openBrowser, serviceDeps, waitForOffice } from "./control/cli.ts";
+import { selfCommand } from "./install/command.ts";
 import type { ServiceControl } from "./control/api.ts";
 import { controlSupported } from "./control/types.ts";
 import { join } from "node:path";
@@ -266,8 +267,8 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-/** The banner's Controls line: never the unlock link itself, which must not end up in a recording. */
-type ControlsLine = "opened" | "locked" | "off" | "demo";
+/** The banner's Controls line: never the unlock link itself, which must not end up in a recording. "headless": no browser can open here. */
+type ControlsLine = "opened" | "locked" | "headless" | "off" | "demo";
 
 function banner(o: Options, server: OfficeServer, state: OfficeState, version: string, remotes?: Remotes, controls: ControlsLine = "off"): void {
   const label = (s: string) => dim(s.padEnd(10));
@@ -303,8 +304,10 @@ function banner(o: Options, server: OfficeServer, state: OfficeState, version: s
       : `${dim("no live sessions yet. Start an agent and it walks in.")}`;
     out(`${PAD}   ${label("Live")}${live}`);
   }
-  if (controls === "opened") out(`${PAD}   ${label("Controls")}unlocked in the browser it opened ${dim("·")} ${dim("agentoffice open for another")}`);
-  else if (controls === "locked") out(`${PAD}   ${label("Controls")}locked ${dim("·")} ${dim("agentoffice open unlocks a browser")}`);
+  const self = selfCommand();
+  if (controls === "opened") out(`${PAD}   ${label("Controls")}unlocked in the browser it opened ${dim("·")} ${dim(`${self} open for another`)}`);
+  else if (controls === "locked") out(`${PAD}   ${label("Controls")}locked ${dim("·")} ${dim(`${self} open unlocks a browser`)}`);
+  else if (controls === "headless") out(`${PAD}   ${label("Controls")}locked ${dim("·")} ${dim(`no browser to open here: ${self} open --print gives a link for yours`)}`);
   else if (controls === "off" && !o.service) {
     const why = !o.control ? "off (--no-control): watch-only" : controlSupported() ? "off: watch-only (only on 127.0.0.1, macOS and Linux)" : "off: watch-only (hiring from the page needs macOS or Linux)";
     out(`${PAD}   ${label("Controls")}${dim(why)}`);
@@ -414,7 +417,7 @@ ${bold("Commands")}
   mcp               The MCP server itself, on stdio (agents launch this)
   open              Unlock the running office's controls in a browser (--print, --rotate)
   install --service Run the office in the background from login; uninstall --service removes it
-  Run ${bold("agentoffice <command> --help")} for a command's flags (--dry-run, --agents, --ssh, --vercel, ...).
+  Run ${bold(`${selfCommand()} <command> --help`)} for a command's flags (--dry-run, --agents, --ssh, --vercel, ...).
 
 ${bold("Environment")}
   AGENT_OFFICE_HOME   Where office.json and agent signals live (default ~/.agentoffice)
@@ -443,7 +446,7 @@ async function main(): Promise<void> {
     o = parseArgs(process.argv.slice(sub === "office" ? 3 : 2));
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
-    process.stderr.write(`agentoffice: ${err.message}\nRun agentoffice --help for usage.\n`);
+    process.stderr.write(`agentoffice: ${err.message}\nRun ${selfCommand()} --help for usage.\n`);
     process.exit(2);
   }
   if (o.help) return void out(help(version));
@@ -581,13 +584,18 @@ async function main(): Promise<void> {
         // Read per scan: the service adopts the login shell's environment after it starts.
         sessionOf: (agent, pid, startedAt) => (agent === "claude" ? claudeSessionOf(env.CLAUDE_CONFIG_DIR?.trim() || join(userHome, ".claude"), pid, startedAt) : undefined),
       });
-  const opening = o.open && env.BROWSER !== "none" && !env.CI;
-  const controls: ControlsLine = o.demo ? "demo" : !plane.enabled ? "off" : opening ? "opened" : "locked";
+  const wantsBrowser = o.open && env.BROWSER !== "none" && !env.CI;
+  const opening = wantsBrowser && canOpenBrowser(env);
+  const controls: ControlsLine = o.demo ? "demo" : !plane.enabled ? "off" : opening ? "opened" : wantsBrowser ? "headless" : "locked";
   banner(o, server, state, version, remotes, controls);
   if (o.service) serviceLog?.(`office running at ${server.url} (service)`);
   if (!o.quiet) state.subscribe(logEvent);
   // The unlock code goes to the browser only, never into the banner.
-  if (opening) openBrowser(plane.enabled && plane.auth ? `${server.url}/unlock?t=${plane.auth.mintCode()}` : server.url);
+  if (opening) {
+    void openBrowser(plane.enabled && plane.auth ? `${server.url}/unlock?t=${plane.auth.mintCode()}` : server.url).then((ok) => {
+      if (!ok) log(plane.enabled ? `couldn't open a browser; ${selfCommand()} open --print gives an unlock link` : `couldn't open a browser; open ${server.url} in yours`, "warn");
+    });
+  }
 
   /** Foreground office -> the background service on the same port; back to serving if it doesn't come up. */
   async function handOver(): Promise<void> {
