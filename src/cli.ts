@@ -36,6 +36,7 @@ import { appCurrent, installService, serviceLogger, serviceStatus, setStartAtLog
 import { canOpenBrowser, loginPath, openBrowser, serviceDeps, waitForOffice } from "./control/cli.ts";
 import { selfCommand } from "./install/command.ts";
 import type { ServiceControl } from "./control/api.ts";
+import { controlSupported } from "./control/types.ts";
 import { join } from "node:path";
 import {
   REMOTE_FACTORIES, REMOTE_KINDS, defaultProviders, mergeSelectors, readRemoteConfig, startRemotes,
@@ -307,7 +308,10 @@ function banner(o: Options, server: OfficeServer, state: OfficeState, version: s
   if (controls === "opened") out(`${PAD}   ${label("Controls")}unlocked in the browser it opened ${dim("·")} ${dim(`${self} open for another`)}`);
   else if (controls === "locked") out(`${PAD}   ${label("Controls")}locked ${dim("·")} ${dim(`${self} open unlocks a browser`)}`);
   else if (controls === "headless") out(`${PAD}   ${label("Controls")}locked ${dim("·")} ${dim(`no browser to open here: ${self} open --print gives a link for yours`)}`);
-  else if (controls === "off" && !o.service) out(`${PAD}   ${label("Controls")}${dim(o.control ? "off: watch-only (only on 127.0.0.1, macOS and Linux)" : "off (--no-control): watch-only")}`);
+  else if (controls === "off" && !o.service) {
+    const why = !o.control ? "off (--no-control): watch-only" : controlSupported() ? "off: watch-only (only on 127.0.0.1, macOS and Linux)" : "off: watch-only (hiring from the page needs macOS or Linux)";
+    out(`${PAD}   ${label("Controls")}${dim(why)}`);
+  }
   if (remotes) {
     const { watching, problems } = remotes.summary();
     if (watching.length) out(`${PAD}   ${label("Remotes")}${watching.join(dim(" · "))}`);
@@ -452,7 +456,7 @@ async function main(): Promise<void> {
   // transcript roots, provider logins and hired agents see what they would in a terminal.
   const serviceLog = o.service ? serviceLogger(officeHome()) : undefined;
   if (o.service && !(await adoptLoginEnv())) serviceLog?.("couldn't read the login shell's environment; running with the unit's PATH", "warn");
-  const controlOn = o.control && !o.demo && isLoopback(o.host) && (process.platform === "darwin" || process.platform === "linux");
+  const controlOn = o.control && !o.demo && isLoopback(o.host) && controlSupported();
 
   const state = new OfficeState({ demo: o.demo });
   const onEvent = (e: Parameters<typeof state.ingest>[0]) => state.ingest(e);

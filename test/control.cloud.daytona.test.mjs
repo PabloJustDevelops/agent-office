@@ -5,13 +5,16 @@
 // office's own listing, the cost guard, attach (the env file from execute envs, no key in the PTY's
 // envs or the typed line, resize, exit code, PTY cleanup), heartbeats, delete rules, and the
 // `daytona ssh` fallback. No real Daytona call is made; keys are dummies.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { load, tmp, until, writeBin } from "./remote.fakes.mjs";
 import { AGENT_SCRIPT, CHAT_SCRIPT, collect, fakeContext, fakePty, sandboxShell, wsServe } from "./control.cloud.fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/cloud/index.ts");
 const { LogDemux } = await load("src/control/cloud/daytona.ts");

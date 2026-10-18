@@ -525,11 +525,17 @@ export function ownScope(env: NodeJS.ProcessEnv, cwd: string, projects: RailwayP
 export function linkedTo(env: NodeJS.ProcessEnv, cwd: string): (RailwayIds & { dir: string }) | undefined {
   const linked = readJson(join(homeOf(env), ".railway", "config.json"))?.projects;
   let best = "";
+  let ids: RailwayIds | undefined;
   for (const [dir, p] of Object.entries<any>(linked && typeof linked === "object" ? linked : {})) {
-    const d = dir.replace(/\/+$/, "");
-    if ((cwd === d || cwd.startsWith(d + "/")) && d.length > best.length && str(p?.project) && str(p?.environment)) best = d;
+    const d = dir.replace(/[\\/]+$/, "");
+    // On Windows the CLI records the folder as C:\Users\me\code.
+    const sep = /^[A-Za-z]:(?:\\|$)/.test(d) ? "\\" : "/";
+    if ((cwd === d || cwd.startsWith(d + sep)) && d.length > best.length && str(p?.project) && str(p?.environment)) {
+      best = d;
+      ids = { projectId: str(p.project)!, environmentId: str(p.environment)! };
+    }
   }
-  return best ? { projectId: str(linked[best].project)!, environmentId: str(linked[best].environment)!, dir: best } : undefined;
+  return ids ? { ...ids, dir: best } : undefined;
 }
 
 /** Files of $AGENT_OFFICE_HOME (src/control/types.ts FILES) that say where the office keeps its Railway sandboxes. */

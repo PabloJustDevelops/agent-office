@@ -2,12 +2,15 @@
 // protocol: Claude's stream-json, Codex's app-server JSON-RPC and opencode's HTTP + SSE server.
 // Streaming text, tool items with redacted labels, approvals and their answers on the wire,
 // interrupts, queued turns, and the session manager's chat mode on top.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { cleanup, fakeBin, fakeContext, load, NODE_DIR, scratch, sleep, until } from "./control.session-fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/chat/claude.ts", "src/control/chat/codex.ts", "src/control/chat/opencode.ts", "src/control/chat/common.ts", "src/control/chat/diff.ts", "src/control/opencode-api.ts", "src/control/sessions.ts");
 const { ClaudeChat, CodexChat, OpencodeChat, localPipe, opencodeClient, createSessionManager } = M;

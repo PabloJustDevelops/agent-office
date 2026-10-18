@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, rmSync, rmdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fakeHome, load, tmp, writeBin } from "./remote.fakes.mjs";
+import { POSIX } from "./platform.mjs";
 
 const M = await load("src/remote/ssh.ts", "src/remote/util.ts", "src/ingest/index.ts");
 
@@ -60,7 +61,7 @@ test("destinations: aliases, user@host, ssh:// URLs; anything flag-like is refus
   }
 });
 
-test("the script goes on stdin; the command line is fixed, batch-mode and multiplexed", async () => {
+test("the script goes on stdin; the command line is fixed, batch-mode and multiplexed", { skip: POSIX }, async () => {
   const s = setup();
   const t = M.createSshTarget("me@box", { bin: s.bin, processEnv: s.processEnv });
   assert.deepEqual(t.host, { kind: "ssh", id: "ssh:me@box", name: "box" });
@@ -79,13 +80,13 @@ test("the script goes on stdin; the command line is fixed, batch-mode and multip
   assert.ok(args.includes("-T"));
 });
 
-test("env overrides are exported before the script, safely quoted", async () => {
+test("env overrides are exported before the script, safely quoted", { skip: POSIX }, async () => {
   const s = setup();
   const t = M.createSshTarget("box", { bin: s.bin, processEnv: s.processEnv, env: { CLAUDE_CONFIG_DIR: "/data/x y'z", "BAD NAME": "no" } });
   assert.equal(await t.exec(`printf '%s' "$CLAUDE_CONFIG_DIR"\n`), "/data/x y'z");
 });
 
-test("ssh -p for ssh:// ports; a long AGENT_OFFICE_HOME falls back to a short socket folder", async () => {
+test("ssh -p for ssh:// ports; a long AGENT_OFFICE_HOME falls back to a short socket folder", { skip: POSIX }, async () => {
   const s = setup();
   const t = M.createSshTarget("ssh://me@box:2201", { bin: s.bin, processEnv: { ...s.processEnv, AGENT_OFFICE_HOME: "/tmp/" + "x".repeat(80) } });
   assert.equal(t.host.id, "ssh:me@box:2201");
@@ -98,7 +99,7 @@ test("ssh -p for ssh:// ports; a long AGENT_OFFICE_HOME falls back to a short so
   assert.ok(!s.argv()[1].some((a) => a.startsWith("Control")), "controlDir: null turns multiplexing off");
 });
 
-test("connection failures carry a code and a hint, and tear the master down", async () => {
+test("connection failures carry a code and a hint, and tear the master down", { skip: POSIX }, async () => {
   const s = setup();
   const down = M.createSshTarget("down", { bin: s.bin, processEnv: s.processEnv });
   // A fixed phrase: ssh's own line names the address it dialled.
@@ -116,7 +117,7 @@ test("connection failures carry a code and a hint, and tear the master down", as
   assert.deepEqual(exits.map((a) => a[a.length - 1]).sort(), ["badkey", "down"], "-O exit after each connection error, not after a script error");
 });
 
-test("a hung connection times out, is killed, and resets the master", async () => {
+test("a hung connection times out, is killed, and resets the master", { skip: POSIX }, async () => {
   const s = setup();
   const t = M.createSshTarget("slow", { bin: s.bin, processEnv: s.processEnv });
   const t0 = Date.now();
@@ -126,7 +127,7 @@ test("a hung connection times out, is killed, and resets the master", async () =
   assert.ok(s.argv().some((a) => a.includes("-O")));
 });
 
-test("close() asks the control master to exit", async () => {
+test("close() asks the control master to exit", { skip: POSIX }, async () => {
   const s = setup();
   const t = M.createSshTarget("box", { bin: s.bin, processEnv: s.processEnv });
   t.close();
@@ -135,7 +136,7 @@ test("close() asks the control master to exit", async () => {
   assert.ok(args && args.includes("-O") && args.includes("exit") && args[args.length - 1] === "box");
 });
 
-test("a whole ingest loop over ssh: host-tagged, prefixed workers from the remote's transcripts", async () => {
+test("a whole ingest loop over ssh: host-tagged, prefixed workers from the remote's transcripts", { skip: POSIX }, async () => {
   const s = setup(fakeHome());
   const t = M.createSshTarget("me@gpu-box", { bin: s.bin, processEnv: s.processEnv });
   const events = [];

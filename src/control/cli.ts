@@ -16,6 +16,7 @@ import { findOffice, officeFilePath, type OfficeFile } from "../mcp/office.ts";
 import { officeHome } from "../mcp/outbox.ts";
 import { selfCommand, stableNode } from "../install/command.ts";
 import { PAD, bold, dim, green, red, yellow } from "../install/ui.ts";
+import { windowsSystemBinary } from "../remote/util.ts";
 import { ControlAuth } from "./auth.ts";
 import { loginShellVars } from "./env.ts";
 import { createKeyStore } from "./keys.ts";
@@ -23,9 +24,19 @@ import { ptyKind } from "./pty.ts";
 import {
   defaultRun, installService, readServiceFile, serviceStatus, startService, supported, uninstallService, unitPath, type ServiceDeps,
 } from "./service.ts";
-import { ControlError, FILES } from "./types.ts";
+import { ControlError, FILES, controlSupported } from "./types.ts";
 
 type Out = (line?: string) => void;
+
+/** Why the office is watch-only on Windows (and anything else that isn't macOS or Linux). */
+export const WATCH_ONLY = "hiring and driving agents from the page needs macOS or Linux; on this machine the office is watch-only.";
+
+/** The program and arguments that open `url` in the default browser. Windows' cmd.exe by full path: by name, the current folder's would win. */
+export function browserCommand(url: string, platform: string = process.platform, env: NodeJS.ProcessEnv = process.env): [string, string[]] {
+  if (platform === "darwin") return ["open", [url]];
+  if (platform === "win32") return [windowsSystemBinary("cmd.exe", env), ["/c", "start", '""', url]];
+  return ["xdg-open", [url]];
+}
 
 /**
  * Whether a browser can be opened from here at all. Linux and the BSDs need a display: over ssh or
@@ -44,16 +55,11 @@ export function canOpenBrowser(env: NodeJS.ProcessEnv = process.env, platform: s
  */
 export function openBrowser(url: string, o: { platform?: string; opener?: string; waitMs?: number } = {}): Promise<boolean> {
   const platform = o.platform ?? process.platform;
-  const [cmd, args] =
-    platform === "darwin"
-      ? ["open", [url]]
-      : platform === "win32"
-        ? ["cmd", ["/c", "start", '""', url]]
-        : ["xdg-open", [url]];
+  const [cmd, args] = browserCommand(url, platform);
   return new Promise((done) => {
     let child;
     try {
-      child = spawn(o.opener ?? cmd, args as string[], {
+      child = spawn(o.opener ?? cmd, args, {
         stdio: "ignore",
         detached: true,
         windowsHide: true,
@@ -125,8 +131,12 @@ export async function waitForOffice(ms: number, o: { service?: boolean; notPid?:
 }
 
 /** `agentoffice open [--print] [--rotate]`. */
-export async function runOpen(argv: string[], version: string, out: Out): Promise<number> {
+export async function runOpen(argv: string[], version: string, out: Out, platform: string = process.platform): Promise<number> {
   const flags = new Set(argv);
+  if (!controlSupported(platform) && !flags.has("--help") && !flags.has("-h")) {
+    out(`${PAD}${yellow("There are no controls to unlock here:")} ${dim(WATCH_ONLY)}`);
+    return 1;
+  }
   if (flags.has("--help") || flags.has("-h")) {
     out(`
 ${bold("agentoffice open")}  unlock hiring and driving agents in a browser
@@ -233,9 +243,13 @@ export async function serviceCommand(cmd: "install" | "uninstall", version: stri
 }
 
 /** doctor's rows for the control plane (this machine only). */
-export async function doctorRows(version: string, out: Out): Promise<void> {
+export async function doctorRows(version: string, out: Out, platform: string = process.platform): Promise<void> {
   const d = serviceDeps(version);
   const label = (s: string) => dim(s.padEnd(11));
+  if (!controlSupported(platform)) {
+    out(`${PAD}${label("Controls")}${dim(`off: ${WATCH_ONLY}`)}`);
+    return;
+  }
   const secret = existsSync(join(d.home, FILES.control));
   out(`${PAD}${label("Controls")}${secret ? green("unlock secret set up") : dim("set up on the first start")} ${dim(`· ${selfCommand()} open unlocks a browser`)}`);
   const pty = await ptyKind().catch(() => null);

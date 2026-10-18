@@ -10,6 +10,7 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { POSIX } from "./platform.mjs";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const FX = join(ROOT, "test", "fixtures");
@@ -102,7 +103,7 @@ test("inlineParams escapes SQL literals; decodeReads drops an entry cut off befo
   assert.equal(cut.has(1), false);
 });
 
-test("local and remote sources list, stat and read hostile filenames identically, executing nothing", async () => {
+test("local and remote sources list, stat and read hostile filenames identically, executing nothing", { skip: POSIX }, async () => {
   const { home, dir } = hostileTree();
   const counter = { execs: 0 };
   const remote = S.createRemoteSource(fakeTarget(home, counter));
@@ -133,7 +134,7 @@ test("local and remote sources list, stat and read hostile filenames identically
   rmSync(home, { recursive: true, force: true });
 });
 
-test("remote: big batches split into several execs with the same answers; listAndRead is one exec", async () => {
+test("remote: big batches split into several execs with the same answers; listAndRead is one exec", { skip: POSIX }, async () => {
   const { home, dir } = hostileTree();
   const t = fakeTarget(home);
   const small = S.createRemoteSource(t, { maxScriptBytes: 400, maxBatchBytes: 40, maxReadBytes: 1 << 20 });
@@ -232,7 +233,7 @@ const unhost = (e) => {
   return JSON.stringify(secs({ ...x, workerId: strip(x.workerId), ...(x.parentId ? { parentId: strip(x.parentId) } : {}) }));
 };
 
-test("the whole loop over a remote sees exactly what it sees locally, host-tagged and prefixed", async () => {
+test("the whole loop over a remote sees exactly what it sees locally, host-tagged and prefixed", { skip: POSIX }, async () => {
   const home = fakeHome();
   const remoteEvs = [];
   const localEvs = [];
@@ -288,7 +289,7 @@ test("missing remote folders list as empty and nothing is created on the remote"
   rmSync(home, { recursive: true, force: true });
 });
 
-test("remote quick polls skip files untouched since the last full listing; reads come back gzipped and capped", async () => {
+test("remote quick polls skip files untouched since the last full listing; reads come back gzipped and capped", { skip: POSIX }, async () => {
   const home = mkdtempSync(join(tmpdir(), "agentoffice-quick-"));
   const dir = join(home, "t");
   mkdirSync(dir);

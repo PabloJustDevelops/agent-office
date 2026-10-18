@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fakeHome, load, runIn, serve, tmp, writeBin } from "./remote.fakes.mjs";
+import { POSIX } from "./platform.mjs";
 
 const M = await load("src/remote/railway.ts", "src/ingest/index.ts");
 
@@ -79,7 +80,7 @@ test("RAILWAY_API_TOKEN: every workspace, project and environment; one aliased q
   await srv.close();
 });
 
-test("exec: small output in one call, big output paged back byte-exact (gzip, then raw)", async () => {
+test("exec: small output in one call, big output paged back byte-exact (gzip, then raw)", { skip: POSIX }, async () => {
   const sbx = SBX();
   const srv = await fakeRailway(sbx);
   const [d] = await M.createRailwayProvider({ env: { HOME: tmp(), RAILWAY_API_TOKEN: "rtok", RAILWAY_GRAPHQL_ENDPOINT: srv.url, PATH: "" } }).list();
@@ -150,7 +151,7 @@ if (a[0] === "list" && a[1] === "--json") {
 } else { process.stderr.write("unknown\\n"); process.exit(2); }
 `;
 
-test("the CLI's stored login drives the API; once expired, the railway CLI takes over", async () => {
+test("the CLI's stored login drives the API; once expired, the railway CLI takes over", { skip: POSIX }, async () => {
   const sbx = SBX();
   const srv = await fakeRailway(sbx);
   const home = tmp();
@@ -210,6 +211,21 @@ test("auto scope: the linked project and the sandboxes this user's CLI made; ref
   for (let i = 0; i < 450; i++) b.take();
   assert.throws(() => b.take(), (e) => e.code === "throttled");
   await srv.close();
+});
+
+test("railway link's folders as the Windows CLI records them: a subfolder is still linked", () => {
+  const home = tmp();
+  mkdirSync(join(home, ".railway"), { recursive: true });
+  writeFileSync(join(home, ".railway", "config.json"), JSON.stringify({
+    projects: { "C:\\Users\\me\\code": { project: "p1", environment: "e1" }, "C:\\Users\\me\\code\\api\\": { project: "p2", environment: "e2" }, "/srv/app": { project: "p3", environment: "e3" } },
+  }));
+  const env = { HOME: home };
+  assert.equal(M.linkedTo(env, "C:\\Users\\me\\code\\app")?.environmentId, "e1");
+  assert.equal(M.linkedTo(env, "C:\\Users\\me\\code")?.environmentId, "e1");
+  assert.equal(M.linkedTo(env, "C:\\Users\\me\\code\\api\\src")?.environmentId, "e2", "the nearest link wins");
+  assert.equal(M.linkedTo(env, "C:\\Users\\me\\codex"), undefined);
+  assert.equal(M.linkedTo(env, "/srv/app/web")?.environmentId, "e3");
+  assert.equal(M.linkedTo(env, "/srv/application"), undefined);
 });
 
 test("a whole ingest loop over a Railway sandbox", async () => {

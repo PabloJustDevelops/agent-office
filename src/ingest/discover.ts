@@ -250,15 +250,19 @@ const gemini: Driver = {
 
 export const DRIVERS: Partial<Record<AgentKind, Driver>> = { claude, commandcode, codex, droid, qwen, cursor, gemini };
 
-/** For Claude-style slugs ("-Users-me-my-app"): the cwd an absolute path inside it implies, if it matches. */
+/** For Claude-style slugs ("-Users-me-my-app", "C--Users-me-my-app" on Windows): the cwd an absolute path inside it implies, if it matches. */
 export function cwdFromSlug(slug: string, abs: unknown): string | undefined {
-  if (typeof abs !== "string" || !abs.startsWith("/")) return undefined;
+  if (typeof abs !== "string") return undefined;
+  const drive = /^[A-Za-z]:[\\/]/.test(abs);
+  if (!drive && !abs.startsWith("/")) return undefined;
   const norm = (s: string) => s.replace(/[^A-Za-z0-9]/g, "-").replace(/^-+/, "");
-  const want = norm(slug);
-  const parts = abs.split("/").filter(Boolean);
+  // Windows paths compare without case, and a slug may spell the ":\" after the drive as one dash or two.
+  const key = drive ? (s: string) => norm(s).toLowerCase().replace(/-{2,}/g, "-") : norm;
+  const want = key(slug);
+  const parts = abs.split(drive ? /[\\/]/ : "/").filter(Boolean);
   for (let n = parts.length; n > 0; n--) {
-    const p = "/" + parts.slice(0, n).join("/");
-    if (norm(p) === want) return p;
+    const p = drive ? parts.slice(0, n).join("\\") + (n === 1 ? "\\" : "") : "/" + parts.slice(0, n).join("/");
+    if (key(p) === want) return p;
   }
   return undefined;
 }

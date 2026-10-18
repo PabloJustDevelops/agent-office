@@ -5,12 +5,15 @@
 // runs first in the terminal and its link and code reach ControlSession.needs. Connect Claude runs
 // a fake `claude setup-token`, takes the token off its screen into the key store, ends it, and
 // never lets the token reach the page, a log or a frame. Every value is a dummy.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanup, fakeBin, fakeContext, load, scratch, sleep, until } from "./control.session-fakes.mjs";
 import { fakePty } from "./control.cloud.fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/sessions.ts", "src/control/pty.ts", "src/control/logins.ts", "src/control/keys.ts");
 const pty = await M.loadPty();

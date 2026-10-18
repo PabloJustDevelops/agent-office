@@ -2,13 +2,16 @@
 // atomic, re-read on change, never overwritten when damaged), previews, reveal and platformEnv,
 // import from a fake login shell (allowlisted names only, a hanging shell times out), agentEnv
 // and adoptLoginEnv, and the unlock code and cookie lifetimes on an injected clock. Dummy keys only.
-import test, { after, before } from "node:test";
+import nodeTest, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { chmodSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TMP = realpathSync(mkdtempSync(join(tmpdir(), "agentoffice-ctl-keys-")));

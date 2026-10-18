@@ -1,11 +1,14 @@
 // Tests for src/control/agents.ts: launch argv per agent and permission mode, the Claude hook
 // settings (token by env name only), remote launches (prompt and keys by env, never argv),
 // chat commands, binary discovery and the availability probe.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { cleanup, fakeBin, load, scratch } from "./control.session-fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const A = await load("src/control/agents.ts");
 after(cleanup);

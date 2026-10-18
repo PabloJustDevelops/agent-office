@@ -223,6 +223,19 @@ test("attribution: a worker started in a parent folder still gets its signals; h
   assert.equal(I.nestedCwd("/tmp/x/", "/private/tmp/x/y"), true);
 });
 
+test("attribution on Windows: drive letters and names without case, either slash, ~\\ for home", () => {
+  const app = ctx("app", { cwd: "C:\\Users\\me\\app" });
+  const home = ctx("home", { cwd: "C:\\Users\\me", at: 99_000 });
+  // The MCP server's folder as the agent launched it, against the transcript's.
+  assert.equal(I.pickWorker([app, home], I.parseSignal(sig({ cwd: "c:\\users\\me\\App" })), "C:\\Users\\me").workerId, "app");
+  assert.equal(I.pickWorker([app, home], I.parseSignal(sig({ cwd: "C:/Users/me/app/packages/web" })), "C:\\Users\\me").workerId, "app");
+  assert.equal(I.pickWorker([home], I.parseSignal(sig({ cwd: "C:\\Users\\me\\elsewhere" })), "C:\\Users\\me"), undefined);
+  assert.equal(I.sameCwd("~\\app", "C:\\Users\\me\\app\\", "C:\\Users\\me"), true);
+  assert.equal(I.nestedCwd("C:\\", "C:\\Users\\me\\app"), false, "a drive's root contains everything");
+  assert.equal(I.nestedCwd("C:\\Users\\me\\app", "C:\\Users\\me\\app2"), false);
+  assert.equal(I.nestedCwd("/tmp/x", "/tmp/x\\y"), false, "POSIX paths keep their one separator");
+});
+
 test("signal text is scrubbed like the MCP server's: no paths, emails or URLs, whoever wrote the line", () => {
   const c = ctx("w", { project: "demo-app" });
   const e = I.signalEvent(I.parseSignal(sig({ kind: "shout", text: "shipped /Users/alice/Clients/AcmeCorp/merger-plan.md to bob.smith@acme-corp.com via https://internal.acme.corp/deploy?id=42" })), c, Date.now());

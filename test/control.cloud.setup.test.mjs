@@ -4,13 +4,16 @@
 // tar on stdin) and a fake `ssh` (the archive on stdin). A "sandbox" is a scratch HOME on this machine.
 // Every platform: the files land 0600 under its HOME, ~/.claude.json carries the servers and the key's
 // approval, the project is in the working folder, and no secret is in any command, argv or script.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { load, tmp, writeBin } from "./remote.fakes.mjs";
 import { fakeContext, fakePty, wsServe } from "./control.cloud.fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/cloud/index.ts", "src/control/setup.ts");
 

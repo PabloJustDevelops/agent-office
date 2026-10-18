@@ -143,6 +143,11 @@ test("cwdFromSlug matches Claude- and Cursor-style slugs and rejects strangers",
   assert.equal(P.cwdFromSlug("-Users-me-my.app", "/Users/me/my.app/x/y.ts"), "/Users/me/my.app");
   assert.equal(P.cwdFromSlug("tmp-demo-app", "/etc/passwd"), undefined);
   assert.equal(P.cwdFromSlug("tmp-demo-app", "relative/path"), undefined);
+  // Windows: Claude Code's slug for C:\Users\me\my.app, the cwd as the transcript spells it.
+  assert.equal(P.cwdFromSlug("C--Users-me-my-app", "C:\\Users\\me\\my.app\\src\\a.ts"), "C:\\Users\\me\\my.app");
+  assert.equal(P.cwdFromSlug("c-Users-me-my-app", "C:/Users/me/my.app/x"), "C:\\Users\\me\\my.app", "case and the drive's dashes don't count");
+  assert.equal(P.cwdFromSlug("C--Users-me-my-app", "D:\\Users\\me\\my.app"), undefined);
+  assert.equal(P.cwdFromSlug("C--", "C:\\x.ts"), "C:\\");
 });
 
 /* ----------------------------------------------------------------- gemini */

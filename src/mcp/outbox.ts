@@ -12,10 +12,19 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { AgentSignal } from "../shared/events.ts";
 
+/**
+ * The user's home as the agents see it: $HOME, and on Windows the profile folder (%USERPROFILE%),
+ * which the agents and the transcript watcher use there even when a Unix-style shell (MSYS2,
+ * Cygwin) has pointed HOME somewhere else.
+ */
+export function userHome(env: NodeJS.ProcessEnv = process.env, platform: string = process.platform): string {
+  return (platform === "win32" ? env.USERPROFILE : env.HOME)?.trim() || homedir();
+}
+
 /** $AGENT_OFFICE_HOME, else ~/.agentoffice. */
 export function officeHome(env: NodeJS.ProcessEnv = process.env): string {
   const h = env.AGENT_OFFICE_HOME?.trim();
-  return h ? h : join(env.HOME?.trim() || homedir(), ".agentoffice");
+  return h ? h : join(userHome(env), ".agentoffice");
 }
 
 export function outboxDir(env: NodeJS.ProcessEnv = process.env): string {

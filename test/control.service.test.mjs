@@ -2,7 +2,7 @@
 // LaunchAgent plist (checked with plutil -lint when it exists) and the systemd unit, the stable
 // app copy and its pruning, install / start-at-login / uninstall command sequences, and status.
 // Nothing is ever loaded into launchd or systemd.
-import test, { after, before } from "node:test";
+import nodeTest, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { spawnSync } from "node:child_process";
@@ -10,6 +10,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, readdir
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TMP = realpathSync(mkdtempSync(join(tmpdir(), "agentoffice-ctl-svc-")));

@@ -7,6 +7,7 @@
  */
 import { spawn } from "node:child_process";
 import type { RemoteTarget } from "../shared/events.ts";
+import { spawnLine, type SpawnLine } from "../remote/util.ts";
 
 export type RemoteKind = "ssh" | "daytona" | "boat" | "railway" | "vercel";
 export const REMOTE_KINDS: RemoteKind[] = ["ssh", "daytona", "boat", "railway", "vercel"];
@@ -74,7 +75,14 @@ export function sshTarget(dest: string, opts: { sshBin?: string; extraArgs?: str
       const timeoutMs = o?.timeoutMs ?? 60_000;
       return new Promise((resolve, reject) => {
         const args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", ...(opts.extraArgs ?? []), dest, "--", `sh -c ${sh(script)}`];
-        const child = spawn(opts.sshBin ?? "ssh", args, { stdio: ["ignore", "pipe", "pipe"] });
+        let line: SpawnLine;
+        try {
+          // On Windows: ssh.exe found on PATH, never the current folder's.
+          line = spawnLine(opts.sshBin ?? "ssh", args);
+        } catch (err) {
+          return reject(err);
+        }
+        const child = spawn(line.file, line.args, { stdio: ["ignore", "pipe", "pipe"], windowsVerbatimArguments: line.cmd });
         let out = "";
         let err = "";
         const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);

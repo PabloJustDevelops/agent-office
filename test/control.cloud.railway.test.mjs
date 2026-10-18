@@ -5,13 +5,16 @@
 // env file over the bridge (the key in init_exec.env, never in the command), the terminal through
 // `railway sandbox ssh` under a local PTY, chat over the bridge with no file at all, the CLI-only
 // fallback when the stored login has expired, and delete. Keys are dummies.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { load, tmp, until, writeBin } from "./remote.fakes.mjs";
 import { AGENT_SCRIPT, collect, fakeContext, fakePty, wsServe } from "./control.cloud.fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const M = await load("src/control/cloud/index.ts", "src/control/fs.ts");
 

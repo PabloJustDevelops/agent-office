@@ -7,8 +7,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, win32 } from "node:path";
 import { fakeHome, load, tmp, until } from "./remote.fakes.mjs";
 
 const M = await load("src/remote/index.ts", "src/remote/util.ts");
@@ -406,4 +406,70 @@ test("through the manager with the real ingest watcher: a sandbox's workers walk
   r.stop();
   assert.ok(events.every((e) => e.host.id === "vercel:agentoffice-test" && e.workerId.startsWith("vercel:agentoffice-test/")));
   assert.deepEqual(r.hosts(), []);
+});
+
+test("a CLI that is a .cmd on Windows: npm's shim runs its script with node, any other goes through cmd.exe quoted", async () => {
+  assert.deepEqual(M.spawnLine("/usr/bin/railway", ["list", "--json"], "linux"), { file: "/usr/bin/railway", args: ["list", "--json"], cmd: false });
+  assert.deepEqual(M.spawnLine("C:\\bin\\railway.exe", ["a b"], "win32"), { file: "C:\\bin\\railway.exe", args: ["a b"], cmd: false });
+  assert.deepEqual(M.spawnLine("C:\\Program Files (x86)\\npm\\railway.cmd", ["sandbox", "list", "--json", "-p", "a b&c", ""], "win32", { SystemRoot: "C:\\WINDOWS", ComSpec: "cmd.exe" }), {
+    file: "C:\\WINDOWS\\System32\\cmd.exe",
+    args: ["/d", "/s", "/c", '""C:\\Program Files (x86)\\npm\\railway.cmd" sandbox list --json -p "a b&c" """'],
+    cmd: true,
+  });
+  for (const bad of ['say "hi"', "%PATH%", "line\nbreak", "C:\\my dir\\", "!x!"]) {
+    assert.throws(() => M.spawnLine("C:\\npm\\boat.cmd", ["exec", bad], "win32"), /can't pass .* to a \.cmd on Windows/, JSON.stringify(bad));
+  }
+  // npm's shim (cmd-shim's own text): its script, with node, so even a multi-line sh script arrives intact.
+  const dir = tmp();
+  writeFileSync(join(dir, "argv.js"), "process.stdout.write(JSON.stringify(process.argv.slice(2)))");
+  const npmShim = join(dir, "railway.cmd");
+  writeFileSync(npmShim, '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\argv.js" %*\r\n');
+  const script = ["sandbox", "exec", "--", "sh", "-c", 'printf "%s" "$HOME"\nexit 0\n'];
+  assert.deepEqual(M.spawnLine(npmShim, script, "win32"), { file: process.execPath, args: [join(dir, "argv.js"), ...script], cmd: false });
+  if (process.platform !== "win32") return;
+  // The real thing, both ways, started the way the railway and boat providers start their CLIs.
+  const r = await M.run(npmShim, script, { timeoutMs: 20_000 });
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), script);
+  writeFileSync(join(dir, "other cli.cmd"), `@"${process.execPath}" "${join(dir, "argv.js")}" %*\r\n`);
+  const args = ["list", "--json", "-p", "a b", "x&y|z", "(paren)", "^caret", "<in>", ""];
+  const r2 = await M.run(join(dir, "other cli.cmd"), args, { timeoutMs: 20_000 });
+  assert.equal(r2.code, 0, r2.stderr);
+  assert.deepEqual(JSON.parse(r2.stdout), args);
+});
+
+test("Windows' own programs go by full path, and a bare name is looked up on PATH, never in the current folder", async () => {
+  // By bare name Windows tries the current folder first: a taskkill.exe or cmd.exe in a cloned repo would run.
+  assert.equal(M.windowsSystemBinary("taskkill.exe", { SystemRoot: "D:\\Win" }), "D:\\Win\\System32\\taskkill.exe");
+  assert.equal(M.windowsSystemBinary("cmd.exe", {}), "C:\\Windows\\System32\\cmd.exe");
+  assert.equal(M.windowsSystemBinary("cmd.exe", { SystemRoot: ".\\evil", windir: "C:\\WINDOWS" }), "C:\\WINDOWS\\System32\\cmd.exe", "a relative SystemRoot is ignored");
+  for (const env of [{}, { SystemRoot: "relative" }, { SystemRoot: "D:\\Windows" }]) assert.ok(win32.isAbsolute(M.windowsSystemBinary("taskkill.exe", env)));
+  assert.throws(() => M.spawnLine("railway", ["list"], "win32", { PATH: ".;bin", PATHEXT: ".EXE;.CMD" }), (e) => e.code === "missing", "relative PATH entries are skipped");
+  if (process.platform !== "win32") return;
+  // The real thing: an .exe named like the CLI in the current folder, which a bare-name spawn would have run.
+  const dir = tmp();
+  copyFileSync(M.windowsSystemBinary("whoami.exe"), join(dir, "agentoffice-evil.exe"));
+  const cwd = process.cwd();
+  process.chdir(dir);
+  try {
+    await assert.rejects(M.run("agentoffice-evil", [], { timeoutMs: 10_000 }), (e) => e.code === "missing" && /not installed/.test(e.message));
+    const ok = await M.run("whoami", [], { timeoutMs: 10_000 });
+    assert.equal(ok.code, 0, "a program on PATH still runs by name");
+  } finally {
+    process.chdir(cwd);
+  }
+});
+
+test("on Windows a CLI that times out goes with everything it started, so stdout closes", { skip: process.platform !== "win32" && "Windows only", timeout: 30_000 }, async () => {
+  // A CLI that starts a long-lived child sharing its stdout, like the railway CLI's node wrapper and its native binary.
+  const dir = tmp();
+  writeFileSync(join(dir, "hang.js"), 'require("child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" }); setTimeout(() => {}, 60000);');
+  writeFileSync(join(dir, "npm-style.cmd"), '@"%~dp0\\node.exe" "%~dp0\\hang.js" %*\r\n');
+  writeFileSync(join(dir, "plain.cmd"), `@"${process.execPath}" "${join(dir, "hang.js")}" %*\r\n`);
+  for (const cli of ["npm-style.cmd", "plain.cmd"]) {
+    const t0 = Date.now();
+    const r = await M.run(join(dir, cli), ["list"], { timeoutMs: 1_000 });
+    assert.equal(r.timedOut, true, cli);
+    assert.ok(Date.now() - t0 < 15_000, `${cli} came back after ${Date.now() - t0} ms`);
+  }
 });

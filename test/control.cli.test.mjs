@@ -4,8 +4,8 @@
 // --no-control, help and doctor rows, the hints a copy run from an npx cache (or the service's copy
 // of one) prints, and what happens with no browser to open. No service is loaded (an install
 // writes its files under a fake HOME, its launchctl/systemctl calls only recorded), and no real
-// browser opens.
-import test, { after, before } from "node:test";
+// browser opens. Where the control plane can't run (Windows), what doctor and open say instead.
+import nodeTest, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { spawn, spawnSync } from "node:child_process";
@@ -13,8 +13,11 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { cleanup, fakeBin, load } from "./control.session-fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TMP = realpathSync(mkdtempSync(join(tmpdir(), "agentoffice-ctl-cli-")));
@@ -50,7 +53,7 @@ function homes() {
   const home = join(TMP, `home-${n++}`);
   mkdirSync(home, { recursive: true });
   const ao = join(home, ".agentoffice");
-  const env = { PATH: process.env.PATH, HOME: home, AGENT_OFFICE_HOME: ao, NO_COLOR: "1", BROWSER: "none", CI: "1", SHELL: "/bin/sh" };
+  const env = { PATH: process.env.PATH, HOME: home, USERPROFILE: home, AGENT_OFFICE_HOME: ao, NO_COLOR: "1", BROWSER: "none", CI: "1", SHELL: "/bin/sh" };
   return { home, ao, env };
 }
 
@@ -199,6 +202,31 @@ test("doctor shows the control plane's rows (names only for keys)", () => {
   assert.match(r.stdout, /not installed · agentoffice install --service/);
 });
 
+nodeTest("where the control plane can't run (Windows), doctor and open say the office is watch-only", async () => {
+  const outfile = join(TMP, "control-cli.mjs");
+  await build({ entryPoints: [join(ROOT, "src/control/cli.ts")], outfile, bundle: true, platform: "node", format: "esm", target: "node18", external: ["@lydell/node-pty"], logLevel: "error" });
+  const C = await import(pathToFileURL(outfile).href);
+  const lines = [];
+  const out = (l = "") => lines.push(l);
+  await C.doctorRows("0.0.0", out, "win32");
+  assert.match(lines.join("\n"), /Controls\s+off: hiring and driving agents from the page needs macOS or Linux/);
+  assert.ok(!/Terminals|Service|Keys/.test(lines.join("\n")), lines.join("\n"));
+  lines.length = 0;
+  assert.equal(await C.runOpen(["--print"], "0.0.0", out, "win32"), 1);
+  assert.match(lines.join("\n"), /no controls to unlock here/);
+  // The browser opener: cmd.exe by full path on Windows, so a cmd.exe in the folder the office starts from never runs.
+  assert.deepEqual(C.browserCommand("http://127.0.0.1:4747", "win32", { SystemRoot: "C:\\WINDOWS" }), ["C:\\WINDOWS\\System32\\cmd.exe", ["/c", "start", '""', "http://127.0.0.1:4747"]]);
+  assert.deepEqual(C.browserCommand("http://127.0.0.1:4747", "darwin"), ["open", ["http://127.0.0.1:4747"]]);
+  assert.deepEqual(C.browserCommand("http://127.0.0.1:4747", "linux"), ["xdg-open", ["http://127.0.0.1:4747"]]);
+  if (process.platform !== "win32") return;
+  // And on Windows itself, through the CLI.
+  const { env } = homes();
+  assert.match(run(["doctor"], env).stdout, /Controls\s+off: hiring and driving agents/);
+  const o = run(["open"], env);
+  assert.equal(o.status, 1);
+  assert.match(o.stdout, /no controls to unlock here/);
+});
+
 test("run from an npx cache, every hint names npx theagentoffice: agentoffice isn't on PATH there", { timeout: 30_000 }, async () => {
   const { env, ao } = homes();
   const bad = run(["--bogus"], env, NPX_CLI);
@@ -240,8 +268,9 @@ test("Linux with no display: the banner doesn't claim a browser opened, and open
   }
 });
 
-test("canOpenBrowser: Linux needs a display, $BROWSER or WSL; macOS always can; BROWSER=none never", async () => {
+nodeTest("canOpenBrowser: Linux needs a display, $BROWSER or WSL; macOS and Windows always can; BROWSER=none never", async () => {
   const { canOpenBrowser } = await load("src/control/cli.ts");
+  assert.equal(canOpenBrowser({}, "win32"), true);
   assert.equal(canOpenBrowser({}, "linux"), false, "an ssh session or a server");
   assert.equal(canOpenBrowser({ DISPLAY: ":0" }, "linux"), true);
   assert.equal(canOpenBrowser({ WAYLAND_DISPLAY: "wayland-0" }, "linux"), true);

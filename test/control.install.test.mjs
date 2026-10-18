@@ -1,13 +1,16 @@
 // Tests for src/control/install-api.ts: the page's view of `agentoffice install` against a fake
 // HOME (the dry-run plan as rows, applying it, the plan after), the npm check for an npx
 // registration, and that the CLI installer still prints its plan when it reports rows.
-import test, { after, before } from "node:test";
+import nodeTest, { after, before } from "node:test";
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const TMP = realpathSync(mkdtempSync(join(tmpdir(), "agentoffice-ctl-install-")));

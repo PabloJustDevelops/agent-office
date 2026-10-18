@@ -1,9 +1,12 @@
 // Tests for src/control/pty.ts: the node-pty backend and the python3 bridge behave the same
 // (bytes, resize, Ctrl+C, exit codes, signals), and the loader picks, forces and falls back.
-import test, { after, afterEach } from "node:test";
+import nodeTest, { after, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { cleanup, load, scratch, sleep, until } from "./control.session-fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const { loadPty, pythonBackend, exitOf, clampSize } = await load("src/control/pty.ts");
 after(cleanup);

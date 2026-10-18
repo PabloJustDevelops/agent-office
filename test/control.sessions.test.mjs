@@ -3,11 +3,14 @@
 // dropped), prompts are a bracketed paste + Enter, Interrupt is one Esc, Stop is SIGHUP then
 // SIGKILL, Claude's permission hook opens an approval only with a viewer, remote places get bare
 // argv with secrets by env, and bad hires are refused with the right status.
-import test, { after } from "node:test";
+import nodeTest, { after } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { cleanup, FAKE_TUI, fakeBin, fakeContext, load, NODE_DIR, scratch, sleep, until } from "./control.session-fakes.mjs";
+import { CONTROL, skipAll } from "./platform.mjs";
+
+const test = skipAll(nodeTest, CONTROL);
 
 const { createSessionManager, loadPty, ControlError } = await load("src/control/sessions.ts", "src/control/pty.ts", "src/control/types.ts");
 const managers = [];

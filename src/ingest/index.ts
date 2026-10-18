@@ -480,7 +480,7 @@ class Watcher {
           t.metaMtime = listed.get(metaPath)?.mtimeMs;
         }
         const pr = c.agent === "gemini" ? got(`p ${projRootOf(c)}`)?.toString("utf8").split("\n")[0]?.trim() : undefined;
-        t.parser = await this.parserFor(c, heads.get(c.path) ?? "", meta, pr && pr.startsWith("/") ? pr : undefined);
+        t.parser = await this.parserFor(c, heads.get(c.path) ?? "", meta, pr && /^(?:\/|[A-Za-z]:[\\/])/.test(pr) ? pr : undefined);
         if (c.agent === "claude" && meta?.finished === true) t.finished = true;
         if (c.doc) {
           t.docText = c.size <= this.maxDoc ? got(`d ${c.path}`)?.toString("utf8") ?? "" : "";
