@@ -166,10 +166,13 @@ export function localSys(opts: LocalSysOptions = {}): Sys {
         let out = "";
         let child;
         try {
-          // Windows agent CLIs are .cmd shims, which need a shell; quote every argument for it.
+          // Windows agent CLIs are .cmd shims, which need a shell; quote every argument for it. One
+          // command line, no args array: Node 24 warns (DEP0190) about an array handed to a shell.
           const win = platform === "win32";
-          const args = win ? argv.slice(1).map((a) => `"${a.replace(/"/g, '""')}"`) : argv.slice(1);
-          child = spawn(win ? `"${argv[0]}"` : argv[0]!, args, { env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, shell: win });
+          const opts = { env, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"], windowsHide: true };
+          child = win
+            ? spawn([`"${argv[0]}"`, ...argv.slice(1).map((a) => `"${a.replace(/"/g, '""')}"`)].join(" "), { ...opts, shell: true })
+            : spawn(argv[0]!, argv.slice(1), opts);
         } catch (err) {
           return done({ code: 127, out: (err as Error).message });
         }

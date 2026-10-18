@@ -374,9 +374,14 @@ function shim(bin, name, logFile, script) {
   chmodSync(join(bin, name), 0o755);
 }
 
-test("claude and codex go through their own CLIs when present, verified, with a file fallback", async () => {
+test("claude and codex go through their own CLIs when present, verified, with a file fallback", async (t) => {
   const { home, bin } = makeHome(true);
   const log = join(home, "cli.log");
+  // Starting the CLIs never trips a Node warning (on Windows: DEP0190, an args array handed to a shell).
+  const warnings = [];
+  const onWarning = (w) => warnings.push(`${w.code ?? w.name}: ${w.message}`);
+  process.on("warning", onWarning);
+  t.after(() => process.off("warning", onWarning));
   // claude: a working `mcp add`/`remove` that edits ~/.claude.json like the real one.
   shim(bin, "claude", log, `
 import { readFileSync, writeFileSync } from "node:fs";
@@ -409,6 +414,8 @@ writeFileSync(f, JSON.stringify(j, null, 2) + "\\n");`);
   assert.equal(u.code, 0, u.text);
   assert.equal(M.readJsonc(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.agentoffice, undefined);
   assert.ok(M.readJsonc(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.context7, "other servers kept");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(warnings.filter((w) => /DEP0190|child process/i.test(w)), []);
 });
 
 function assertInstalledSubset(home) {
