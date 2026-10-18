@@ -135,25 +135,24 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
 
   const section = (title: string, ...kids: (Node | null)[]) => h("section", { class: "hire-section" }, h("h3", { class: "hire-h", text: title }), ...kids);
   const whereSection = section("Where it works", whereTabs, localPane, sandboxPane, sshPane, cwdRow);
+  // Two columns on a wide screen (who and where | how, and what comes along), one below the other elsewhere.
+  const body = h(
+    "div",
+    { class: "dlg-body hire-body" },
+    h("div", { class: "hire-col" }, section("Agent", agentGrid, agentNote), whereSection),
+    h("div", { class: "hire-col" }, section("How you drive it", modes), section("Permissions", permSel, permHint, bypassWarn), section("First prompt", promptInput), setupSec.el, keysSection),
+  );
+  const scroller = scrollArea(body);
   const form = h(
     "form",
     { class: "hire-form", attrs: { method: "dialog" } },
     h("header", { class: "dlg-head" }, h("h2", { class: "dlg-title", text: "Hire an agent", attrs: { id: "ao-hire-title" } }), closeX),
-    h(
-      "div",
-      { class: "dlg-body" },
-      section("Agent", agentGrid, agentNote),
-      whereSection,
-      section("How you drive it", modes),
-      section("Permissions", permSel, permHint, bypassWarn),
-      section("First prompt", promptInput),
-      setupSec.el,
-      keysSection,
-    ),
+    scroller.el,
     h("footer", { class: "dlg-foot" }, err, h("div", { class: "dlg-foot-row" }, summary, h("span", { class: "dlg-gap" }), cancelBtn, hireBtn)),
   );
   const el = h("dialog", { class: "dlg hire glass", attrs: { "aria-labelledby": "ao-hire-title" } }, form);
   roving(form);
+  scroller.wheelFrom(el);
 
   /* ---- data helpers ---- */
   const avail = (a: AgentKind): AgentAvailability =>
@@ -329,13 +328,16 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
       const ok = here.includes(m);
       b.disabled = !ok;
       b.setAttribute("aria-checked", String(m === mode));
-      b.title = ok
+      // Why it's off, as text: a disabled button shows no tooltip in most browsers.
+      const why = ok
         ? ""
         : !HEADLESS.includes(agent)
-          ? `${agentName(agent)} has no headless protocol yet: terminal only`
+          ? `${agentName(agent)} has no headless protocol: terminal only`
           : where === "local"
             ? (avail(agent).note ?? "Terminal only on this Mac")
-            : `Chat mode runs over ssh and on Railway; in ${PLACE_NAME[provider]} sandboxes use the terminal for now`;
+            : `Not in ${PLACE_NAME[provider]} yet: ssh and Railway have it`;
+      b.title = why;
+      setText(b.querySelector("small")!, why || (m === "terminal" ? "The agent's own TUI, live" : "Messages, tool calls, approvals"));
     }
     const perms = permsOf(agent);
     if (!perms.includes(permission)) permission = perms[0] ?? "default";
@@ -494,6 +496,8 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
   permSel.addEventListener("change", () => {
     permission = permSel.value as PermissionMode;
     render();
+    // The warning is what this choice is about: never leave it below the fold.
+    if (permission === "bypass") scroller.reveal(bypassWarn);
   });
   timeoutSel.addEventListener("change", () => {
     timeoutMin = Number(timeoutSel.value) || 30;
@@ -553,12 +557,74 @@ export function createHire(store: ControlStore, opts: { onHired(s: ControlSessio
       browsing = false;
       render();
       el.showModal();
+      body.scrollTo({ top: 0, behavior: "instant" });
+      scroller.sync();
       requestAnimationFrame(() => agentGrid.querySelector<HTMLElement>("[aria-checked=true]")?.focus());
     },
     close: () => el.close(),
     isOpen: () => el.open,
     sync() {
       if (el.open) render();
+    },
+  };
+}
+
+interface ScrollArea {
+  el: HTMLElement;
+  /** Re-check the fades (content changed while hidden). */
+  sync(): void;
+  /** Scroll so `t` is in view, clear of the fades. */
+  reveal(t: HTMLElement): void;
+  /** Let the wheel or trackpad anywhere over `root` (header, footer, backdrop) scroll the body. */
+  wheelFrom(root: HTMLElement): void;
+}
+
+/**
+ * A dialog body as one obvious scroll area: a fade at the top and at the
+ * bottom while there's more that way, and focus scrolled clear of them.
+ */
+function scrollArea(body: HTMLElement): ScrollArea {
+  const top = h("div", { class: "scroll-fade is-top", attrs: { "aria-hidden": "true" } });
+  const bottom = h("div", { class: "scroll-fade is-bottom", attrs: { "aria-hidden": "true" } });
+  const el = h("div", { class: "dlg-scroll" }, body, top, bottom);
+  const sync = () => {
+    const max = body.scrollHeight - body.clientHeight;
+    el.classList.toggle("can-up", body.scrollTop > 1);
+    el.classList.toggle("can-down", body.scrollTop < max - 1);
+  };
+  body.addEventListener("scroll", sync, { passive: true });
+  // The body resizes with the window; its columns grow as rows open or the setup loads.
+  const ro = new ResizeObserver(sync);
+  ro.observe(body);
+  for (const c of body.children) ro.observe(c);
+  const smooth = () => !matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const reveal = (t: HTMLElement) => {
+    if (!t.isConnected || t.hidden) return;
+    t.scrollIntoView({ block: "nearest", behavior: smooth() ? "smooth" : "auto" });
+  };
+  // scroll-padding keeps what gets focus out from under the fades
+  body.addEventListener("focusin", (ev) => {
+    const t = ev.target;
+    if (t instanceof HTMLElement && t !== body) reveal(t);
+  });
+  return {
+    el,
+    sync,
+    reveal: (t) => requestAnimationFrame(() => reveal(t)),
+    wheelFrom(root) {
+      root.addEventListener(
+        "wheel",
+        (ev) => {
+          if (ev.ctrlKey || ev.defaultPrevented) return; // pinch-zoom
+          const t = ev.target instanceof Node ? ev.target : null;
+          if (t && body.contains(t)) return; // the body, or a list inside it, scrolls itself
+          const dy = ev.deltaMode === 1 ? ev.deltaY * 16 : ev.deltaMode === 2 ? ev.deltaY * body.clientHeight : ev.deltaY;
+          if (!dy) return;
+          ev.preventDefault();
+          body.scrollBy({ top: dy, behavior: "instant" });
+        },
+        { passive: false },
+      );
     },
   };
 }
