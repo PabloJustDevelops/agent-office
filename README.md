@@ -26,6 +26,11 @@ On this machine, in Daytona, Vercel and Railway sandboxes, or over ssh. A failin
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-181717?logo=typescript&logoColor=white)](tsconfig.json)
 [![zero dependencies](https://img.shields.io/badge/dependencies-0%20%2B%201%20optional-181717)](package.json)
 
+<br>
+
+<sub>Sponsored by</sub><br>
+<a href="https://commandcode.ai"><img src="docs/logos/commandcode.svg" width="22" align="center" alt="">&nbsp;<b>Command Code</b></a>
+
 </div>
 
 <br>
@@ -344,11 +349,11 @@ New agents, sandbox platforms, fixes and ideas are welcome. [CONTRIBUTING.md](CO
 
 ## Trademarks
 
-Claude, Codex, Command Code, opencode, Cursor, Droid and Factory, Qwen, Gemini, Daytona, boat, Railway and Vercel are trademarks of their owners. Their logos appear only to name those products, mostly from [Simple Icons](https://github.com/simple-icons/simple-icons) (CC0) and the owners' own marks; agent office is not affiliated with or endorsed by any of them. Codex is shown as a neutral hexagon rather than OpenAI's logo.
+Claude, Codex, Command Code, opencode, Cursor, Droid and Factory, Qwen, Gemini, Daytona, boat, Railway and Vercel are trademarks of their owners. Their logos appear only to name those products, mostly from [Simple Icons](https://github.com/simple-icons/simple-icons) (CC0) and the owners' own marks; apart from Command Code, which sponsors agent office, it is not affiliated with or endorsed by any of them. Codex is shown as a neutral hexagon rather than OpenAI's logo.
 
 ## Author
 
-Made by [@bas3line](https://github.com/bas3line). If you use it, a link back is appreciated, and so is a star.
+Made by [@bas3line](https://github.com/bas3line), sponsored by [Command Code](https://commandcode.ai). If you use it, a link back is appreciated, and so is a star.
 
 To support it: [GitHub Sponsors](https://github.com/sponsors/bas3line), [Buy Me a Coffee](https://buymeacoffee.com/bas3line) or [PayPal](https://paypal.me/ShubhamYadav886).
 
