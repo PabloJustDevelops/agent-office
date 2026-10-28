@@ -247,12 +247,19 @@ const ph = (n: number) => Array.from({ length: n }, () => "?").join(",");
  * a terminal stops being recognised as a test.
  */
 const A = `json_extract(value, '$.function.arguments')`;
+/**
+ * A call's arguments are a JSON *string* inside the row, and a saved call can carry empty or broken ones.
+ * SQLite raises on `json_extract` over malformed JSON, which would fail the whole query and leave the poll
+ * retrying that row forever, so every field is read behind `json_valid`: an unreadable call keeps its id
+ * and name and simply has no arguments, which is what `parseArgs` used to do in TypeScript.
+ */
+const ARG = (path: string) => `case when json_valid(${A}) then json_extract(${A}, '${path}') end`;
 const CALLS = `case when json_valid(m.tool_calls) then
 (select json_group_array(json_object('id', json_extract(value, '$.id'), 'call_id', json_extract(value, '$.call_id'),
 'function', json_object('name', json_extract(value, '$.function.name'), 'arguments', json_object(
-'command', substr(json_extract(${A}, '$.command'), 1, 4000),
-'file_path', json_extract(${A}, '$.file_path'), 'path', json_extract(${A}, '$.path'),
-'pattern', json_extract(${A}, '$.pattern'), 'url', json_extract(${A}, '$.url')))))
+'command', substr(${ARG("$.command")}, 1, 4000),
+'file_path', ${ARG("$.file_path")}, 'path', ${ARG("$.path")},
+'pattern', ${ARG("$.pattern")}, 'url', ${ARG("$.url")}))))
 from json_each(m.tool_calls)) end`;
 
 const MSG_COLS = `m.id as id, m.session_id as session_id, m.timestamp as timestamp, m.role as role,

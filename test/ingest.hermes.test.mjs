@@ -205,6 +205,32 @@ test("hermes: a burst of writes between polls still closes its call", async (t) 
   }
 });
 
+// A saved call can carry empty or malformed arguments. Reading them in SQL made SQLite raise, which failed
+// the whole message query: the poll then retried the same row forever and the session went silent.
+test("hermes: a call with broken arguments doesn't silence the session", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    s.db.message(5, "ses_main", {
+      role: "assistant",
+      tool_calls: [
+        { id: "q1", call_id: "q1", type: "function", function: { name: "terminal", arguments: "" } },
+        { id: "q2", call_id: "q2", type: "function", function: { name: "patch", arguments: "{not json" } },
+        ...tc("q3", "read_file", { file_path: "/tmp/demo-app/src/after.ts" }),
+      ],
+    });
+    const evs = (await s.tick()).filter((e) => e.kind === "tool_start");
+    assert.equal(evs.length, 3, "the unreadable calls are kept, and the readable one after them too");
+    assert.equal(evs[2].summary, "Read after.ts");
+
+    // and the session keeps moving afterwards
+    s.db.message(6, "ses_main", { role: "tool", tool_name: "read_file", tool_call_id: "q3", content: "ok" });
+    assert.deepEqual(kinds(await s.tick()), ["tool_end"]);
+  } finally {
+    cleanup(s);
+  }
+});
+
 // The driver can be perfect and still reach nobody: OfficeState.sanitize drops an event whose agent it
 // doesn't know. Fold the ingest output through the office itself, or a new agent can look green in the
 // parser and be invisible on screen.
