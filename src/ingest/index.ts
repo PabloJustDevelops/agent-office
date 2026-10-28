@@ -36,7 +36,7 @@ import {
   type OcMessage, type OcPart, type OcSession, type OpencodeState,
 } from "./opencode.ts";
 import {
-  applyHermes, asHermesMessage, asHermesSession, createHermesState, hmMessagesAfterSql, hmMessagesSql, hmSessionSql,
+  applyHermes, asHermesMessage, asHermesSession, createHermesState, HM_MAX_ID_SQL, hmMessagesAfterSql, hmMessagesSql, hmSessionSql,
   type HermesState, type HmMessage, type HmSession,
 } from "./hermes.ts";
 import { createQwenState, parseQwenLine } from "./qwen.ts";
@@ -84,11 +84,13 @@ const OC_LIVE_MSGS = 6;
 /** Hermes rows read per session on first sight, to rebuild its state. */
 const HM_BACKFILL_MSGS = 12;
 /**
- * Ceiling on the rows one live poll reads per session. It is a cap, not a window: the poll asks for
- * everything written after the last row it saw (`messages.id` is the rowid), so a burst of writes
- * between polls can't hide the assistant row that issued a tool call.
+ * Ceiling on the rows one live poll reads. It is a page, not a window: the poll asks for everything
+ * written after the last row it saw (`messages.id` is AUTOINCREMENT), and a full page polls again on
+ * the next tick, so a burst of writes can't hide the assistant row that issued a tool call.
  */
 const HM_LIVE_MSGS_MAX = 200;
+/** Slack on Hermes' once-a-minute heartbeat when picking the sessions active lately on first sight. */
+const HM_HEARTBEAT_SLACK_S = 86_400;
 const MAX_BACKOFF_MS = 60_000;
 /** Remotes fetch up to this much of each followed file's growth with every listing. */
 const PREFETCH_BYTES = 256 << 10;
@@ -202,7 +204,7 @@ class Watcher {
   private ocCursor?: number;
   private ocOff = false;
   private hmDb?: string;
-  private readonly hm = new Map<string, { st: HermesState; updated: number; lastId?: number }>();
+  private readonly hm = new Map<string, { st: HermesState; updated: number }>();
   private hmCols?: Set<string>;
   private hmSig = "";
   private hmCursor?: number;
@@ -1097,70 +1099,84 @@ class Watcher {
           return;
         }
       }
-      const since = this.hmCursor ?? now - ACTIVE_WINDOW_MS;
-      const rows = (await this.source.query(db, hmSessionSql(this.hmCols, "updated"), [Math.floor(since / 1000) - 2])) ?? [];
-      const sessions = rows.map(asHermesSession).filter((s): s is HmSession => !!s);
-      for (const s of sessions) this.hmCursor = Math.max(this.hmCursor ?? since, s.last_activity_at * 1000);
-      this.hmCursor ??= since;
-      const changed = sessions.filter((s) => !this.hm.has(s.id) || (this.hm.get(s.id)!.updated ?? -1) <= s.last_activity_at);
-      if (!changed.length) return;
-      const known = changed.filter((s) => this.hm.has(s.id));
-      const fresh = changed.filter((s) => !this.hm.has(s.id)).sort((a, b) => Number(!!a.parent_session_id) - Number(!!b.parent_session_id));
-      if (fresh.length) await this.hmLoad(fresh, true);
-      if (known.length) await this.hmLoad(known, false);
+      if (this.hmCursor === undefined) {
+        // First look: the newest row id first, so a row written while the rest loads is read again
+        // (and deduped) rather than missed; then the sessions active lately, posed from their latest rows.
+        const top = (await this.source.query(db, HM_MAX_ID_SQL)) ?? [];
+        const cursor = Number(top[0]?.id) || 0;
+        const since = (now - ACTIVE_WINDOW_MS) / 1000;
+        const rows = (await this.source.query(db, hmSessionSql(this.hmCols, "recent"), [since - HM_HEARTBEAT_SLACK_S, since])) ?? [];
+        await this.hmLoad(this.hmSessions(rows));
+        this.hmCursor = cursor;
+        return;
+      }
+      // Live: every row written since the last one read. sessions.last_activity_at can't say which
+      // sessions moved: Hermes heartbeats it at most once a minute, and a new message doesn't touch it.
+      const rows = (await this.source.query(db, hmMessagesAfterSql(), [this.hmCursor, HM_LIVE_MSGS_MAX])) ?? [];
+      if (!rows.length) return;
+      for (const r of rows) this.hmCursor = Math.max(this.hmCursor, Number(r.id) || 0);
+      // A full page: more rows wait behind it, so read again next tick even if the files look the same.
+      if (rows.length >= HM_LIVE_MSGS_MAX) this.hmSig = "";
+      const msgs = rows.map(asHermesMessage).filter((m): m is HmMessage => !!m);
+      const ids = [...new Set(msgs.map((m) => m.session_id))];
+      const unknown = ids.filter((id) => !this.hm.has(id));
+      this.hmLive(msgs.filter((m) => this.hm.has(m.session_id)));
+      for (let i = 0; i < unknown.length; i += 100) {
+        const chunk = unknown.slice(i, i + 100);
+        await this.hmLoad(this.hmSessions((await this.source.query(db, hmSessionSql(this.hmCols, "ids", chunk.length), chunk)) ?? []));
+      }
     } catch (err) {
       this.log(`ingest: reading ${BRAND.hermes.name} failed: ${(err as Error)?.message ?? err}`);
       this.hmSig = "";
     }
   }
 
-  /** Fetch the latest messages for these sessions, fold them in, and post (or pose) the result. */
-  private async hmLoad(sessions: HmSession[], first: boolean, activeAt?: number): Promise<void> {
+  /** Well-formed session rows, parents before their subagents. */
+  private hmSessions(rows: Record<string, unknown>[]): HmSession[] {
+    return rows.map(asHermesSession).filter((s): s is HmSession => !!s).sort((a, b) => Number(!!a.subagent) - Number(!!b.subagent));
+  }
+
+  /** First sight of these sessions: read their latest rows, fold them in, and pose the result. */
+  private async hmLoad(sessions: HmSession[], activeAt?: number): Promise<void> {
+    if (!sessions.length) return;
     const db = this.hmDb!;
     const msgs: HmMessage[] = [];
-    if (first) {
-      for (let i = 0; i < sessions.length; i += 100) {
-        const ids = sessions.slice(i, i + 100).map((s) => s.id);
-        const rows = (await this.source.query(db, hmMessagesSql(ids.length), [...ids, HM_BACKFILL_MSGS])) ?? [];
-        for (const r of rows) {
-          const m = asHermesMessage(r);
-          if (m) msgs.push(m);
-        }
-      }
-    } else {
-      // Live: everything after the last row seen in this session, not "the last few messages".
-      for (const s of sessions) {
-        const since = this.hm.get(s.id)?.lastId ?? 0;
-        const rows = (await this.source.query(db, hmMessagesAfterSql(), [s.id, since, HM_LIVE_MSGS_MAX])) ?? [];
-        for (const r of rows) {
-          const m = asHermesMessage(r);
-          if (m) msgs.push(m);
-        }
+    for (let i = 0; i < sessions.length; i += 100) {
+      const ids = sessions.slice(i, i + 100).map((s) => s.id);
+      const rows = (await this.source.query(db, hmMessagesSql(ids.length), [...ids, HM_BACKFILL_MSGS])) ?? [];
+      for (const r of rows) {
+        const m = asHermesMessage(r);
+        if (m) msgs.push(m);
       }
     }
     const msgsOf = new Map<string, HmMessage[]>();
     for (const m of msgs) (msgsOf.get(m.session_id) ?? msgsOf.set(m.session_id, []).get(m.session_id)!).push(m);
-    const now = this.now();
     for (const s of sessions) {
-      let entry = this.hm.get(s.id);
-      const isNew = !entry;
-      if (!entry) {
-        entry = { st: createHermesState(s), updated: s.last_activity_at };
-        this.hm.set(s.id, entry);
-      }
-      entry.updated = s.last_activity_at;
-      for (const m of msgsOf.get(s.id) ?? []) entry.lastId = Math.max(entry.lastId ?? 0, Number(m.id) || 0);
+      // Already loaded as another session's parent.
+      if (this.hm.has(s.id)) continue;
+      const st = createHermesState(s);
+      this.hm.set(s.id, { st, updated: s.active_at });
+      for (const [id, c] of st.workers) this.registry.set(id, c);
+      if (st.main.parentId) await this.hmParent(st, s);
+      const events = applyHermes(st, msgsOf.get(s.id) ?? []);
+      st.main.lastActivityMs = s.active_at * 1000;
+      this.forwardAll(this.condense(st, events, { lastWrite: s.active_at * 1000, activeAt }));
+    }
+  }
+
+  /** Rows written since the last poll, for sessions already in the office. */
+  private hmLive(msgs: HmMessage[]): void {
+    const msgsOf = new Map<string, HmMessage[]>();
+    for (const m of msgs) (msgsOf.get(m.session_id) ?? msgsOf.set(m.session_id, []).get(m.session_id)!).push(m);
+    const now = this.now();
+    for (const [sid, rows] of msgsOf) {
+      const entry = this.hm.get(sid)!;
+      for (const m of rows) entry.updated = Math.max(entry.updated, m.timestamp);
       const st = entry.st;
       for (const [id, c] of st.workers) this.registry.set(id, c);
-      if (isNew && st.main.parentId) await this.hmParent(st, s);
-      const events = applyHermes(st, msgsOf.get(s.id) ?? []);
-      if (isNew) {
-        st.main.lastActivityMs = s.last_activity_at * 1000;
-        this.forwardAll(this.condense(st, events, { lastWrite: s.last_activity_at * 1000, activeAt }));
-      } else {
-        if (events.length) st.main.lastActivityMs = now;
-        this.forwardAll(events);
-      }
+      const events = applyHermes(st, rows);
+      if (events.length) st.main.lastActivityMs = now;
+      this.forwardAll(events);
     }
   }
 
@@ -1169,9 +1185,9 @@ class Watcher {
     const pid = st.main.parentId!;
     let parent = this.registry.get(pid);
     if (!parent) {
-      const rows = (await this.source.query(this.hmDb!, hmSessionSql(this.hmCols!, "id"), [pid])) ?? [];
+      const rows = (await this.source.query(this.hmDb!, hmSessionSql(this.hmCols!, "ids"), [pid])) ?? [];
       const ps = rows.map(asHermesSession).find((x): x is HmSession => !!x);
-      if (ps && !this.hm.has(ps.id)) await this.hmLoad([ps], true, s.last_activity_at * 1000);
+      if (ps && !this.hm.has(ps.id)) await this.hmLoad([ps], s.active_at * 1000);
       parent = this.registry.get(pid);
     }
     if (!parent) {
@@ -1179,7 +1195,7 @@ class Watcher {
       return;
     }
     if (!parent.announced) {
-      const ts = iso(Math.max(Date.parse(parent.lastTs ?? "") || 0, s.last_activity_at * 1000));
+      const ts = iso(Math.max(Date.parse(parent.lastTs ?? "") || 0, s.active_at * 1000));
       parent.keepTs = ts;
       this.forwardAll(emit(parent, "session_start", ts));
     }

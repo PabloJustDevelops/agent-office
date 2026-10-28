@@ -37,45 +37,53 @@ try {
 const kinds = (evs) => evs.map((e) => e.kind);
 const sec = () => Date.now() / 1000;
 const tc = (id, name, args) => [{ id, call_id: id, response_item_id: `r_${id}`, type: "function", function: { name, arguments: JSON.stringify(args) } }];
+/** What Hermes' terminal tool answers with (tools/terminal_tool_result.py). */
+const term = (output, exit_code, extra = {}) => JSON.stringify({ output, exit_code, error: null, ...extra });
 
+// The columns the driver reads, as Hermes declares them: last_activity_at is a nullable heartbeat that
+// appending a message never touches, and messages.id is AUTOINCREMENT.
 function makeDb(dir) {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, "state.db");
   const db = new sqlite.DatabaseSync(path);
   db.exec(`pragma journal_mode = wal;
     create table sessions (
-      id text primary key, source text, profile_name text, model text, billing_provider text,
+      id text primary key, source text not null, profile_name text, model text, billing_provider text,
       cwd text, git_repo_root text, git_branch text,
-      started_at real, last_activity_at real not null, ended_at real,
+      started_at real not null, last_activity_at real, ended_at real, end_reason text,
       message_count integer default 0, tool_call_count integer default 0, tool_names text,
       input_tokens integer default 0, output_tokens integer default 0,
       cache_read_tokens integer default 0, cache_write_tokens integer default 0, reasoning_tokens integer default 0,
       parent_session_id text, title text, archived integer default 0, hidden integer default 0, pinned integer default 0
     );
     create table messages (
-      id integer primary key, session_id text not null, role text, tool_name text, tool_call_id text,
+      id integer primary key autoincrement, session_id text not null, role text not null, tool_name text, tool_call_id text,
       tool_calls text, timestamp real not null, content text
     );
-    create index messages_session_time_id_idx on messages (session_id, timestamp, id);`);
+    create index idx_messages_session on messages (session_id, timestamp);
+    create index idx_sessions_last_active on sessions (coalesce(last_activity_at, started_at) desc, started_at desc);`);
   const api = {
     path,
     session(id, o = {}) {
-      const t = sec();
+      const t = o.started ?? sec();
       db.prepare(`insert or replace into sessions
-        (id, source, profile_name, model, cwd, started_at, last_activity_at, parent_session_id, title)
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, o.source ?? "local", o.profile ?? "default", o.model ?? "deepseek/deepseek-v4.1-flash",
-          o.cwd ?? "/tmp/demo-app", t, t, o.parent ?? null, o.title ?? null);
+        (id, source, profile_name, model, cwd, started_at, last_activity_at, parent_session_id, end_reason, title)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, o.source ?? "cli", o.profile ?? "default", o.model ?? "deepseek/deepseek-v4.1-flash",
+          o.cwd ?? "/tmp/demo-app", t, o.heartbeat ?? null, o.parent ?? null, o.endReason ?? null, o.title ?? null);
     },
-    touch(id) {
-      db.prepare("update sessions set last_activity_at = ? where id = ?").run(sec(), id);
+    heartbeat(id, at = sec()) {
+      db.prepare("update sessions set last_activity_at = ? where id = ?").run(at, id);
+    },
+    end(id, reason) {
+      db.prepare("update sessions set ended_at = ?, end_reason = ? where id = ?").run(sec(), reason, id);
     },
     message(id, sid, o = {}) {
       db.prepare(`insert or replace into messages (id, session_id, role, tool_name, tool_call_id, tool_calls, timestamp, content)
         values (?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, sid, o.role ?? null, o.tool_name ?? null, o.tool_call_id ?? null,
-          o.tool_calls ? JSON.stringify(o.tool_calls) : null, o.ts ?? sec(), o.content ?? "");
-      api.touch(sid);
+        .run(id, sid, o.role ?? "assistant", o.tool_name ?? null, o.tool_call_id ?? null,
+          typeof o.tool_calls === "string" ? o.tool_calls : o.tool_calls ? JSON.stringify(o.tool_calls) : null,
+          o.ts ?? sec(), o.content ?? "");
     },
     close: () => db.close(),
   };
@@ -87,7 +95,7 @@ function seed(db) {
   db.session("ses_main");
   db.message(1, "ses_main", { role: "user", content: "please run the tests and read auth.ts" });
   db.message(2, "ses_main", { role: "assistant", tool_calls: tc("c1", "terminal", { command: "npm test" }) });
-  db.message(3, "ses_main", { role: "tool", tool_name: "terminal", tool_call_id: "c1", content: "Tests: 0 failed\nExit code: 0" });
+  db.message(3, "ses_main", { role: "tool", tool_name: "terminal", tool_call_id: "c1", content: term("Tests: 0 failed", 0) });
   db.message(4, "ses_main", { role: "assistant", content: "Done." });
 }
 
@@ -195,11 +203,89 @@ test("hermes: a burst of writes between polls still closes its call", async (t) 
   if (!s) return;
   try {
     s.db.message(5, "ses_main", { role: "assistant", tool_calls: tc("b1", "terminal", { command: "npm test" }) });
-    s.db.message(6, "ses_main", { role: "tool", tool_name: "terminal", tool_call_id: "b1", content: "1 test failed\nExit code: 1" });
+    s.db.message(6, "ses_main", { role: "tool", tool_name: "terminal", tool_call_id: "b1", content: term("1 test failed", 1) });
     for (let i = 7; i <= 16; i++) s.db.message(i, "ses_main", { role: "user", content: `filler ${i}` });
     const evs = await s.tick();
     assert.ok(kinds(evs).includes("tool_start"), "the call that the burst pushed out of the window still starts");
     assert.ok(kinds(evs).includes("test_fail"), "and its failure is still scored");
+  } finally {
+    cleanup(s);
+  }
+});
+
+// More rows than one poll reads: the rest come on the next tick, though the files haven't changed since.
+test("hermes: a burst bigger than a page is read on, a page per tick", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    for (let i = 5; i < 255; i++) s.db.message(i, "ses_main", { role: "user", content: `filler ${i}` });
+    s.db.message(255, "ses_main", { role: "assistant", tool_calls: tc("pg", "terminal", { command: "npm test" }) });
+    s.db.message(256, "ses_main", { role: "tool", tool_name: "terminal", tool_call_id: "pg", content: term("", 1) });
+    assert.ok(!kinds(await s.tick()).includes("test_fail"));
+    assert.ok(kinds(await s.tick()).includes("test_fail"), "the second page arrives without another write");
+  } finally {
+    cleanup(s);
+  }
+});
+
+// sessions.last_activity_at is a heartbeat Hermes writes at most once a minute, and a new message never
+// touches it. Picking sessions by it left one whose heartbeat is older than another's silent, its last
+// reply included, until its next heartbeat (never, once it went idle).
+test("hermes: rows land without a heartbeat, in two sessions at once", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    s.db.heartbeat("ses_main", sec() - 50);
+    s.db.session("ses_two", { heartbeat: sec() });
+    s.db.message(5, "ses_two", { role: "user", content: "hi" });
+    s.db.message(6, "ses_main", { role: "assistant", tool_calls: tc("h1", "read_file", { path: "/tmp/demo-app/a.ts" }) });
+    let evs = await s.tick();
+    assert.deepEqual(kinds(evs.filter((e) => e.workerId === "ses_main")), ["tool_start"]);
+    assert.ok(evs.some((e) => e.workerId === "ses_two" && e.kind === "session_start"), "a session first seen live walks in");
+
+    s.db.message(7, "ses_main", { role: "tool", tool_name: "read_file", tool_call_id: "h1", content: "body" });
+    s.db.message(8, "ses_main", { role: "assistant", content: "All read." });
+    evs = await s.tick();
+    assert.deepEqual(kinds(evs), ["tool_end", "reply", "waiting"]);
+  } finally {
+    cleanup(s);
+  }
+});
+
+// Hermes points a compression (or branch, or reset) continuation at the session it carries on through
+// parent_session_id, the same column a subagent uses. As an intern, the conversation would walk out of
+// the office on its first reply.
+test("hermes: a compression continuation is a worker, not an intern", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    s.db.end("ses_main", "compression");
+    s.db.session("ses_cont", { parent: "ses_main" });
+    s.db.message(5, "ses_cont", { role: "user", content: "carry on" });
+    let evs = (await s.tick()).filter((e) => e.workerId === "ses_cont");
+    assert.equal(evs[0]?.kind, "session_start");
+    assert.ok(evs.every((e) => !e.parentId));
+
+    s.db.message(6, "ses_cont", { role: "assistant", content: "Carrying on." });
+    evs = await s.tick();
+    assert.deepEqual(kinds(evs), ["reply", "waiting"]);
+  } finally {
+    cleanup(s);
+  }
+});
+
+// json_each/json_extract raise on the wrong shapes too, and with one cursor for every session, a row that
+// fails the query would stop Hermes for good.
+test("hermes: tool_calls that aren't an array of calls don't stop the poll", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    s.db.message(5, "ses_main", { role: "assistant", tool_calls: `[{"id":"cut` });
+    s.db.message(6, "ses_main", { role: "assistant", tool_calls: `{"id":"x"}` });
+    s.db.message(7, "ses_main", { role: "assistant", tool_calls: `["x", 1, null, {"id":"y"}]` });
+    s.db.message(8, "ses_main", { role: "assistant", tool_calls: tc("ok1", "read_file", { path: "/tmp/demo-app/ok.ts" }) });
+    const evs = (await s.tick()).filter((e) => e.kind === "tool_start");
+    assert.deepEqual(evs.map((e) => e.summary), ["Read ok.ts"]);
   } finally {
     cleanup(s);
   }
@@ -254,19 +340,22 @@ test("hermes: a child session walks in as an intern", async (t) => {
   const s = await scenario(t);
   if (!s) return;
   try {
-    s.db.session("ses_kid", { parent: "ses_main", profile: "reviewer" });
+    // delegate_task's children are tagged source 'subagent'; profile_name is the whole state.db's.
+    s.db.session("ses_kid", { parent: "ses_main", source: "subagent" });
     s.db.message(20, "ses_kid", { role: "assistant", tool_calls: tc("k1c", "terminal", { command: "npm test" }) });
     const kid = (await s.tick()).filter((e) => e.workerId === "ses_kid");
     assert.deepEqual(kinds(kid), ["subagent_start", "tool_start"]);
     assert.equal(kid[0].parentId, "ses_main");
-    assert.equal(kid[0].role, "reviewer");
+    assert.equal(kid[0].role, "subagent");
     assert.equal(kid[1].summary, "$ npm test");
   } finally {
     cleanup(s);
   }
 });
 
-test("hermes: a terminal run ending in Exit code: 1 flips the table", async (t) => {
+// The verdict comes from the envelope's exit_code: the output itself can say anything, here nothing a
+// failure marker would catch.
+test("hermes: a terminal answering exit_code 1 flips the table", async (t) => {
   const s = await scenario(t);
   if (!s) return;
   try {
@@ -275,10 +364,37 @@ test("hermes: a terminal run ending in Exit code: 1 flips the table", async (t) 
     assert.deepEqual(kinds(evs), ["tool_start"]);
     assert.equal(evs[0].summary, "$ npm test");
 
-    s.db.message(6, "ses_main", { role: "tool", tool_name: "terminal", tool_call_id: "c9", content: "1 test failed\nExit code: 1" });
+    s.db.message(6, "ses_main", { role: "tool", tool_name: "terminal", tool_call_id: "c9", content: term("ran 12 suites (exit code 0 expected)", 1) });
     evs = await s.tick();
     assert.deepEqual(kinds(evs), ["tool_end", "test_fail"]);
     assert.equal(evs[1].isError, true);
+  } finally {
+    cleanup(s);
+  }
+});
+
+test("hermes: a test run handed to the background has no verdict yet", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    s.db.message(5, "ses_main", { role: "assistant", tool_calls: tc("bg", "terminal", { command: "npm test" }) });
+    s.db.message(6, "ses_main", {
+      role: "tool", tool_name: "terminal", tool_call_id: "bg",
+      content: term("", null, { status: "yielded_to_background", session_id: "proc_1" }),
+    });
+    assert.deepEqual(kinds(await s.tick()), ["tool_start", "tool_end"]);
+  } finally {
+    cleanup(s);
+  }
+});
+
+test("hermes: a plain-text terminal answer ending in Exit code: 1 still flips the table", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    s.db.message(5, "ses_main", { role: "assistant", tool_calls: tc("c8", "terminal", { command: "npm test" }) });
+    s.db.message(6, "ses_main", { role: "tool", tool_name: "terminal", tool_call_id: "c8", content: "1 test failed\nExit code: 1" });
+    assert.deepEqual(kinds(await s.tick()), ["tool_start", "tool_end", "test_fail"]);
   } finally {
     cleanup(s);
   }

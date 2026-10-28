@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- **Hermes Agent.** Hermes sessions walk in from `~/.hermes/state.db`, the SQLite file it already keeps: the model, the folder and the profile come from `sessions`, and `messages` gives the prompts, tool calls and replies, subagent sessions included as interns. Read-only, watched only — the control plane cannot hire it. `messages.id` is an INTEGER there while `sessions.id` is TEXT, and its timestamps are epoch seconds rather than milliseconds.
+- **Hermes Agent.** Hermes sessions walk in from `~/.hermes/state.db`, the SQLite file it already keeps: the model and the folder come from `sessions`, and `messages` gives the prompts, tool calls and replies, delegate_task's subagent sessions included as interns (a compression or branch continuation stays a worker of its own). Read-only, watched only — the control plane cannot hire it. `messages.id` is an INTEGER there while `sessions.id` is TEXT, and its timestamps are epoch seconds rather than milliseconds.
 
 ## 0.3.0
 
