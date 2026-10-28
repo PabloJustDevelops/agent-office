@@ -164,6 +164,47 @@ test("hermes: backfill poses the session, live rows animate it", async (t) => {
   }
 });
 
+// Cutting the serialized tool_calls column at 2,000 characters loses every call after a big one, and a
+// terminal call whose arguments got cut has no command, so its test verdict is never scored.
+test("hermes: a big argument doesn't swallow the calls after it", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    const big = "x".repeat(9000);
+    s.db.message(5, "ses_main", {
+      role: "assistant",
+      tool_calls: [
+        ...tc("p1", "patch", { path: "/tmp/demo-app/src/big.ts", patch: big }),
+        ...tc("p2", "terminal", { command: "npm test" }),
+      ],
+    });
+    const evs = (await s.tick()).filter((e) => e.kind === "tool_start");
+    assert.equal(evs.length, 2, "both calls in one row are reported");
+    assert.equal(evs[0].summary, "Edit big.ts");
+    assert.equal(evs[1].summary, "$ npm test");
+  } finally {
+    cleanup(s);
+  }
+});
+
+// A live poll must read everything written since the last row it saw. Reading "the last N messages"
+// drops the assistant row that issued a call when a burst of writes lands between two polls, and the
+// result then has nothing to close — a failed test included.
+test("hermes: a burst of writes between polls still closes its call", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    s.db.message(5, "ses_main", { role: "assistant", tool_calls: tc("b1", "terminal", { command: "npm test" }) });
+    s.db.message(6, "ses_main", { role: "tool", tool_name: "terminal", tool_call_id: "b1", content: "1 test failed\nExit code: 1" });
+    for (let i = 7; i <= 16; i++) s.db.message(i, "ses_main", { role: "user", content: `filler ${i}` });
+    const evs = await s.tick();
+    assert.ok(kinds(evs).includes("tool_start"), "the call that the burst pushed out of the window still starts");
+    assert.ok(kinds(evs).includes("test_fail"), "and its failure is still scored");
+  } finally {
+    cleanup(s);
+  }
+});
+
 // The driver can be perfect and still reach nobody: OfficeState.sanitize drops an event whose agent it
 // doesn't know. Fold the ingest output through the office itself, or a new agent can look green in the
 // parser and be invisible on screen.

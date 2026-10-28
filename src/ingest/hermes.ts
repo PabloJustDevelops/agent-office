@@ -240,14 +240,41 @@ export function hmSessionSql(cols: Set<string>, where: "updated" | "id"): string
 
 const ph = (n: number) => Array.from({ length: n }, () => "?").join(",");
 
+/**
+ * One row's tool_calls, rebuilt in SQL: every call, with only the argument fields a label needs, each
+ * capped on its own. Cutting the serialized array instead loses every call after a big one (a patch with
+ * a long diff) and, worse, leaves one call's arguments unparseable, so a patch stops naming its file and
+ * a terminal stops being recognised as a test.
+ */
+const A = `json_extract(value, '$.function.arguments')`;
+const CALLS = `case when json_valid(m.tool_calls) then
+(select json_group_array(json_object('id', json_extract(value, '$.id'), 'call_id', json_extract(value, '$.call_id'),
+'function', json_object('name', json_extract(value, '$.function.name'), 'arguments', json_object(
+'command', substr(json_extract(${A}, '$.command'), 1, 4000),
+'file_path', json_extract(${A}, '$.file_path'), 'path', json_extract(${A}, '$.path'),
+'pattern', json_extract(${A}, '$.pattern'), 'url', json_extract(${A}, '$.url')))))
+from json_each(m.tool_calls)) end`;
+
+const MSG_COLS = `m.id as id, m.session_id as session_id, m.timestamp as timestamp, m.role as role,
+m.tool_name as tool_name, m.tool_call_id as tool_call_id, ${CALLS} as tool_calls,
+case when m.role = 'tool' and m.tool_name = 'terminal' then substr(m.content, -20000) end as out,
+case when m.role <> 'tool' then length(m.content) end as text_len`;
+
 /** The latest `limit` messages of each session (the (session_id, timestamp, id) index does the work). */
 export function hmMessagesSql(sessions: number): string {
   return `with r as (select id, row_number() over (partition by session_id order by timestamp desc, id desc) as rn from messages where session_id in (${ph(sessions)}))
-select m.id as id, m.session_id as session_id, m.timestamp as timestamp, m.role as role,
-m.tool_name as tool_name, m.tool_call_id as tool_call_id, substr(m.tool_calls,1,2000) as tool_calls,
-case when m.role = 'tool' and m.tool_name = 'terminal' then substr(m.content,-20000) end as out,
-case when m.role <> 'tool' then length(m.content) end as text_len
+select ${MSG_COLS}
 from messages m join r on r.id = m.id where r.rn <= ?`;
+}
+
+/**
+ * Everything written to one session after a row id. A live poll must not fall back to "the last N
+ * messages": between two polls Hermes can write more than N rows, and the assistant row that issued a
+ * tool call would fall outside the window, leaving its result with nothing to close (the call is
+ * dropped, a failed test included). ids are rowids, so `>` walks forward.
+ */
+export function hmMessagesAfterSql(): string {
+  return `select ${MSG_COLS} from messages m where m.session_id = ? and m.id > ? order by m.id limit ?`;
 }
 
 /** Rows come back loosely typed (and from a remote's sqlite3 CLI); keep only well-formed ones. */

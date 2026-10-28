@@ -36,7 +36,7 @@ import {
   type OcMessage, type OcPart, type OcSession, type OpencodeState,
 } from "./opencode.ts";
 import {
-  applyHermes, asHermesMessage, asHermesSession, createHermesState, hmMessagesSql, hmSessionSql,
+  applyHermes, asHermesMessage, asHermesSession, createHermesState, hmMessagesAfterSql, hmMessagesSql, hmSessionSql,
   type HermesState, type HmMessage, type HmSession,
 } from "./hermes.ts";
 import { createQwenState, parseQwenLine } from "./qwen.ts";
@@ -81,9 +81,14 @@ const SIGNAL_STALE_MS = 60_000;
 /** opencode rows read per session: on first sight (to rebuild state), and per live poll. */
 const OC_BACKFILL_MSGS = 12;
 const OC_LIVE_MSGS = 6;
-/** Hermes rows read per session: on first sight (to rebuild state), and per live poll. */
+/** Hermes rows read per session on first sight, to rebuild its state. */
 const HM_BACKFILL_MSGS = 12;
-const HM_LIVE_MSGS = 6;
+/**
+ * Ceiling on the rows one live poll reads per session. It is a cap, not a window: the poll asks for
+ * everything written after the last row it saw (`messages.id` is the rowid), so a burst of writes
+ * between polls can't hide the assistant row that issued a tool call.
+ */
+const HM_LIVE_MSGS_MAX = 200;
 const MAX_BACKOFF_MS = 60_000;
 /** Remotes fetch up to this much of each followed file's growth with every listing. */
 const PREFETCH_BYTES = 256 << 10;
@@ -197,7 +202,7 @@ class Watcher {
   private ocCursor?: number;
   private ocOff = false;
   private hmDb?: string;
-  private readonly hm = new Map<string, { st: HermesState; updated: number }>();
+  private readonly hm = new Map<string, { st: HermesState; updated: number; lastId?: number }>();
   private hmCols?: Set<string>;
   private hmSig = "";
   private hmCursor?: number;
@@ -1112,14 +1117,25 @@ class Watcher {
   /** Fetch the latest messages for these sessions, fold them in, and post (or pose) the result. */
   private async hmLoad(sessions: HmSession[], first: boolean, activeAt?: number): Promise<void> {
     const db = this.hmDb!;
-    const limit = first ? HM_BACKFILL_MSGS : HM_LIVE_MSGS;
     const msgs: HmMessage[] = [];
-    for (let i = 0; i < sessions.length; i += 100) {
-      const ids = sessions.slice(i, i + 100).map((s) => s.id);
-      const rows = (await this.source.query(db, hmMessagesSql(ids.length), [...ids, limit])) ?? [];
-      for (const r of rows) {
-        const m = asHermesMessage(r);
-        if (m) msgs.push(m);
+    if (first) {
+      for (let i = 0; i < sessions.length; i += 100) {
+        const ids = sessions.slice(i, i + 100).map((s) => s.id);
+        const rows = (await this.source.query(db, hmMessagesSql(ids.length), [...ids, HM_BACKFILL_MSGS])) ?? [];
+        for (const r of rows) {
+          const m = asHermesMessage(r);
+          if (m) msgs.push(m);
+        }
+      }
+    } else {
+      // Live: everything after the last row seen in this session, not "the last few messages".
+      for (const s of sessions) {
+        const since = this.hm.get(s.id)?.lastId ?? 0;
+        const rows = (await this.source.query(db, hmMessagesAfterSql(), [s.id, since, HM_LIVE_MSGS_MAX])) ?? [];
+        for (const r of rows) {
+          const m = asHermesMessage(r);
+          if (m) msgs.push(m);
+        }
       }
     }
     const msgsOf = new Map<string, HmMessage[]>();
@@ -1133,6 +1149,7 @@ class Watcher {
         this.hm.set(s.id, entry);
       }
       entry.updated = s.last_activity_at;
+      for (const m of msgsOf.get(s.id) ?? []) entry.lastId = Math.max(entry.lastId ?? 0, Number(m.id) || 0);
       const st = entry.st;
       for (const [id, c] of st.workers) this.registry.set(id, c);
       if (isNew && st.main.parentId) await this.hmParent(st, s);
