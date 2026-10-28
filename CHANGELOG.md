@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Hermes Agent.** Hermes sessions walk in from `~/.hermes/state.db`, the SQLite file it already keeps: the model, the folder and the profile come from `sessions`, and `messages` gives the prompts, tool calls and replies, subagent sessions included as interns. Read-only, watched only — the control plane cannot hire it. `messages.id` is an INTEGER there while `sessions.id` is TEXT, and its timestamps are epoch seconds rather than milliseconds.
+
 ## 0.3.0
 
 - **Chat mode in Daytona and Vercel sandboxes.** Claude Code and Codex hired into a Daytona or Vercel sandbox can now run in chat mode, as on Railway and ssh boxes. Daytona runs the agent as a command in a toolbox session of its own; Vercel as a command with its input attached. A dropped output connection is opened again without repeating what was already shown.

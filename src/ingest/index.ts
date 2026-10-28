@@ -26,7 +26,7 @@ import { createCommandCodeState, parseCommandCodeLine } from "./commandcode.ts";
 import { announcement, basename, emit, parseJson, type ParserState, type WorkerCtx } from "./common.ts";
 import { createCursorState, parseCursorLine, type CursorState } from "./cursor.ts";
 import {
-  agentRoots, DRIVERS, opencodeDb, outboxDir,
+  agentRoots, DRIVERS, hermesDb, opencodeDb, outboxDir,
   type Candidate, type Driver, type ListHint,
 } from "./discover.ts";
 import { applyDroidSettings, createDroidState, parseDroidLine } from "./droid.ts";
@@ -35,6 +35,10 @@ import {
   applyOpencode, asMessage, asPart, asSession, createOpencodeState, messagesSql, partsSql, sessionSql,
   type OcMessage, type OcPart, type OcSession, type OpencodeState,
 } from "./opencode.ts";
+import {
+  applyHermes, asHermesMessage, asHermesSession, createHermesState, hmMessagesSql, hmSessionSql,
+  type HermesState, type HmMessage, type HmSession,
+} from "./hermes.ts";
 import { createQwenState, parseQwenLine } from "./qwen.ts";
 import { OFFICE_TOOL, parseSignal, pickSignalWorker, signalEvent } from "./signals.ts";
 import {
@@ -77,6 +81,9 @@ const SIGNAL_STALE_MS = 60_000;
 /** opencode rows read per session: on first sight (to rebuild state), and per live poll. */
 const OC_BACKFILL_MSGS = 12;
 const OC_LIVE_MSGS = 6;
+/** Hermes rows read per session: on first sight (to rebuild state), and per live poll. */
+const HM_BACKFILL_MSGS = 12;
+const HM_LIVE_MSGS = 6;
 const MAX_BACKOFF_MS = 60_000;
 /** Remotes fetch up to this much of each followed file's growth with every listing. */
 const PREFETCH_BYTES = 256 << 10;
@@ -189,6 +196,12 @@ class Watcher {
   private ocSig = "";
   private ocCursor?: number;
   private ocOff = false;
+  private hmDb?: string;
+  private readonly hm = new Map<string, { st: HermesState; updated: number }>();
+  private hmCols?: Set<string>;
+  private hmSig = "";
+  private hmCursor?: number;
+  private hmOff = false;
 
   private ticks = 0;
   private lastFull = Number.NEGATIVE_INFINITY;
@@ -230,6 +243,10 @@ class Watcher {
         this.ocDb = opencodeDb(this.env, this.local);
         continue;
       }
+      if (agent === "hermes") {
+        this.hmDb = hermesDb(this.env, this.local);
+        continue;
+      }
       const driver = DRIVERS[agent];
       if (!driver) continue;
       for (const r of agentRoots(agent, this.env, this.local)) {
@@ -241,6 +258,7 @@ class Watcher {
       }
     }
     if (this.ocDb) this.log(`ingest: ${BRAND.opencode.name} database ${this.ocDb}${this.local ? "" : ` on ${this.name}`}`);
+    if (this.hmDb) this.log(`ingest: ${BRAND.hermes.name} database ${this.hmDb}${this.local ? "" : ` on ${this.name}`}`);
     this.outbox = outboxDir(this.env).replace(/[\\/]+$/, "");
     this.resolved = true;
   }
@@ -274,7 +292,7 @@ class Watcher {
 
     // 1. One listing for every agent, opencode's database files and the outbox.
     const reqs: ListRequest[] = [];
-    const owners: (Watched | "outbox" | "opencode")[] = [];
+    const owners: (Watched | "outbox" | "opencode" | "hermes")[] = [];
     for (const w of this.roots) {
       const hint: ListHint = { watched: this.watchedMains(w.driver.agent), dirs: this.quickDirs.get(w.driver.agent) ?? new Set(), now };
       for (const q of w.driver.lists(w.root, full, hint)) {
@@ -285,6 +303,10 @@ class Watcher {
     if (this.ocDb && !this.ocOff) {
       reqs.push({ root: this.ocDb.slice(0, this.ocDb.lastIndexOf("/")), depth: 0, suffixes: [".db", ".db-wal"] });
       owners.push("opencode");
+    }
+    if (this.hmDb && !this.hmOff) {
+      reqs.push({ root: this.hmDb.slice(0, this.hmDb.lastIndexOf("/")), depth: 0, suffixes: [".db", ".db-wal"] });
+      owners.push("hermes");
     }
     if (this.outbox) {
       reqs.push({ root: this.outbox, depth: 0, suffixes: [".jsonl"], newerThanMs: GONE_MS });
@@ -320,7 +342,7 @@ class Watcher {
         return;
       }
       for (const f of files) fresh.set(f.path, f);
-      if (w === "opencode") return;
+      if (w === "opencode" || w === "hermes") return;
       for (const f of files) {
         const c = w.driver.classify(w.root, f);
         if (!c) continue;
@@ -357,6 +379,7 @@ class Watcher {
 
     // 4. opencode's database.
     if (this.ocDb && !this.ocOff) await this.pollOpencode(now, full, fresh);
+    if (this.hmDb && !this.hmOff) await this.pollHermes(now, full, fresh);
 
     // 5. MCP signals, now that the workers they belong to are fresh.
     await this.pollOutbox(outbox, initial);
@@ -1044,6 +1067,107 @@ class Watcher {
     }
   }
 
+  /* ------------------------------------------------------------- hermes */
+
+  private async pollHermes(now: number, full: boolean, listed: Map<string, FileStat>): Promise<void> {
+    const db = this.hmDb!;
+    const main = listed.get(db);
+    const wal = listed.get(`${db}-wal`);
+    if (!main) return;
+    const sig = [main, wal].map((s) => (s ? `${s.size}:${s.mtimeMs}:${s.ino}` : "-")).join("|");
+    if (sig === this.hmSig && !full) return;
+    this.hmSig = sig;
+    try {
+      if (!this.hmCols) {
+        const cols = await this.source.query(db, "select name from pragma_table_info('sessions')");
+        if (cols === null) {
+          this.hmOff = true;
+          this.log(`ingest: ${BRAND.hermes.name} needs SQLite (Node >= 22.5${this.local ? "" : ", or sqlite3 on the remote"}); skipping it${this.local ? "" : ` on ${this.name}`}`);
+          return;
+        }
+        this.hmCols = new Set(cols.map((r) => String(r.name)));
+        if (!this.hmCols.has("last_activity_at")) {
+          this.hmOff = true;
+          this.log(`ingest: ${BRAND.hermes.name} database has an unknown layout; skipping it`);
+          return;
+        }
+      }
+      const since = this.hmCursor ?? now - ACTIVE_WINDOW_MS;
+      const rows = (await this.source.query(db, hmSessionSql(this.hmCols, "updated"), [Math.floor(since / 1000) - 2])) ?? [];
+      const sessions = rows.map(asHermesSession).filter((s): s is HmSession => !!s);
+      for (const s of sessions) this.hmCursor = Math.max(this.hmCursor ?? since, s.last_activity_at * 1000);
+      this.hmCursor ??= since;
+      const changed = sessions.filter((s) => !this.hm.has(s.id) || (this.hm.get(s.id)!.updated ?? -1) <= s.last_activity_at);
+      if (!changed.length) return;
+      const known = changed.filter((s) => this.hm.has(s.id));
+      const fresh = changed.filter((s) => !this.hm.has(s.id)).sort((a, b) => Number(!!a.parent_session_id) - Number(!!b.parent_session_id));
+      if (fresh.length) await this.hmLoad(fresh, true);
+      if (known.length) await this.hmLoad(known, false);
+    } catch (err) {
+      this.log(`ingest: reading ${BRAND.hermes.name} failed: ${(err as Error)?.message ?? err}`);
+      this.hmSig = "";
+    }
+  }
+
+  /** Fetch the latest messages for these sessions, fold them in, and post (or pose) the result. */
+  private async hmLoad(sessions: HmSession[], first: boolean, activeAt?: number): Promise<void> {
+    const db = this.hmDb!;
+    const limit = first ? HM_BACKFILL_MSGS : HM_LIVE_MSGS;
+    const msgs: HmMessage[] = [];
+    for (let i = 0; i < sessions.length; i += 100) {
+      const ids = sessions.slice(i, i + 100).map((s) => s.id);
+      const rows = (await this.source.query(db, hmMessagesSql(ids.length), [...ids, limit])) ?? [];
+      for (const r of rows) {
+        const m = asHermesMessage(r);
+        if (m) msgs.push(m);
+      }
+    }
+    const msgsOf = new Map<string, HmMessage[]>();
+    for (const m of msgs) (msgsOf.get(m.session_id) ?? msgsOf.set(m.session_id, []).get(m.session_id)!).push(m);
+    const now = this.now();
+    for (const s of sessions) {
+      let entry = this.hm.get(s.id);
+      const isNew = !entry;
+      if (!entry) {
+        entry = { st: createHermesState(s), updated: s.last_activity_at };
+        this.hm.set(s.id, entry);
+      }
+      entry.updated = s.last_activity_at;
+      const st = entry.st;
+      for (const [id, c] of st.workers) this.registry.set(id, c);
+      if (isNew && st.main.parentId) await this.hmParent(st, s);
+      const events = applyHermes(st, msgsOf.get(s.id) ?? []);
+      if (isNew) {
+        st.main.lastActivityMs = s.last_activity_at * 1000;
+        this.forwardAll(this.condense(st, events, { lastWrite: s.last_activity_at * 1000, activeAt }));
+      } else {
+        if (events.length) st.main.lastActivityMs = now;
+        this.forwardAll(events);
+      }
+    }
+  }
+
+  /** A subagent session whose parent isn't in the office yet: load the parent first, announced as active. */
+  private async hmParent(st: HermesState, s: HmSession): Promise<void> {
+    const pid = st.main.parentId!;
+    let parent = this.registry.get(pid);
+    if (!parent) {
+      const rows = (await this.source.query(this.hmDb!, hmSessionSql(this.hmCols!, "id"), [pid])) ?? [];
+      const ps = rows.map(asHermesSession).find((x): x is HmSession => !!x);
+      if (ps && !this.hm.has(ps.id)) await this.hmLoad([ps], true, s.last_activity_at * 1000);
+      parent = this.registry.get(pid);
+    }
+    if (!parent) {
+      delete st.main.parentId;
+      return;
+    }
+    if (!parent.announced) {
+      const ts = iso(Math.max(Date.parse(parent.lastTs ?? "") || 0, s.last_activity_at * 1000));
+      parent.keepTs = ts;
+      this.forwardAll(emit(parent, "session_start", ts));
+    }
+  }
+
   /* ------------------------------------------------------------ signals */
 
   private async pollOutbox(files: FileStat[], initial: boolean): Promise<void> {
@@ -1148,6 +1272,11 @@ class Watcher {
     for (const [id, e] of [...this.oc]) {
       if (now - Math.max(e.updated, e.st.main.lastActivityMs) < FORGET_MS || busyParents.has(id)) continue;
       this.oc.delete(id);
+      for (const wid of e.st.workers.keys()) if (this.registry.get(wid) === e.st.workers.get(wid)) this.registry.delete(wid);
+    }
+    for (const [id, e] of [...this.hm]) {
+      if (now - Math.max(e.updated * 1000, e.st.main.lastActivityMs) < FORGET_MS || busyParents.has(id)) continue;
+      this.hm.delete(id);
       for (const wid of e.st.workers.keys()) if (this.registry.get(wid) === e.st.workers.get(wid)) this.registry.delete(wid);
     }
   }
