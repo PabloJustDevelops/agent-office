@@ -1114,9 +1114,6 @@ class Watcher {
       // sessions moved: Hermes heartbeats it at most once a minute, and a new message doesn't touch it.
       const rows = (await this.source.query(db, hmMessagesAfterSql(), [this.hmCursor, HM_LIVE_MSGS_MAX])) ?? [];
       if (!rows.length) return;
-      for (const r of rows) this.hmCursor = Math.max(this.hmCursor, Number(r.id) || 0);
-      // A full page: more rows wait behind it, so read again next tick even if the files look the same.
-      if (rows.length >= HM_LIVE_MSGS_MAX) this.hmSig = "";
       const msgs = rows.map(asHermesMessage).filter((m): m is HmMessage => !!m);
       const ids = [...new Set(msgs.map((m) => m.session_id))];
       const unknown = ids.filter((id) => !this.hm.has(id));
@@ -1125,6 +1122,11 @@ class Watcher {
         const chunk = unknown.slice(i, i + 100);
         await this.hmLoad(this.hmSessions((await this.source.query(db, hmSessionSql(this.hmCols, "ids", chunk.length), chunk)) ?? []));
       }
+      // Past the page only once it is handled: a session lookup that fails (a locked database) reads the
+      // same page again next tick, and the rows already folded in say nothing the second time.
+      for (const r of rows) this.hmCursor = Math.max(this.hmCursor, Number(r.id) || 0);
+      // A full page: more rows wait behind it, so read again next tick even if the files look the same.
+      if (rows.length >= HM_LIVE_MSGS_MAX) this.hmSig = "";
     } catch (err) {
       this.log(`ingest: reading ${BRAND.hermes.name} failed: ${(err as Error)?.message ?? err}`);
       this.hmSig = "";

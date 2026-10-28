@@ -85,6 +85,7 @@ function makeDb(dir) {
           typeof o.tool_calls === "string" ? o.tool_calls : o.tool_calls ? JSON.stringify(o.tool_calls) : null,
           o.ts ?? sec(), o.content ?? "");
     },
+    exec: (sql) => db.exec(sql),
     close: () => db.close(),
   };
   return api;
@@ -247,6 +248,24 @@ test("hermes: rows land without a heartbeat, in two sessions at once", async (t)
     s.db.message(8, "ses_main", { role: "assistant", content: "All read." });
     evs = await s.tick();
     assert.deepEqual(kinds(evs), ["tool_end", "reply", "waiting"]);
+  } finally {
+    cleanup(s);
+  }
+});
+
+// The cursor moves past a page only once the page is handled. Moved first, a session lookup that failed
+// once (a locked database) left that session's rows behind it, and a session that wrote no more stayed
+// out of the office.
+test("hermes: a new session whose lookup fails once still walks in", async (t) => {
+  const s = await scenario(t);
+  if (!s) return;
+  try {
+    s.db.session("ses_new");
+    s.db.message(5, "ses_new", { role: "user", content: "hello" });
+    s.db.exec("alter table sessions rename to sessions_away");
+    assert.ok(!(await s.tick()).some((e) => e.workerId === "ses_new"));
+    s.db.exec("alter table sessions_away rename to sessions");
+    assert.ok((await s.tick()).some((e) => e.workerId === "ses_new" && e.kind === "session_start"));
   } finally {
     cleanup(s);
   }
